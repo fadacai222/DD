@@ -1,0 +1,12 @@
+{
+  "name": "OpenIMX Realtime Console",
+  "short_name": "OpenIMX",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f7faf8",
+  "theme_color": "#16835f",
+  "description": "Realtime transport verification console for OpenIMX.",
+  "orientation": "any",
+  "prefer_related_applications": false,
+  "icons": []
+}

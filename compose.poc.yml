@@ -1,0 +1,14 @@
+name: selfhosted-im-poc
+
+services:
+  realtime-api:
+    build:
+      context: ./server
+      args:
+        VERSION: 0.1.0-poc
+    environment:
+      IM_PORT: "18473"
+      IM_ALLOWED_ORIGINS: "localhost:*,127.0.0.1:*"
+    ports:
+      - "127.0.0.1:18473:18473"
+    restart: unless-stopped

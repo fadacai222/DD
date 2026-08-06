@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+
+GRADLE_VERSION=9.1.0
+GRADLE_CACHE_ROOT="${HOME}/.gradle/openimx"
+GRADLE_HOME="${GRADLE_CACHE_ROOT}/gradle-${GRADLE_VERSION}"
+GRADLE_BIN="${GRADLE_HOME}/bin/gradle"
+
+if [ -z "${JAVA_HOME:-}" ]; then
+  echo "JAVA_HOME must point to JDK 17 or newer." >&2
+  exit 1
+fi
+
+if [ ! -x "$GRADLE_BIN" ]; then
+  mkdir -p "$GRADLE_CACHE_ROOT"
+  ARCHIVE="${TMPDIR:-/tmp}/openimx-gradle-$$.zip"
+  echo "Downloading Gradle ${GRADLE_VERSION}..."
+  curl --fail --location --silent --show-error \
+    "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+    --output "$ARCHIVE"
+  unzip -q -o "$ARCHIVE" -d "$GRADLE_CACHE_ROOT"
+  rm -f "$ARCHIVE"
+fi
+
+exec "$GRADLE_BIN" "$@"
