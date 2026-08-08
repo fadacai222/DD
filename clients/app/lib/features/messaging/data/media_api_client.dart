@@ -46,6 +46,21 @@ final class MediaUploadCancelled implements Exception {
   String toString() => '媒体上传已取消。';
 }
 
+final class MediaDownloadCancellation {
+  bool _cancelled = false;
+
+  bool get isCancelled => _cancelled;
+
+  void cancel() => _cancelled = true;
+}
+
+final class MediaDownloadCancelled implements Exception {
+  const MediaDownloadCancelled();
+
+  @override
+  String toString() => '媒体下载已取消。';
+}
+
 final class MediaApiClient {
   MediaApiClient({http.Client? httpClient})
     : _client = httpClient ?? createAuthHttpClient();
@@ -223,6 +238,35 @@ final class MediaApiClient {
     _decodeData(response, const {200});
   }
 
+  Future<Uint8List> downloadMedia({
+    required Uri url,
+    void Function(int receivedBytes, int? totalBytes)? onProgress,
+    MediaDownloadCancellation? cancellation,
+  }) async {
+    if (cancellation?.isCancelled == true) throw const MediaDownloadCancelled();
+    final request = http.Request('GET', url);
+    final response = await _client.send(request);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw MessagingApiException(
+        statusCode: response.statusCode,
+        code: 'MEDIA_STORAGE_DOWNLOAD_FAILED',
+        message: '媒体下载失败（对象存储返回 ${response.statusCode}）。',
+      );
+    }
+    final total = response.contentLength;
+    final builder = BytesBuilder(copy: false);
+    var received = 0;
+    await for (final chunk in response.stream) {
+      if (cancellation?.isCancelled == true)
+        throw const MediaDownloadCancelled();
+      builder.add(chunk);
+      received += chunk.length;
+      onProgress?.call(received, total);
+    }
+    onProgress?.call(received, total ?? received);
+    return builder.takeBytes();
+  }
+
   Future<MediaDownloadGrant> createDownloadUrl({
     required Uri origin,
     required String accessToken,
@@ -256,10 +300,7 @@ final class MediaApiClient {
     'Content-Type': 'application/json; charset=utf-8',
   };
 
-  Map<String, dynamic> _decodeData(
-    http.Response response,
-    Set<int> expected,
-  ) {
+  Map<String, dynamic> _decodeData(http.Response response, Set<int> expected) {
     dynamic decoded;
     if (response.bodyBytes.isNotEmpty) {
       try {

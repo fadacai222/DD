@@ -106,6 +106,8 @@ class _TextChatPageState extends State<TextChatPage>
   bool _gifSending = false;
   bool _stickerSending = false;
   bool _fileSending = false;
+  final Map<String, double> _fileDownloadProgress = {};
+  final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
   double _fileUploadProgress = 0;
   MediaUploadCancellation? _fileUploadCancellation;
   bool _voiceRecording = false;
@@ -595,9 +597,13 @@ class _TextChatPageState extends State<TextChatPage>
     final name = (content.fileName ?? '').trim().isEmpty
         ? '文件'
         : content.fileName!.trim();
+    final downloading = _fileDownloadCancellations.containsKey(message.id);
+    final progress = _fileDownloadProgress[message.id] ?? 0;
     return InkWell(
       borderRadius: BorderRadius.circular(6),
-      onTap: () => unawaited(_openMediaFile(content.mediaId!)),
+      onTap: downloading
+          ? () => _fileDownloadCancellations[message.id]?.cancel()
+          : () => unawaited(_saveMediaFile(message)),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
@@ -610,7 +616,17 @@ class _TextChatPageState extends State<TextChatPage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  if (content.sizeBytes != null)
+                  if (downloading)
+                    Text(
+                      progress > 0
+                          ? '下载 ${(progress * 100).round()}% · 点击取消'
+                          : '准备下载… · 点击取消',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textSecondary,
+                      ),
+                    )
+                  else if (content.sizeBytes != null)
                     Text(
                       _formatBytes(content.sizeBytes!),
                       style: const TextStyle(
@@ -627,13 +643,52 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Future<void> _openMediaFile(String mediaId) async {
+  Future<void> _saveMediaFile(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId;
+    if (content == null || mediaId == null || mediaId.isEmpty) return;
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'download.bin'
+        : content.fileName!.trim();
+    final location = await getSaveLocation(suggestedName: fileName);
+    if (location == null || !mounted) return;
+    final cancellation = MediaDownloadCancellation();
+    setState(() {
+      _fileDownloadCancellations[message.id] = cancellation;
+      _fileDownloadProgress[message.id] = 0;
+    });
     try {
       final grant = await _downloadGrantFor(mediaId);
-      await Clipboard.setData(ClipboardData(text: grant.url.toString()));
-      if (mounted) _showImageError('临时下载地址已复制，可在浏览器中打开。');
+      final bytes = await _mediaApi.downloadMedia(
+        url: grant.url,
+        cancellation: cancellation,
+        onProgress: (received, total) {
+          if (!mounted || total == null || total <= 0) return;
+          final next = (received / total).clamp(0.0, 1.0);
+          if ((next - (_fileDownloadProgress[message.id] ?? 0)).abs() < 0.01 &&
+              next < 1)
+            return;
+          setState(() => _fileDownloadProgress[message.id] = next);
+        },
+      );
+      if (cancellation.isCancelled) throw const MediaDownloadCancelled();
+      await XFile.fromData(
+        bytes,
+        mimeType: content.mimeType,
+        name: fileName,
+      ).saveTo(location.path);
+      if (mounted) _showImageError('文件已保存。');
+    } on MediaDownloadCancelled {
+      if (mounted) _showImageError('已取消文件下载。');
     } catch (_) {
-      if (mounted) _showImageError('文件下载地址获取失败，请稍后重试。');
+      if (mounted) _showImageError('文件下载失败，请稍后重试。');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _fileDownloadCancellations.remove(message.id);
+          _fileDownloadProgress.remove(message.id);
+        });
+      }
     }
   }
 
@@ -654,7 +709,8 @@ class _TextChatPageState extends State<TextChatPage>
     final playing =
         _playingVoiceMessageId == message.id &&
         _voicePlayer.state == PlayerState.playing;
-    final progress = _playingVoiceMessageId == message.id &&
+    final progress =
+        _playingVoiceMessageId == message.id &&
             _voiceDuration.inMilliseconds > 0
         ? (_voicePosition.inMilliseconds / _voiceDuration.inMilliseconds).clamp(
             0.0,
@@ -705,10 +761,7 @@ class _TextChatPageState extends State<TextChatPage>
                 ),
               ),
               const SizedBox(width: 7),
-              Text(
-                '$durationSeconds″',
-                style: const TextStyle(fontSize: 12),
-              ),
+              Text('$durationSeconds″', style: const TextStyle(fontSize: 12)),
               if (heard) ...[
                 const SizedBox(width: 4),
                 const Icon(
@@ -722,7 +775,10 @@ class _TextChatPageState extends State<TextChatPage>
                 borderRadius: BorderRadius.circular(9),
                 onTap: () => unawaited(_cycleVoicePlaybackRate(message)),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 3,
+                    vertical: 2,
+                  ),
                   child: Text(
                     '${_voicePlaybackRate.toStringAsFixed(_voicePlaybackRate == 1 ? 0 : 1)}x',
                     style: const TextStyle(
@@ -966,7 +1022,8 @@ class _TextChatPageState extends State<TextChatPage>
                           : DdColors.ownBubble,
                       borderRadius: BorderRadius.circular(5),
                     ),
-                    child: item.isImage ||
+                    child:
+                        item.isImage ||
                             item.isGif ||
                             item.isSticker ||
                             item.isVoice ||
@@ -1235,7 +1292,10 @@ class _TextChatPageState extends State<TextChatPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('正在发送图片$batch · $percent%', style: const TextStyle(fontSize: 12)),
+                Text(
+                  '正在发送图片$batch · $percent%',
+                  style: const TextStyle(fontSize: 12),
+                ),
                 const SizedBox(height: 5),
                 LinearProgressIndicator(
                   value: _imageUploadProgress.clamp(0, 1),
@@ -1857,7 +1917,9 @@ class _TextChatPageState extends State<TextChatPage>
               ),
               const SizedBox(width: 10),
               _ComposerAction(
-                icon: _fileSending ? Icons.close_rounded : Icons.insert_drive_file_outlined,
+                icon: _fileSending
+                    ? Icons.close_rounded
+                    : Icons.insert_drive_file_outlined,
                 label: _fileSending
                     ? '取消 ${(100 * _fileUploadProgress).round()}%'
                     : '文件',
@@ -1904,7 +1966,9 @@ class _TextChatPageState extends State<TextChatPage>
         final file = files[index];
         final sourceLength = await file.length();
         if (sourceLength > maxChatImageSourceBytes) {
-          _showImageError('${file.name.isEmpty ? '第 ${index + 1} 张图片' : file.name} 超过 96 MiB，已跳过。');
+          _showImageError(
+            '${file.name.isEmpty ? '第 ${index + 1} 张图片' : file.name} 超过 96 MiB，已跳过。',
+          );
           continue;
         }
         if (mounted) {
@@ -2099,7 +2163,8 @@ class _TextChatPageState extends State<TextChatPage>
         onProgress: (sent, total) {
           if (!mounted || total <= 0) return;
           final progress = sent / total;
-          if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1) return;
+          if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1)
+            return;
           setState(() => _fileUploadProgress = progress.clamp(0, 1));
         },
       );
@@ -2139,7 +2204,9 @@ class _TextChatPageState extends State<TextChatPage>
   String _fileMimeType(String name) {
     final lower = name.toLowerCase();
     if (lower.endsWith('.pdf')) return 'application/pdf';
-    if (lower.endsWith('.txt') || lower.endsWith('.log') || lower.endsWith('.md')) {
+    if (lower.endsWith('.txt') ||
+        lower.endsWith('.log') ||
+        lower.endsWith('.md')) {
       return 'text/plain';
     }
     if (lower.endsWith('.zip')) return 'application/zip';
@@ -2150,7 +2217,9 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   void _showImageError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _showPendingActions(PendingTextMessage item) async {
@@ -2481,7 +2550,9 @@ class _ComposerAction extends StatelessWidget {
                   height: 52,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(5),
                   ),
                   child: Icon(icon, size: 25),
