@@ -106,6 +106,72 @@ function Assert-WindowsATL {
     }
 }
 
+function Test-WindowsFlutterGeneratedState {
+    param([Parameter(Mandatory = $true)][string]$AppRoot)
+
+    $RequiredPaths = @(
+        'windows\flutter\ephemeral\flutter_windows.dll',
+        'windows\flutter\ephemeral\flutter_windows.dll.lib',
+        'windows\flutter\ephemeral\icudtl.dat',
+        'windows\flutter\ephemeral\cpp_client_wrapper\core_implementations.cc',
+        'windows\flutter\ephemeral\cpp_client_wrapper\standard_codec.cc',
+        'windows\flutter\ephemeral\cpp_client_wrapper\plugin_registrar.cc',
+        'windows\flutter\ephemeral\cpp_client_wrapper\flutter_engine.cc',
+        'windows\flutter\ephemeral\cpp_client_wrapper\flutter_view_controller.cc',
+        'windows\flutter\ephemeral\cpp_client_wrapper\include\flutter\flutter_view_controller.h'
+    )
+    foreach ($RelativePath in $RequiredPaths) {
+        if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $RelativePath))) {
+            return $false
+        }
+    }
+
+    $GeneratedConfig = Join-Path $AppRoot 'windows\flutter\ephemeral\generated_config.cmake'
+    if (-not (Test-Path -LiteralPath $GeneratedConfig)) {
+        return $false
+    }
+    $ConfigText = Get-Content -LiteralPath $GeneratedConfig -Raw -Encoding UTF8
+    if ($ConfigText -notmatch 'file\(TO_CMAKE_PATH "([^"]+)" PROJECT_DIR\)') {
+        return $false
+    }
+    $ConfiguredProjectDir = $Matches[1].Replace('\\', '\').TrimEnd('\')
+    return $ConfiguredProjectDir -ieq $AppRoot.TrimEnd('\')
+}
+
+function Remove-WindowsGeneratedDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    foreach ($Attempt in 1..20) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        # MSBuild/Defender can retain short-lived handles on .tlog/object files
+        # for a moment after a failed build. Give those handles time to drain.
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Unable to clear stale Windows build cache: $Path"
+}
+
+function Reset-WindowsFlutterGeneratedState {
+    param([Parameter(Mandatory = $true)][string]$AppRoot)
+
+    Write-Host 'Repairing stale Flutter Windows generated state...'
+
+    # Always clear through the short subst path. Removing these trees through the
+    # original Chinese/long project path can partially fail on deep CMake/NuGet
+    # paths and leave a mixed-drive cache behind.
+    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot 'build\windows')
+    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot 'windows\flutter\ephemeral')
+
+    # Flutter 3.44 native-asset hooks persist absolute project paths outside the
+    # Windows depfile cache. If a previous build used O: and this build uses P:,
+    # stale hook input.json files can make dart_build try to create the old drive.
+    # Keep package_config/pub dependencies, but discard all path-sensitive build
+    # intermediates so Flutter can regenerate them for the current subst drive.
+    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot '.dart_tool\flutter_build')
+    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot '.dart_tool\hooks_runner')
+}
+
 function Build-Windows {
     Assert-WindowsATL
     $Drive = Get-FreeSubstDrive
@@ -116,7 +182,21 @@ function Build-Windows {
 
     try {
         $MappedApp = "$Drive\clients\app"
-        Invoke-Flutter @('build', 'windows', '--release', '--no-pub') $MappedApp 'Windows release build failed.'
+        if (-not (Test-WindowsFlutterGeneratedState -AppRoot $MappedApp)) {
+            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp
+        }
+
+        try {
+            Invoke-Flutter @('build', 'windows', '--release', '--no-pub') $MappedApp 'Windows release build failed.'
+        }
+        catch {
+            if (Test-WindowsFlutterGeneratedState -AppRoot $MappedApp) {
+                throw
+            }
+            Write-Host 'Windows generated files disappeared during build; resetting the Windows cache and retrying once...'
+            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp
+            Invoke-Flutter @('build', 'windows', '--release', '--no-pub') $MappedApp 'Windows release build failed after cache repair.'
+        }
     }
     finally {
         Set-Location 'C:\'

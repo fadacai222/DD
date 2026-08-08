@@ -151,6 +151,25 @@ function Wait-HttpOK {
     throw "Timed out waiting for $Url"
 }
 
+function Invoke-BestEffortCleanup {
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 may promote native stderr to NativeCommandError
+        # when the script-wide preference is Stop. Cleanup must never hide the
+        # original startup/build failure that brought us here.
+        $ErrorActionPreference = 'SilentlyContinue'
+        & $Action *> $null
+    }
+    catch {
+        # Best-effort cleanup only. The original exception is rethrown below.
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
 if (Test-Path -LiteralPath $StateFile) {
     throw 'P2 Auth dev environment already has an active state file. Stop it first with stop-auth-dev.ps1.'
 }
@@ -361,25 +380,25 @@ catch {
         Stop-Process -Id $workerProcess.Id -Force -ErrorAction SilentlyContinue
     }
     if ($startedWeb) {
-        & $StopWebScript *> $null
+        Invoke-BestEffortCleanup { & $StopWebScript }
     }
     if (-not $postgresWasRunning) {
-        & docker compose --env-file $EnvFile -f $ComposeFile stop postgres *> $null
+        Invoke-BestEffortCleanup { & docker compose --env-file $EnvFile -f $ComposeFile stop postgres }
     }
     if (-not $mailpitWasRunning) {
-        & docker compose --env-file $EnvFile -f $ComposeFile stop mailpit *> $null
+        Invoke-BestEffortCleanup { & docker compose --env-file $EnvFile -f $ComposeFile stop mailpit }
     }
     if (-not $redisWasRunning) {
-        & docker compose --env-file $EnvFile -f $ComposeFile stop redis *> $null
+        Invoke-BestEffortCleanup { & docker compose --env-file $EnvFile -f $ComposeFile stop redis }
     }
     if (-not $minioWasRunning) {
-        & docker compose --env-file $EnvFile -f $ComposeFile stop minio *> $null
+        Invoke-BestEffortCleanup { & docker compose --env-file $EnvFile -f $ComposeFile stop minio }
     }
     if (-not $livekitWasRunning) {
-        & docker compose --env-file $EnvFile -f $ComposeFile stop livekit *> $null
+        Invoke-BestEffortCleanup { & docker compose --env-file $EnvFile -f $ComposeFile stop livekit }
     }
     if ($firewallReady) {
-        & $FirewallScript -LanIP $LanIP -Remove *> $null
+        Invoke-BestEffortCleanup { & $FirewallScript -LanIP $LanIP -Remove }
     }
     Remove-Item -LiteralPath $StateFile, $ApiExe, $WorkerExe, $ApiOut, $ApiErr, $WorkerOut, $WorkerErr -Force -ErrorAction SilentlyContinue
     throw $originalError
