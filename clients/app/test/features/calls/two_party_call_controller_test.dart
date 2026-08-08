@@ -381,6 +381,8 @@ final class _FakeCallMedia implements CallMediaGateway {
   bool microphoneEnabled = false;
   @override
   bool cameraEnabled = false;
+  @override
+  String? lastError;
 
   int joinCount = 0;
   int leaveCount = 0;

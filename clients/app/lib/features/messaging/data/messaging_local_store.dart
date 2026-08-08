@@ -9,11 +9,13 @@ final class MessagingLocalState {
     required this.syncCursor,
     required this.pending,
     this.drafts = const {},
+    this.recentEmoji = const [],
   });
 
   final int syncCursor;
   final List<PendingTextMessage> pending;
   final Map<String, String> drafts;
+  final List<String> recentEmoji;
 }
 
 abstract interface class MessagingLocalStore {
@@ -22,6 +24,7 @@ abstract interface class MessagingLocalStore {
     required int syncCursor,
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
+    required List<String> recentEmoji,
   });
   Future<void> clear();
 }
@@ -34,7 +37,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
   }) : _storage = storage ?? const FlutterSecureStorage(),
        _key = 'dd.messaging.v1.$userId.$deviceId';
 
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
   final FlutterSecureStorage _storage;
   final String _key;
 
@@ -46,8 +49,12 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
     }
     try {
       final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic> ||
-          decoded['schemaVersion'] != schemaVersion) {
+      if (decoded is! Map<String, dynamic>) {
+        await clear();
+        return const MessagingLocalState(syncCursor: 0, pending: []);
+      }
+      final storedVersion = decoded['schemaVersion'];
+      if (storedVersion is! int || storedVersion < 1 || storedVersion > schemaVersion) {
         await clear();
         return const MessagingLocalState(syncCursor: 0, pending: []);
       }
@@ -68,11 +75,21 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
           }
         }
       }
+      final recentEmoji = <String>[];
+      final rawRecentEmoji = decoded['recentEmoji'];
+      if (rawRecentEmoji is List) {
+        for (final item in rawRecentEmoji.whereType<String>()) {
+          if (item.trim().isEmpty || recentEmoji.contains(item)) continue;
+          recentEmoji.add(item);
+          if (recentEmoji.length == 12) break;
+        }
+      }
       final cursor = decoded['syncCursor'];
       return MessagingLocalState(
         syncCursor: cursor is int && cursor >= 0 ? cursor : 0,
         pending: pending,
         drafts: drafts,
+        recentEmoji: List.unmodifiable(recentEmoji),
       );
     } catch (_) {
       await clear();
@@ -85,6 +102,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
     required int syncCursor,
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
+    required List<String> recentEmoji,
   }) {
     return _storage.write(
       key: _key,
@@ -93,6 +111,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
         'syncCursor': syncCursor < 0 ? 0 : syncCursor,
         'pending': pending.map((item) => item.toJson()).toList(growable: false),
         'drafts': drafts,
+        'recentEmoji': recentEmoji.take(12).toList(growable: false),
       }),
     );
   }

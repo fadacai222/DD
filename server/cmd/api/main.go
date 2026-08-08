@@ -18,6 +18,7 @@ import (
 	"example.com/selfhosted-im/server/internal/auth/session"
 	"example.com/selfhosted-im/server/internal/contacts"
 	"example.com/selfhosted-im/server/internal/httpapi"
+	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
@@ -42,6 +43,7 @@ func main() {
 	var authService httpapi.AuthService
 	var contactsService httpapi.ContactsService
 	var messagingService httpapi.MessagingService
+	var mediaService httpapi.MediaService
 	var realtimeEventBus httpapi.RealtimeEventBus
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -97,6 +99,24 @@ func main() {
 			logger.Error("messaging service initialization failed", "error", err)
 			os.Exit(2)
 		}
+		if config.MediaS3Endpoint != "" {
+			mediaStore, storeErr := media.NewS3Store(media.S3Config{
+				Endpoint:  config.MediaS3Endpoint,
+				Bucket:    config.MediaS3Bucket,
+				Region:    config.MediaS3Region,
+				AccessKey: config.MediaS3AccessKey,
+				SecretKey: config.MediaS3SecretKey,
+			})
+			if storeErr != nil {
+				logger.Error("media object storage initialization failed", "error", storeErr)
+				os.Exit(2)
+			}
+			mediaService, err = media.NewService(media.Config{Pool: pool, Store: mediaStore})
+			if err != nil {
+				logger.Error("media service initialization failed", "error", err)
+				os.Exit(2)
+			}
+		}
 	}
 
 	if config.RedisURL != "" {
@@ -134,6 +154,7 @@ func main() {
 			AuthService:        authService,
 			ContactsService:    contactsService,
 			MessagingService:   messagingService,
+			MediaService:       mediaService,
 			RealtimeEventBus:   realtimeEventBus,
 			Logger:             logger,
 		}),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -17,7 +19,7 @@ class AuthPage extends StatefulWidget {
 }
 
 class _AuthPageState extends State<AuthPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final AuthGateway _gateway;
   late final bool _ownsGateway;
   late final TabController _tabs;
@@ -33,6 +35,8 @@ class _AuthPageState extends State<AuthPage>
   bool _busy = false;
   String? _message;
   bool _messageIsError = false;
+  Timer? _refreshTimer;
+  bool _refreshingSession = false;
 
   @override
   void initState() {
@@ -47,11 +51,25 @@ class _AuthPageState extends State<AuthPage>
     _handle = TextEditingController();
     _displayName = TextEditingController();
     _vault = AuthSessionVault();
+    WidgetsBinding.instance.addObserver(this);
     _restoreSession();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final session = _session;
+    if (session == null) return;
+    if (session.tokens.accessExpiresAt.difference(DateTime.now().toUtc()) <=
+        const Duration(minutes: 2)) {
+      unawaited(_refreshSession(silent: true));
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
     _tabs.dispose();
     _origin.dispose();
     _email.dispose();
@@ -68,6 +86,7 @@ class _AuthPageState extends State<AuthPage>
     final session = _session;
     if (session != null) {
       return MainShellPage(
+        key: ValueKey(session.tokens.accessToken),
         origin: _validatedOrigin(),
         session: session,
         authGateway: _gateway,
@@ -346,6 +365,7 @@ class _AuthPageState extends State<AuthPage>
     if (!mounted) return;
     setState(() => _session = session);
     await _persistSession(session);
+    _scheduleSessionRefresh(session);
     _setMessage('注册成功，服务端已创建用户、首设备和 Refresh Token。');
   });
 
@@ -359,21 +379,52 @@ class _AuthPageState extends State<AuthPage>
     if (!mounted) return;
     setState(() => _session = session);
     await _persistSession(session);
+    _scheduleSessionRefresh(session);
     _setMessage('登录成功。');
   });
 
-  Future<void> _refresh() => _run(() async {
+  Future<void> _refresh() => _refreshSession(silent: true);
+
+  Future<void> _refreshSession({required bool silent}) async {
+    if (_refreshingSession) return;
     final current = _session;
     if (current == null) return;
-    final next = await _gateway.refresh(
-      origin: _validatedOrigin(),
-      refreshToken: current.tokens.refreshToken,
+    _refreshingSession = true;
+    try {
+      final next = await _gateway.refresh(
+        origin: _validatedOrigin(),
+        refreshToken: current.tokens.refreshToken,
+      );
+      if (!mounted) return;
+      setState(() => _session = next);
+      await _persistSession(next);
+      _scheduleSessionRefresh(next);
+      if (!silent) _setMessage('会话已刷新，Refresh Token 已完成轮换。');
+    } catch (error) {
+      if (!mounted) return;
+      if (!silent) _setMessage(_friendlyError(error), error: true);
+      _refreshTimer?.cancel();
+      _refreshTimer = Timer(
+        const Duration(seconds: 30),
+        () => unawaited(_refreshSession(silent: true)),
+      );
+    } finally {
+      _refreshingSession = false;
+    }
+  }
+
+  void _scheduleSessionRefresh(AuthSession session) {
+    _refreshTimer?.cancel();
+    final untilExpiry = session.tokens.accessExpiresAt.difference(
+      DateTime.now().toUtc(),
     );
-    if (!mounted) return;
-    setState(() => _session = next);
-    await _persistSession(next);
-    _setMessage('会话已刷新，Refresh Token 已完成轮换。');
-  });
+    var delay = untilExpiry - const Duration(seconds: 90);
+    if (delay < const Duration(seconds: 5)) delay = const Duration(seconds: 5);
+    _refreshTimer = Timer(
+      delay,
+      () => unawaited(_refreshSession(silent: true)),
+    );
+  }
 
   Future<void> _restoreSession() async {
     try {
@@ -385,6 +436,7 @@ class _AuthPageState extends State<AuthPage>
         );
         if (!mounted) return;
         setState(() => _session = session);
+        _scheduleSessionRefresh(session);
         _setMessage('已通过 HttpOnly Cookie 自动恢复登录会话。');
         return;
       }
@@ -399,6 +451,7 @@ class _AuthPageState extends State<AuthPage>
       if (!mounted) return;
       setState(() => _session = session);
       await _persistSession(session);
+      _scheduleSessionRefresh(session);
       _setMessage('已从系统安全存储自动恢复登录会话。');
     } catch (_) {
       try {
@@ -415,6 +468,7 @@ class _AuthPageState extends State<AuthPage>
   );
 
   Future<void> _clearSession() async {
+    _refreshTimer?.cancel();
     final current = _session;
     if (current != null) {
       try {

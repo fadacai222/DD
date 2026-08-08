@@ -13,6 +13,23 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func mediaPurposeForMessageType(messageType string) (string, bool) {
+	switch messageType {
+	case "IMAGE":
+		return "CHAT_IMAGE", true
+	case "GIF":
+		return "GIF", true
+	case "STICKER":
+		return "STICKER", true
+	case "FILE":
+		return "CHAT_FILE", true
+	case "VOICE":
+		return "CHAT_VOICE", true
+	default:
+		return "", false
+	}
+}
+
 func (service *Service) SendMessage(ctx context.Context, principal account.Principal, conversationID uuid.UUID, input SendMessageInput) (SendResult, error) {
 	normalized, err := normalizeSendInput(input)
 	if err != nil {
@@ -76,6 +93,29 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 		return SendResult{}, err
 	}
 
+	var primaryMediaID *uuid.UUID
+	if mediaPurpose, ok := mediaPurposeForMessageType(input.Type); ok {
+		parsedMediaID := uuid.MustParse(input.Content.MediaID)
+		var originalName string
+		var mimeType string
+		var sizeBytes int64
+		err := tx.QueryRow(ctx, `
+			SELECT original_name,mime_type,size_bytes
+			FROM media_objects
+			WHERE id=$1 AND owner_user_id=$2 AND status='READY' AND purpose=$3 AND deleted_at IS NULL
+		`, parsedMediaID, principal.UserID, mediaPurpose).Scan(&originalName, &mimeType, &sizeBytes)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SendResult{}, ErrForbidden
+		}
+		if err != nil {
+			return SendResult{}, fmt.Errorf("authorize %s media: %w", input.Type, err)
+		}
+		input.Content.FileName = originalName
+		input.Content.MIMEType = mimeType
+		input.Content.SizeBytes = sizeBytes
+		primaryMediaID = &parsedMediaID
+	}
+
 	var replyID *uuid.UUID
 	if input.ReplyToMessageID != nil {
 		parsed := uuid.MustParse(*input.ReplyToMessageID)
@@ -106,6 +146,14 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 		RETURNING id
 	`, conversationID, sequence, principal.UserID, principal.DeviceID, input.ClientMessageID, input.Type, string(contentBytes), replyID, now).Scan(&messageID); err != nil {
 		return SendResult{}, fmt.Errorf("insert message: %w", err)
+	}
+	if primaryMediaID != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_media(message_id,media_id,role,created_at)
+			VALUES($1,$2,'PRIMARY',$3)
+		`, messageID, *primaryMediaID, now); err != nil {
+			return SendResult{}, fmt.Errorf("attach message media: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_message_id=$2 WHERE id=$1`, conversationID, messageID); err != nil {
 		return SendResult{}, fmt.Errorf("update conversation last message: %w", err)
@@ -240,8 +288,11 @@ func (service *Service) RecallMessage(ctx context.Context, principal account.Pri
 		}
 		return SendResult{Message: message, NotifyUserIDs: memberIDs}, nil
 	}
-	if _, err := tx.Exec(ctx, `UPDATE messages SET recalled_at=$2,content_json='{"text":""}'::jsonb WHERE id=$1`, messageID, now); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE messages SET recalled_at=$2,content_json='{}'::jsonb WHERE id=$1`, messageID, now); err != nil {
 		return SendResult{}, fmt.Errorf("recall message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM message_media WHERE message_id=$1`, messageID); err != nil {
+		return SendResult{}, fmt.Errorf("detach recalled message media: %w", err)
 	}
 	sequence := message.Sequence
 	payload, _ := json.Marshal(map[string]any{"messageId": message.ID, "conversationId": message.ConversationID, "sequence": message.Sequence})
@@ -249,7 +300,7 @@ func (service *Service) RecallMessage(ctx context.Context, principal account.Pri
 		return SendResult{}, err
 	}
 	message.RecalledAt = &now
-	message.Content = &TextContent{Text: ""}
+	message.Content = &TextContent{}
 	memberIDs, err := activeMemberIDsTx(ctx, tx, conversationID)
 	if err != nil {
 		return SendResult{}, err

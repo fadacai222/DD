@@ -1,5 +1,6 @@
 # 开发 Todolist
 
+> 状态同步：2026-08-08 12:14（UTC+8）。当前 P4 修复批次代码与三端构建已收口，先做真人复测，不因“自动测试通过”提前勾掉仍要求真实设备/跨端 Verify 的任务。
 > 规则：按依赖顺序执行。每个任务完成时必须同时满足 Acceptance 与 Verify。任何任务如果预计改动超过 5 个主要文件，应继续拆分。
 
 ## P0：决策与技术验证
@@ -152,7 +153,7 @@
   - Verify：真实 PostgreSQL + Mailpit 集成覆盖重置后旧密码/旧会话失效和新密码成功。
 
 - [x] **P2-010 实现用户资料和隐私设置 API**
-  - Progress：`GET/PATCH /api/v1/me`、资料字段和隐私设置已实现；2026-08-08 新增头像可用链：`PUT/DELETE /api/v1/me/avatar`、`GET /api/v1/avatars/{userId}` 和 `000006_profile_avatars`。当前头像直接存 PostgreSQL `bytea`，限制 2 MiB，只收 JPEG/PNG/WebP，校验格式/文件魔数并限制最大 2048×2048 / 约 4MP，拒绝 SVG、伪造 MIME 和超大像素图片；客户端按头像控件尺寸缩放解码，避免列表按原图尺寸占内存。这是 P5 对象存储媒体管线前的可用过渡，不冒充最终媒体架构。
+  - Progress：`GET/PATCH /api/v1/me`、资料字段和隐私设置已实现；2026-08-08 新增头像可用链：`PUT/DELETE /api/v1/me/avatar`、`GET /api/v1/avatars/{userId}` 和 `000006_profile_avatars`。服务端最终载荷仍限制 2 MiB、JPEG/PNG/WebP、最大 2048×2048 / 约 4MP；客户端现允许选择更大的手机原图，原生端通过 `compute` 后台处理 EXIF 方向、最长边缩至 1536 并压缩为 JPEG 后再上传，避免大图压缩阻塞 UI；为防客户端内存 DoS，源文件保留 64 MiB、解码画布约 70MP 的宽松安全上限。聊天中点击对方头像可进入资料页读取昵称、Handle、简介和关系。这是 P5 对象存储媒体管线前的可用过渡，不冒充最终媒体架构。
   - Acceptance：资料字段长度和隐私默认值正确；头像具备授权、类型/大小限制和稳定读取；P5 接入对象存储时迁移头像资源但保持 API 兼容。
   - Verify：头像魔数单测、Auth API Client 二进制上传测试、CORS PUT 门禁和 OpenAPI strict 已覆盖；真实多端头像刷新留 `人工测试.md`。
 
@@ -323,12 +324,12 @@
   - Verify：模拟首次断网、第二次恢复重试使用完全相同 clientMessageId 且成功后清队列，自动测试 PASS；飞行模式真机待人工。
 
 - [ ] **P4-015 Flutter 会话列表**
-  - Progress：最后消息、未读、时间、草稿、实时状态、待发送数和手动同步已存在；Web 置顶/免打扰根因为 CORS 预检漏放行 `PATCH`，现已补 `PUT/PATCH/DELETE` 并增加回归测试；偏好更新成功后客户端直接 upsert 会话并立即重排。Windows 默认宽度 881px 下固定采用约 `60px 导航 + 248px 会话栏 + 聊天区`，会话栏顶部改为“搜索 + 加号菜单”，不再显示手机式大标题；长按/右键菜单采用 Telegram 式紧凑图标菜单并支持标为已读。
+  - Progress：最后消息、未读、时间、草稿、实时状态、待发送数和手动同步已存在；Web 置顶/免打扰根因为 CORS 预检漏放行 `PATCH`，现已补 `PUT/PATCH/DELETE` 并增加回归测试；偏好更新成功后客户端直接 upsert 会话并立即重排。Windows 默认宽度 881px 下固定采用约 `60px 导航 + 248px 会话栏 + 聊天区`，会话栏顶部改为“搜索 + 加号菜单”，不再显示手机式大标题；长按/右键菜单采用 Telegram 式紧凑图标菜单。主消息入口和会话行已保留红色未读角标；Android 未读会话长按提供真实“标为已读”，自动 Widget 回归 PASS。
   - Acceptance：最后消息、未读、时间、置顶、免打扰和草稿正确；置顶必须真实改变排序，免打扰必须保存并跨端同步。
   - Verify：Web 设置 → UI 立即变化 → 刷新仍保存 → Windows/Android 读取一致 → 另一端修改后 Sync 更新，全部通过后才能关闭。
 
 - [ ] **P4-016 Flutter 聊天页面**
-  - Progress：聊天页已完成微信式灰底、真实头像、白色/浅绿气泡、紧凑输入区、Telegram 式右键/长按菜单、发送中/已发送/已读/失败展示、回复/复制/撤回/本地删除、历史加载、Unicode Emoji 选择器；PC/Web 已实现 `Enter=发送`、`Shift+Enter=换行` 并防输入法组合态误发送。发送后不再 disable TextField，显式保持 FocusNode，新增自动断言“发送后焦点和系统文本输入仍在”。聊天标题栏新增语音/视频通话入口，并在登录主壳常驻旧 P0 通话信令以支持来电自动弹出正式通话页；该接入仍复用 PoC Call API/LiveKit，不提前计为 P7 生产通话完成。**仍缺独立“已送达”确认、Sticker/GIF、图片和语音条。**
+  - Progress：聊天页已完成微信式灰底、真实头像、白色/浅绿气泡、紧凑输入区、Telegram 式右键/长按菜单、发送中/已发送/已读/失败展示、回复/复制/撤回/本地删除、历史加载、Unicode Emoji 选择器；Android 长按菜单统一为紧凑圆角 Action Sheet，危险操作红色，会话未读时提供“标为已读”。已读推进现要求聊天页真正可见 + App resumed + 当前路由，修复 `IndexedStack` 隐藏聊天在联系人页仍自动已读的问题。PC/Web 已实现 `Enter=发送`、`Shift+Enter=换行` 并防输入法组合态误发送；发送后保持 FocusNode。Access Token 新增到期前自动轮换，401 发送失败保留 pending 并触发刷新，不再笼统标为“服务端拒绝”。聊天标题栏语音/视频继续复用 P0 Call/LiveKit；主开发启动脚本现正式启动并配置 LAN LiveKit。**仍缺独立“已送达”确认、Sticker/GIF、图片和语音条。**
   - Acceptance：文字发送、失败重试、回复、复制、历史加载可用；聊天区显示发送中/已发送/已送达/已读/失败；PC/Web `Enter=发送`、`Shift+Enter=换行`。
   - Verify：Windows/Web/Android 真人 E2E + 键盘交互 + 已读状态 UI 验收。
 
@@ -342,13 +343,13 @@
   - Verify：提交压测脚本、硬件配置和报告。
 
 - [ ] **P4-019 微信式客户端 UI 主体重构（高优先级）**
-  - Progress：第二轮主体已落地：Windows 原生系统标题栏被 DD 自绘窗口栏替代，默认窗口 `881×657`，保留拖动、边缘缩放、最小化/最大化/关闭、窗口置顶和最大化工作区避让任务栏；桌面主壳调整为约 60px 导航栏，消息页 248px 会话栏 + 聊天区；会话顶部按参考图改为搜索+加号菜单；联系人改为左目录/右详情；设置改为左分类/右内容；聊天和全局头像统一接入。移动端继续“消息 / 联系人 / 发现 / 我的”。**仍需登录页、发现页/我的部分细节、Golden 截图和真人像素级收口。**
+  - Progress：第二轮主体已落地；本轮继续修 Windows 原生层：自绘标题栏缩至约 28px，顶层窗口恢复 `WS_OVERLAPPEDWINDOW` 能力但通过 `WM_NCCALCSIZE` 隐藏系统 caption，Win11 DWM 请求圆角并关闭原生 accent border，减少标题栏色块覆盖；Flutter 额外提供四边四角 8 方向 resize handle，直接映射 Win32 `HT*`，不再依赖脆弱的非客户区命中。默认窗口仍为 `881×657`，桌面主壳约 60px 导航 + 248px 会话栏 + 聊天区；联系人/设置已左栏右详情。移动端继续“消息 / 联系人 / 发现 / 我的”。**仍需真实 Windows 圆角/缩放/色块人工验收、登录页、发现页/我的细节、Golden。**
   - Acceptance：不仅重做聊天页，还要统一 Windows / Web / Android 的导航、会话列表、联系人、发现、我的、聊天主区、输入区、消息气泡、菜单、弹层、空状态、加载状态、桌面多栏与移动导航；布局、信息密度和交互心智高保真参考微信，但品牌、图标、素材保持 DD 原创。
   - Verify：Windows/Web/Android 全套核心页面截图人工验收 + Golden 基准；不得再呈现明显 WhatsApp / Material Demo 风格。
   - Maintainability：第二轮 UI 后 `ContactsPage` / `TextChatPage` 已超过 1000 行；下一轮继续堆功能前拆出桌面目录、详情面板、消息行、输入区、上下文菜单等独立组件，避免单文件继续膨胀。
 
 - [ ] **P4-024 Telegram 级丝滑度与交互性能优化（高优先级）**
-  - Progress：聊天消息列表按 index 真懒构建并增加 `RepaintBoundary`；移除聊天页对 `MediaQuery.sizeOf` 的宽度依赖，避免 Android 软键盘动画改变可用高度时让整段消息因为宽度判断反复重建；发送期间不再切换 TextField enabled 状态，避免 Android IME 重建 input connection；草稿保存改为 700ms debounce 且 `notify=false`，输入时不触发全局 MessagingCoordinator 重建；Material `InkSparkle` 改为更轻的 `InkRipple`；主壳继续使用持久 `IndexedStack`，消息/联系人切 Tab 不销毁重连；RealtimeClient 新增可取消连接超时，退出/切账号时不残留 10 秒握手 Timer。尚未完成 Profile 模式帧耗时量化和 50 条快速发送 / 500+ 历史压力验收。
+  - Progress：聊天消息列表按 index 真懒构建并增加 `RepaintBoundary`；发送期间不切换 TextField enabled；草稿 700ms debounce + `notify=false`；Material `InkSparkle` 改 `InkRipple`。Android IME 第二轮改为 Activity `adjustNothing` + Flutter 监听 `viewInsets`，使用合成层 `Transform.translate` 把已完成布局的聊天表面移到键盘上方，避免键盘升降每一帧对长历史消息重新 layout；聊天消息区点击空白可主动 `unfocus` 收键盘。主壳继续持久 `IndexedStack`，但已读状态不再等同于“Widget 仍挂在树上”。尚未完成真机 Profile 帧耗时量化和 50 条快速发送 / 500+ 历史压力验收。
   - Acceptance：60Hz 参考设备正常滚动/页面切换/菜单/输入保持稳定 60fps；关键点击 P95 < 100ms 出现视觉反馈；消息发送本地乐观更新；消息/会话列表局部更新；长历史懒构建；弱网不冻结 UI；高刷设备不人为锁低帧率。
   - Verify：Windows/Web/Android Profile 模式 + 实机滚动/快速发送/长列表测试；连续快速发送 50 条不冻结、不重复、不乱序；500+ 历史消息滚动无持续性掉帧；慢帧比例目标 < 1%。
 
@@ -491,7 +492,7 @@
   - Verify：权限矩阵测试。
 
 - [ ] **P7-004 实现 LiveKit Token 签发**
-  - Progress：PoC 已限制为接听后的通话参与者领取指定房间短期 Token；正式版仍需登录会话绑定和持久化授权。
+  - Progress：PoC 已限制为接听后的通话参与者领取指定房间短期 Token；本轮修复主开发环境未接媒体服务的问题：`run-auth-dev.ps1` 现在与 PostgreSQL/Redis 一起启动 LiveKit，并按自动检测 LAN IP 配置 `ws://<LAN>:17880`、RTC TCP 17881、RTC UDP 17882、TURN UDP 13478 及 LocalSubnet 防火墙。Call accept/reject/hangup 的同状态重复动作改为幂等，客户端收到 INVALID_CALL_STATE 会自动恢复/清理最新状态，媒体 join 失败显示 LiveKit 真实错误。正式版仍需登录会话绑定和持久化授权。
   - Acceptance：短时效、限定房间、身份和权限。
   - Verify：篡改房间和过期 Token 测试。
 
@@ -618,6 +619,7 @@
   - Verify：Chrome/Edge/Firefox/Safari 支持矩阵测试。
 
 - [ ] **P10-004 实现 Android FCM**
+  - Progress：当前仅完成**进程仍存活时**的 Android 本地系统通知和 Android 13+ `POST_NOTIFICATIONS` 权限申请；尚未接 FCM token、Push Worker、杀进程唤醒和通知点击路由，不能把本地通知误记为 FCM 完成。
   - Acceptance：token 注册、轮换、点击路由和隐私预览。
   - Verify：前台、后台、杀进程测试。
 
@@ -630,8 +632,9 @@
   - Verify：TestFlight/真实设备后台测试。
 
 - [ ] **P10-007 实现桌面系统通知**
+  - Progress：Windows 已接 `flutter_local_notifications` 本地系统通知；前台但不在当前聊天时使用软件内 SnackBar，后台/最小化且进程仍存活时使用 Windows Toast。Android 同时接本地高优先级消息通知并请求 Android 13+ 通知权限；免打扰会话不通知。**杀进程可靠通知仍未完成，必须依赖后续 Push Worker / FCM；Windows 通知点击路由也待接。**
   - Acceptance：Windows/macOS/Linux 点击通知进入正确会话。
-  - Verify：目标平台测试。
+  - Verify：Windows/Android 进程存活前后台真人测试；杀进程场景留 P10-002/P10-004。
 
 - [ ] **P10-008 实现通知隐私设置**
   - Acceptance：关闭预览后所有平台均不显示正文。

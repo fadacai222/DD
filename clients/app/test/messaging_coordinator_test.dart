@@ -7,6 +7,156 @@ import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
 void main() {
+  test('image message is retained in durable queue until delivery succeeds', () async {
+    final store = _MemoryMessagingStore();
+    final gateway = _FakeMessagingGateway()..failNextSend = true;
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-image',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-image',
+      gateway: gateway,
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.sendImage(
+      'conversation-a',
+      mediaId: '00000000-0000-0000-0000-000000000123',
+      width: 1080,
+      height: 1440,
+    );
+    expect(coordinator.pending, hasLength(1));
+    expect(coordinator.pending.single.type, 'IMAGE');
+    expect(store.state.pending.single.mediaId, '00000000-0000-0000-0000-000000000123');
+
+    await coordinator.flushPending();
+    expect(coordinator.pending, isEmpty);
+    expect(gateway.sentImageIds, ['00000000-0000-0000-0000-000000000123']);
+  });
+
+  test('gif message stays durable while offline and retries with same media', () async {
+    final store = _MemoryMessagingStore();
+    final gateway = _FakeMessagingGateway()..failNextSend = true;
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-gif',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-gif',
+      gateway: gateway,
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.sendMedia(
+      'conversation-a',
+      type: 'GIF',
+      mediaId: '00000000-0000-0000-0000-000000000456',
+      width: 480,
+      height: 320,
+    );
+    expect(coordinator.pending, hasLength(1));
+    final clientMessageId = coordinator.pending.single.clientMessageId;
+    expect(coordinator.pending.single.type, 'GIF');
+    expect(store.state.pending.single.clientMessageId, clientMessageId);
+
+    await coordinator.flushPending();
+    expect(coordinator.pending, isEmpty);
+    expect(gateway.sentMediaTypes, ['GIF']);
+    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000456']);
+  });
+
+  test('voice message stays durable while offline and preserves duration', () async {
+    final store = _MemoryMessagingStore();
+    final gateway = _FakeMessagingGateway()..failNextSend = true;
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-voice',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-voice',
+      gateway: gateway,
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.sendMedia(
+      'conversation-a',
+      type: 'VOICE',
+      mediaId: '00000000-0000-0000-0000-000000000789',
+      durationMs: 4200,
+      mimeType: 'audio/wav',
+      sizeBytes: 64000,
+    );
+    expect(coordinator.pending, hasLength(1));
+    expect(coordinator.pending.single.type, 'VOICE');
+    expect(coordinator.pending.single.durationMs, 4200);
+    expect(store.state.pending.single.durationMs, 4200);
+
+    await coordinator.flushPending();
+    expect(coordinator.pending, isEmpty);
+    expect(gateway.sentMediaTypes, ['VOICE']);
+    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000789']);
+  });
+
+  test('recent emoji is deduplicated, ordered and capped', () async {
+    final store = _MemoryMessagingStore();
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-emoji',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-emoji',
+      gateway: _FakeMessagingGateway(),
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    for (var i = 0; i < 14; i++) {
+      await coordinator.rememberRecentEmoji('emoji-$i');
+    }
+    await coordinator.rememberRecentEmoji('emoji-5');
+
+    expect(coordinator.recentEmoji, hasLength(12));
+    expect(coordinator.recentEmoji.first, 'emoji-5');
+    expect(coordinator.recentEmoji.where((item) => item == 'emoji-5'), hasLength(1));
+    expect(store.state.recentEmoji, coordinator.recentEmoji);
+  });
+
   test(
     'offline retry reuses the same clientMessageId and clears durable queue',
     () async {
@@ -48,6 +198,50 @@ void main() {
       expect(gateway.sentReplyIds, ['reply-target-0001', 'reply-target-0001']);
       expect(coordinator.pending, isEmpty);
       expect(store.state.pending, isEmpty);
+    },
+  );
+
+  test(
+    'expired access token keeps pending message and requests refresh',
+    () async {
+      final gateway = _FakeMessagingGateway()
+        ..nextSendApiError = const MessagingApiException(
+          statusCode: 401,
+          code: 'UNAUTHORIZED',
+          message: 'Access token expired',
+        );
+      final store = _MemoryMessagingStore();
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-test-refresh',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      var refreshCalls = 0;
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'expired-token',
+        currentUserId: 'user-a',
+        deviceId: 'device-test-refresh',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+        onUnauthorized: () async {
+          refreshCalls++;
+        },
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
+
+      await coordinator.sendText('conversation-1', 'keep me');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(refreshCalls, 1);
+      expect(coordinator.pending, hasLength(1));
+      expect(coordinator.pending.single.lastError, isNull);
+      expect(store.state.pending, hasLength(1));
+      expect(coordinator.errorMessage, contains('会话正在刷新'));
     },
   );
 
@@ -306,19 +500,25 @@ final class _MemoryMessagingStore implements MessagingLocalStore {
     required int syncCursor,
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
+    required List<String> recentEmoji,
   }) async {
     state = MessagingLocalState(
       syncCursor: syncCursor,
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
+      recentEmoji: List<String>.from(recentEmoji),
     );
   }
 }
 
 final class _FakeMessagingGateway implements MessagingGateway {
   bool failNextSend = false;
+  MessagingApiException? nextSendApiError;
   final List<String> sentClientIds = [];
   final List<String?> sentReplyIds = [];
+  final List<String> sentImageIds = [];
+  final List<String> sentMediaIds = [];
+  final List<String> sentMediaTypes = [];
   final List<SyncPage> syncPages = [];
   List<ChatMessage> history = const [];
   final List<(String, int)> markedReads = [];
@@ -339,6 +539,11 @@ final class _FakeMessagingGateway implements MessagingGateway {
   }) async {
     sentClientIds.add(clientMessageId);
     sentReplyIds.add(replyToMessageId);
+    final apiError = nextSendApiError;
+    if (apiError != null) {
+      nextSendApiError = null;
+      throw apiError;
+    }
     if (failNextSend) {
       failNextSend = false;
       throw http.ClientException('offline');
@@ -352,6 +557,74 @@ final class _FakeMessagingGateway implements MessagingGateway {
       clientMessageId: clientMessageId,
       type: 'TEXT',
       content: TextMessageContent(text: text),
+      createdAt: DateTime.utc(2026, 8, 8),
+    );
+  }
+
+  @override
+  Future<ChatMessage> sendImage({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String mediaId,
+    required int width,
+    required int height,
+    String? replyToMessageId,
+  }) async {
+    if (failNextSend) {
+      failNextSend = false;
+      throw http.ClientException('offline');
+    }
+    sentImageIds.add(mediaId);
+    return ChatMessage(
+      id: 'image-$clientMessageId',
+      conversationId: conversationId,
+      sequence: sentClientIds.length + sentImageIds.length,
+      senderUserId: 'user-a',
+      senderDeviceId: 'device-a',
+      clientMessageId: clientMessageId,
+      type: 'IMAGE',
+      content: TextMessageContent(mediaId: mediaId, width: width, height: height),
+      replyToMessageId: replyToMessageId,
+      createdAt: DateTime.utc(2026, 8, 8),
+    );
+  }
+
+  @override
+  Future<ChatMessage> sendMedia({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String type,
+    required String mediaId,
+    int? width,
+    int? height,
+    int? durationMs,
+    String? replyToMessageId,
+  }) async {
+    if (failNextSend) {
+      failNextSend = false;
+      throw http.ClientException('offline');
+    }
+    sentMediaIds.add(mediaId);
+    sentMediaTypes.add(type);
+    return ChatMessage(
+      id: 'media-$clientMessageId',
+      conversationId: conversationId,
+      sequence: sentClientIds.length + sentImageIds.length + sentMediaIds.length,
+      senderUserId: 'user-a',
+      senderDeviceId: 'device-a',
+      clientMessageId: clientMessageId,
+      type: type,
+      content: TextMessageContent(
+        mediaId: mediaId,
+        width: width,
+        height: height,
+        durationMs: durationMs,
+      ),
+      replyToMessageId: replyToMessageId,
       createdAt: DateTime.utc(2026, 8, 8),
     );
   }

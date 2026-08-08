@@ -115,6 +115,23 @@ func TestTwoPartyCallSignalingAndScopedToken(t *testing.T) {
 	if tokenBody.ServerURL == "" || tokenBody.ParticipantToken == "" || tokenBody.ExpiresAt.IsZero() {
 		t.Fatalf("token response = %#v", tokenBody)
 	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		hangup := postJSON(t, server.URL+"/api/calls/"+created.ID+"/actions", map[string]any{
+			"participant_identity": "alice",
+			"action":               "hangup",
+		})
+		if hangup.StatusCode != http.StatusOK {
+			hangup.Body.Close()
+			t.Fatalf("hangup attempt %d status = %d, want %d", attempt+1, hangup.StatusCode, http.StatusOK)
+		}
+		var ended callView
+		decodeJSON(t, hangup, &ended)
+		hangup.Body.Close()
+		if ended.Status != "ended" || ended.EndReason != "hangup" {
+			t.Fatalf("hangup attempt %d = %#v", attempt+1, ended)
+		}
+	}
 }
 
 func TestRingingCallTimesOutAndReleasesBusyState(t *testing.T) {

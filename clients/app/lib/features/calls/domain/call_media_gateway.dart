@@ -4,6 +4,7 @@ abstract interface class CallMediaGateway {
   bool get connected;
   bool get microphoneEnabled;
   bool get cameraEnabled;
+  String? get lastError;
 
   Future<bool> joinWithCredentials({
     required CallToken credentials,

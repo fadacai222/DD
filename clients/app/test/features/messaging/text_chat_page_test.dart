@@ -53,6 +53,123 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('hidden desktop chat does not mark incoming messages as read', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'message-unread-1',
+          conversationId: 'conversation-1',
+          sequence: 7,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'client-unread-0001',
+          type: 'TEXT',
+          content: const TextMessageContent(text: 'do not auto read'),
+          createdAt: DateTime.utc(2026, 8, 8, 8),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+    final conversation = _conversation(lastReadSequence: 0, unreadCount: 1);
+
+    Widget page({required bool visible}) => MaterialApp(
+      theme: AppTheme.light(),
+      home: TextChatPage(
+        coordinator: harness.coordinator,
+        conversation: conversation,
+        currentUserId: 'user-a',
+        hostVisible: visible,
+        embedded: true,
+      ),
+    );
+
+    await tester.pumpWidget(page(visible: false));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(gateway.markedReads, isEmpty);
+
+    await tester.pumpWidget(page(visible: true));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(gateway.markedReads, [('conversation-1', 7)]);
+  });
+
+  testWidgets('Android blank tap dismisses composer keyboard', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final gateway = _ChatGateway();
+      final harness = _Harness(gateway);
+      addTearDown(harness.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 80));
+
+      final composer = find.byKey(const Key('chat-composer'));
+      await tester.tap(composer);
+      await tester.pump();
+      expect(tester.widget<TextField>(composer).focusNode?.hasFocus, isTrue);
+
+      await tester.tap(find.byKey(const Key('chat-message-surface')));
+      await tester.pump();
+      expect(tester.widget<TextField>(composer).focusNode?.hasFocus, isFalse);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('Android destructive local delete action is red', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final gateway = _ChatGateway(
+        history: [
+          ChatMessage(
+            id: 'message-menu-1',
+            conversationId: 'conversation-1',
+            sequence: 7,
+            senderUserId: 'user-b',
+            senderDeviceId: 'device-b',
+            clientMessageId: 'client-menu-0001',
+            type: 'TEXT',
+            content: const TextMessageContent(text: 'menu me'),
+            createdAt: DateTime.utc(2026, 8, 8, 8),
+          ),
+        ],
+      );
+      final harness = _Harness(gateway);
+      addTearDown(harness.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+
+      await tester.longPress(find.text('menu me'));
+      await tester.pumpAndSettle();
+
+      final deleteText = tester.widget<Text>(find.text('仅本地删除'));
+      expect(deleteText.style?.color, DdColors.danger);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('Windows Enter sends while Shift+Enter keeps editing', (
     tester,
   ) async {
@@ -101,7 +218,11 @@ void main() {
   });
 }
 
-ConversationItem _conversation({int? peerLastReadSequence}) => ConversationItem(
+ConversationItem _conversation({
+  int? peerLastReadSequence,
+  int lastReadSequence = 7,
+  int unreadCount = 0,
+}) => ConversationItem(
   id: 'conversation-1',
   type: 'DIRECT',
   peer: const MessagingUserPreview(
@@ -110,9 +231,9 @@ ConversationItem _conversation({int? peerLastReadSequence}) => ConversationItem(
     displayName: 'Bob',
   ),
   lastSequence: 7,
-  lastReadSequence: 7,
+  lastReadSequence: lastReadSequence,
   peerLastReadSequence: peerLastReadSequence,
-  unreadCount: 0,
+  unreadCount: unreadCount,
   preferences: const ConversationPreferences(isPinned: false),
   createdAt: DateTime.utc(2026, 8, 8),
   updatedAt: DateTime.utc(2026, 8, 8),
@@ -166,11 +287,13 @@ final class _ChatStore implements MessagingLocalStore {
     required int syncCursor,
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
+    required List<String> recentEmoji,
   }) async {
     state = MessagingLocalState(
       syncCursor: syncCursor,
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
+      recentEmoji: List<String>.from(recentEmoji),
     );
   }
 }
@@ -184,6 +307,7 @@ final class _ChatGateway implements MessagingGateway {
   final List<ChatMessage> history;
   final int? peerLastReadSequence;
   final List<String> sentTexts = [];
+  final List<(String, int)> markedReads = [];
 
   @override
   Future<List<ConversationItem>> listConversations({
@@ -234,6 +358,67 @@ final class _ChatGateway implements MessagingGateway {
   }
 
   @override
+  Future<ChatMessage> sendImage({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String mediaId,
+    required int width,
+    required int height,
+    String? replyToMessageId,
+  }) async {
+    final message = ChatMessage(
+      id: 'image-${history.length + 1}',
+      conversationId: conversationId,
+      sequence: history.length + 1,
+      senderUserId: 'user-a',
+      senderDeviceId: 'device-a',
+      clientMessageId: clientMessageId,
+      type: 'IMAGE',
+      content: TextMessageContent(mediaId: mediaId, width: width, height: height),
+      replyToMessageId: replyToMessageId,
+      createdAt: DateTime.utc(2026, 8, 8, 9),
+    );
+    history.add(message);
+    return message;
+  }
+
+  @override
+  Future<ChatMessage> sendMedia({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String type,
+    required String mediaId,
+    int? width,
+    int? height,
+    int? durationMs,
+    String? replyToMessageId,
+  }) async {
+    final message = ChatMessage(
+      id: 'media-${history.length + 1}',
+      conversationId: conversationId,
+      sequence: history.length + 1,
+      senderUserId: 'user-a',
+      senderDeviceId: 'device-a',
+      clientMessageId: clientMessageId,
+      type: type,
+      content: TextMessageContent(
+        mediaId: mediaId,
+        width: width,
+        height: height,
+        durationMs: durationMs,
+      ),
+      replyToMessageId: replyToMessageId,
+      createdAt: DateTime.utc(2026, 8, 8, 9),
+    );
+    history.add(message);
+    return message;
+  }
+
+  @override
   Future<ConversationItem> updatePreferences({
     required Uri origin,
     required String accessToken,
@@ -249,7 +434,10 @@ final class _ChatGateway implements MessagingGateway {
     required String accessToken,
     required String conversationId,
     required int sequence,
-  }) async => sequence;
+  }) async {
+    markedReads.add((conversationId, sequence));
+    return sequence;
+  }
 
   @override
   Future<ChatMessage> recallMessage({

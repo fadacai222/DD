@@ -50,6 +50,14 @@ final class CallDebugController extends ChangeNotifier
   bool get microphoneEnabled => _microphoneEnabled;
   @override
   bool get cameraEnabled => _cameraEnabled;
+  @override
+  String? get lastError {
+    for (final entry in _logs.reversed) {
+      if (entry.level == CallLogLevel.error) return entry.message;
+    }
+    return null;
+  }
+
   bool get frontCamera => _frontCamera;
   String? get roomName => _roomName;
   List<CallLogEntry> get logs => List.unmodifiable(_logs);

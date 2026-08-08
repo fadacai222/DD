@@ -50,6 +50,7 @@ type Config struct {
 	AuthService        AuthService
 	ContactsService    ContactsService
 	MessagingService   MessagingService
+	MediaService       MediaService
 	RealtimeEventBus   RealtimeEventBus
 	Logger             *slog.Logger
 	Now                func() time.Time
@@ -74,6 +75,7 @@ type server struct {
 	auth                 AuthService
 	contacts             ContactsService
 	messaging            MessagingService
+	media                MediaService
 	realtimeEventBus     RealtimeEventBus
 	realtimePublishQueue chan realtimeBusDelivery
 	eventSequence        atomic.Int64
@@ -136,6 +138,7 @@ func NewHandler(config Config) http.Handler {
 		auth:               config.AuthService,
 		contacts:           config.ContactsService,
 		messaging:          config.MessagingService,
+		media:              config.MediaService,
 		realtimeEventBus:   config.RealtimeEventBus,
 		calls:              newCallStore(),
 		hub:                newSocketHub(),
@@ -180,6 +183,9 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/conversations/direct", s.handleDirectConversation)
 	mux.HandleFunc("/api/v1/conversations/", s.handleConversationByID)
 	mux.HandleFunc("/api/v1/messages/", s.handleMessageByID)
+	mux.HandleFunc("/api/v1/media/uploads", s.handleMediaUploads)
+	mux.HandleFunc("/api/v1/media/uploads/", s.handleMediaUploadByID)
+	mux.HandleFunc("/api/v1/media/", s.handleMediaByID)
 	mux.HandleFunc("/api/v1/sync", s.handleSync)
 	mux.HandleFunc("/api/calls/token", s.handleCallToken)
 	mux.HandleFunc("/api/calls/active", s.handleActiveCall)

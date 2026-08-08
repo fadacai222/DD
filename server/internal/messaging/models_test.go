@@ -16,8 +16,16 @@ func TestNormalizeSendInput(t *testing.T) {
 		{name: "missing client id", input: SendMessageInput{Type: "TEXT", Content: &TextContent{Text: "hello"}}, wantErr: ErrInvalidInput},
 		{name: "blank text", input: SendMessageInput{ClientMessageID: "client-0002", Type: "TEXT", Content: &TextContent{Text: "   "}}, wantErr: ErrInvalidInput},
 		{name: "too long", input: SendMessageInput{ClientMessageID: "client-0003", Type: "TEXT", Content: &TextContent{Text: strings.Repeat("界", MaximumTextRunes+1)}}, wantErr: ErrInvalidInput},
-		{name: "unsupported type", input: SendMessageInput{ClientMessageID: "client-0004", Type: "IMAGE", Content: &TextContent{Text: "x"}}, wantErr: ErrUnsupportedType},
-		{name: "bad reply uuid", input: SendMessageInput{ClientMessageID: "client-0005", Type: "TEXT", Content: &TextContent{Text: "x"}, ReplyToMessageID: stringPointer("not-a-uuid")}, wantErr: ErrInvalidInput},
+		{name: "valid image", input: SendMessageInput{ClientMessageID: "client-0004", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", Width: 1080, Height: 1440}}},
+		{name: "image missing media id", input: SendMessageInput{ClientMessageID: "client-0005", Type: "IMAGE", Content: &TextContent{Width: 1080, Height: 1440}}, wantErr: ErrInvalidInput},
+		{name: "image invalid dimensions", input: SendMessageInput{ClientMessageID: "client-0006", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", Width: 0, Height: 1440}}, wantErr: ErrInvalidInput},
+		{name: "valid gif", input: SendMessageInput{ClientMessageID: "client-0007", Type: "GIF", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000124", Width: 480, Height: 320}}},
+		{name: "valid sticker", input: SendMessageInput{ClientMessageID: "client-0008", Type: "STICKER", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000125", Width: 512, Height: 512}}},
+		{name: "valid file", input: SendMessageInput{ClientMessageID: "client-0009", Type: "FILE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000126"}}},
+		{name: "valid voice", input: SendMessageInput{ClientMessageID: "client-0010", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 4200}}},
+		{name: "voice too short", input: SendMessageInput{ClientMessageID: "client-0011", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 100}}, wantErr: ErrInvalidInput},
+		{name: "unsupported type", input: SendMessageInput{ClientMessageID: "client-0012", Type: "POLL", Content: &TextContent{Text: "x"}}, wantErr: ErrUnsupportedType},
+		{name: "bad reply uuid", input: SendMessageInput{ClientMessageID: "client-0013", Type: "TEXT", Content: &TextContent{Text: "x"}, ReplyToMessageID: stringPointer("not-a-uuid")}, wantErr: ErrInvalidInput},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,7 +39,7 @@ func TestNormalizeSendInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Type != "TEXT" || got.Content == nil || got.Content.Text != tt.input.Content.Text {
+			if got.Type != strings.ToUpper(tt.input.Type) || got.Content == nil {
 				t.Fatalf("normalized=%#v", got)
 			}
 		})

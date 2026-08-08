@@ -1196,9 +1196,19 @@
           "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
         }
       },
-      "TextMessageContent": {
-        "type": "object", "additionalProperties": false, "required": ["text"],
-        "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}}
+      "MessageContent": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "text": {"type": "string", "maxLength": 4000},
+          "mediaId": {"type": "string", "format": "uuid"},
+          "width": {"type": "integer", "minimum": 1, "maximum": 20000},
+          "height": {"type": "integer", "minimum": 1, "maximum": 20000},
+          "fileName": {"type": "string", "maxLength": 255, "readOnly": true},
+          "mimeType": {"type": "string", "maxLength": 255, "readOnly": true},
+          "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1, "readOnly": true},
+          "durationMs": {"type": "integer", "minimum": 250, "maximum": 600000}
+        },
+        "description": "Message content fields are validated by message type. Server-owned fileName/mimeType/sizeBytes are derived from the READY media object and cannot be spoofed by the sender."
       },
       "Message": {
         "type": "object", "additionalProperties": false,
@@ -1210,8 +1220,8 @@
           "senderUserId": {"type": "string", "format": "uuid"},
           "senderDeviceId": {"type": "string", "format": "uuid"},
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "enum": ["TEXT", "SYSTEM", "ENCRYPTED"]},
-          "content": {"oneOf": [{"$ref": "#/components/schemas/TextMessageContent"}, {"type": "null"}]},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "SYSTEM", "ENCRYPTED"]},
+          "content": {"oneOf": [{"$ref": "#/components/schemas/MessageContent"}, {"type": "null"}]},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"},
           "createdAt": {"type": "string", "format": "date-time"},
           "recalledAt": {"type": ["string", "null"], "format": "date-time"}
@@ -1261,8 +1271,8 @@
         "type": "object", "additionalProperties": false, "required": ["clientMessageId", "type", "content"],
         "properties": {
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "const": "TEXT"},
-          "content": {"$ref": "#/components/schemas/TextMessageContent"},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE"]},
+          "content": {"$ref": "#/components/schemas/MessageContent"},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"}
         }
       },

@@ -56,6 +56,13 @@ if (Test-Path -LiteralPath $EnvFile) {
     if (($state.PSObject.Properties.Name -contains 'redisStartedByScript') -and [bool]$state.redisStartedByScript) {
         & docker compose --env-file $EnvFile -f $ComposeFile stop redis
     }
+    if (($state.PSObject.Properties.Name -contains 'minioStartedByScript') -and [bool]$state.minioStartedByScript) {
+        & docker compose --env-file $EnvFile -f $ComposeFile stop minio
+    }
+    if (($state.PSObject.Properties.Name -contains 'livekitStartedByScript') -and [bool]$state.livekitStartedByScript) {
+        $env:DD_LAN_IP = [string]$state.lanIP
+        & docker compose --env-file $EnvFile -f $ComposeFile stop livekit
+    }
 }
 
 $lanIP = [string]$state.lanIP

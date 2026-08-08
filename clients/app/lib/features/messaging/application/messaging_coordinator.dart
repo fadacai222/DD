@@ -16,6 +16,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     MessagingGateway? gateway,
     MessagingLocalStore? localStore,
     RealtimeClient? realtimeClient,
+    this.onUnauthorized,
   }) : _gateway = gateway ?? MessagingApiClient(),
        _ownsGateway = gateway == null,
        _localStore =
@@ -41,13 +42,17 @@ final class MessagingCoordinator extends ChangeNotifier {
   final MessagingLocalStore _localStore;
   final RealtimeClient _realtime;
   final bool _ownsRealtime;
+  final Future<void> Function()? onUnauthorized;
 
+  final StreamController<IncomingMessageNotice> _incomingMessageController =
+      StreamController<IncomingMessageNotice>.broadcast();
   final Map<String, List<ChatMessage>> _messages = {};
   final Map<String, int?> _nextBeforeSequence = {};
   final Map<String, bool> _hasMore = {};
   List<ConversationItem> _conversations = const [];
   List<PendingTextMessage> _pending = const [];
   Map<String, String> _drafts = const {};
+  List<String> _recentEmoji = const [];
   StreamSubscription<RealtimeEvent>? _eventSubscription;
   StreamSubscription<RealtimeConnectionState>? _stateSubscription;
   int _syncCursor = 0;
@@ -64,6 +69,13 @@ final class MessagingCoordinator extends ChangeNotifier {
   bool get busy => _busy;
   String? get errorMessage => _errorMessage;
   RealtimeConnectionState get realtimeState => _realtime.state;
+  Stream<IncomingMessageNotice> get incomingMessages =>
+      _incomingMessageController.stream;
+  int get totalUnreadCount => _conversations.fold<int>(
+    0,
+    (total, conversation) => total + conversation.unreadCount,
+  );
+  String? get activeConversationId => _activeConversationId;
 
   List<ChatMessage> messagesFor(String conversationId) =>
       List.unmodifiable(_messages[conversationId] ?? const []);
@@ -81,6 +93,15 @@ final class MessagingCoordinator extends ChangeNotifier {
 
   bool canLoadOlder(String conversationId) => _hasMore[conversationId] == true;
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
+  List<String> get recentEmoji => List.unmodifiable(_recentEmoji);
+
+  Future<void> rememberRecentEmoji(String emoji) async {
+    if (emoji.trim().isEmpty) return;
+    final next = <String>[emoji, ..._recentEmoji.where((item) => item != emoji)];
+    _recentEmoji = List.unmodifiable(next.take(12));
+    await _persistLocalState();
+    _notify();
+  }
 
   Future<void> setDraft(
     String conversationId,
@@ -116,6 +137,7 @@ final class MessagingCoordinator extends ChangeNotifier {
       _syncCursor = local.syncCursor;
       _pending = local.pending;
       _drafts = Map.unmodifiable(local.drafts);
+      _recentEmoji = List.unmodifiable(local.recentEmoji);
       _eventSubscription = _realtime.events.listen((event) {
         if (event.type == 'event_available') {
           unawaited(syncNow());
@@ -225,6 +247,86 @@ final class MessagingCoordinator extends ChangeNotifier {
     await _tryDeliver(pending);
   }
 
+  Future<void> sendImage(
+    String conversationId, {
+    required String mediaId,
+    required int width,
+    required int height,
+    String? replyToMessageId,
+  }) async {
+    if (mediaId.trim().isEmpty ||
+        width < 1 ||
+        width > 20000 ||
+        height < 1 ||
+        height > 20000) {
+      throw const FormatException('图片消息参数无效。');
+    }
+    final pending = PendingTextMessage(
+      clientMessageId: _nextClientMessageId(),
+      conversationId: conversationId,
+      type: 'IMAGE',
+      mediaId: mediaId.trim(),
+      width: width,
+      height: height,
+      createdAt: DateTime.now().toUtc(),
+      replyToMessageId: replyToMessageId,
+    );
+    _pending = [..._pending, pending];
+    await _persistLocalState();
+    _notify();
+    await _tryDeliver(pending);
+  }
+
+  Future<void> sendMedia(
+    String conversationId, {
+    required String type,
+    required String mediaId,
+    int? width,
+    int? height,
+    String? fileName,
+    String? mimeType,
+    int? sizeBytes,
+    int? durationMs,
+    String? replyToMessageId,
+  }) async {
+    final normalizedType = type.toUpperCase();
+    if (!const {'GIF', 'STICKER', 'FILE', 'VOICE'}.contains(normalizedType) ||
+        mediaId.trim().isEmpty) {
+      throw const FormatException('媒体消息参数无效。');
+    }
+    if ((normalizedType == 'GIF' || normalizedType == 'STICKER') &&
+        (width == null ||
+            width < 1 ||
+            width > 20000 ||
+            height == null ||
+            height < 1 ||
+            height > 20000)) {
+      throw const FormatException('图片表情尺寸无效。');
+    }
+    if (normalizedType == 'VOICE' &&
+        (durationMs == null || durationMs < 250 || durationMs > 600000)) {
+      throw const FormatException('语音时长无效。');
+    }
+    final pending = PendingTextMessage(
+      clientMessageId: _nextClientMessageId(),
+      conversationId: conversationId,
+      type: normalizedType,
+      mediaId: mediaId.trim(),
+      width: width,
+      height: height,
+      fileName: fileName,
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+      durationMs: durationMs,
+      createdAt: DateTime.now().toUtc(),
+      replyToMessageId: replyToMessageId,
+    );
+    _pending = [..._pending, pending];
+    await _persistLocalState();
+    _notify();
+    await _tryDeliver(pending);
+  }
+
   Future<void> flushPending({bool includeFailed = false}) async {
     final snapshot = List<PendingTextMessage>.from(_pending);
     for (final item in snapshot) {
@@ -241,7 +343,15 @@ final class MessagingCoordinator extends ChangeNotifier {
           target = PendingTextMessage(
             clientMessageId: item.clientMessageId,
             conversationId: item.conversationId,
+            type: item.type,
             text: item.text,
+            mediaId: item.mediaId,
+            width: item.width,
+            height: item.height,
+            fileName: item.fileName,
+            mimeType: item.mimeType,
+            sizeBytes: item.sizeBytes,
+            durationMs: item.durationMs,
             createdAt: item.createdAt,
             replyToMessageId: item.replyToMessageId,
           );
@@ -272,7 +382,15 @@ final class MessagingCoordinator extends ChangeNotifier {
               ? PendingTextMessage(
                   clientMessageId: item.clientMessageId,
                   conversationId: item.conversationId,
+                  type: item.type,
                   text: item.text,
+                  mediaId: item.mediaId,
+                  width: item.width,
+                  height: item.height,
+                  fileName: item.fileName,
+                  mimeType: item.mimeType,
+                  sizeBytes: item.sizeBytes,
+                  durationMs: item.durationMs,
                   createdAt: item.createdAt,
                   replyToMessageId: item.replyToMessageId,
                 )
@@ -349,6 +467,10 @@ final class MessagingCoordinator extends ChangeNotifier {
     if (_syncing || _disposed) return;
     _syncing = true;
     try {
+      final previousConversations = <String, ConversationItem>{
+        for (final conversation in _conversations)
+          conversation.id: conversation,
+      };
       final changedConversations = <String>{};
       var hasMore = true;
       while (hasMore) {
@@ -375,6 +497,7 @@ final class MessagingCoordinator extends ChangeNotifier {
       }
       var readStateChanged = false;
       await refreshConversations();
+      _emitIncomingMessageNotices(previousConversations, changedConversations);
       for (final conversationId in changedConversations) {
         if (_messages.containsKey(conversationId)) {
           await loadMessages(conversationId, markRead: false);
@@ -411,14 +534,56 @@ final class MessagingCoordinator extends ChangeNotifier {
       return;
     }
     try {
-      await _gateway.sendText(
-        origin: origin,
-        accessToken: accessToken,
-        conversationId: pending.conversationId,
-        clientMessageId: pending.clientMessageId,
-        text: pending.text,
-        replyToMessageId: pending.replyToMessageId,
-      );
+      if (pending.isImage) {
+        final mediaId = pending.mediaId;
+        final width = pending.width;
+        final height = pending.height;
+        if (mediaId == null || width == null || height == null) {
+          _markPendingFailed(pending.clientMessageId, '图片消息数据不完整，无法继续发送。');
+          await _persistLocalState();
+          _notify();
+          return;
+        }
+        await _gateway.sendImage(
+          origin: origin,
+          accessToken: accessToken,
+          conversationId: pending.conversationId,
+          clientMessageId: pending.clientMessageId,
+          mediaId: mediaId,
+          width: width,
+          height: height,
+          replyToMessageId: pending.replyToMessageId,
+        );
+      } else if (pending.isMedia) {
+        final mediaId = pending.mediaId;
+        if (mediaId == null) {
+          _markPendingFailed(pending.clientMessageId, '媒体消息数据不完整，无法继续发送。');
+          await _persistLocalState();
+          _notify();
+          return;
+        }
+        await _gateway.sendMedia(
+          origin: origin,
+          accessToken: accessToken,
+          conversationId: pending.conversationId,
+          clientMessageId: pending.clientMessageId,
+          type: pending.type,
+          mediaId: mediaId,
+          width: pending.width,
+          height: pending.height,
+          durationMs: pending.durationMs,
+          replyToMessageId: pending.replyToMessageId,
+        );
+      } else {
+        await _gateway.sendText(
+          origin: origin,
+          accessToken: accessToken,
+          conversationId: pending.conversationId,
+          clientMessageId: pending.clientMessageId,
+          text: pending.text,
+          replyToMessageId: pending.replyToMessageId,
+        );
+      }
       _pending = _pending
           .where((item) => item.clientMessageId != pending.clientMessageId)
           .toList(growable: false);
@@ -428,13 +593,19 @@ final class MessagingCoordinator extends ChangeNotifier {
       _errorMessage = null;
       _notify();
     } on MessagingApiException catch (error) {
+      if (error.statusCode == 401 && onUnauthorized != null) {
+        _setError('登录会话正在刷新，这条消息已保留，刷新后会自动重试。');
+        unawaited(onUnauthorized!.call());
+        return;
+      }
       if (error.isRetryable) {
         _setError('消息暂未送达，将在恢复连接后自动重试：${error.message}');
         return;
       }
-      _markPendingFailed(pending.clientMessageId, error.message);
+      final friendly = _friendlyMessagingRejection(error);
+      _markPendingFailed(pending.clientMessageId, friendly);
       await _persistLocalState();
-      _setError('消息发送被服务端拒绝：${error.message}');
+      _setError(friendly);
     } catch (error) {
       _setError('网络不可用，消息已保留在待发送队列：${_friendlyError(error)}');
     }
@@ -448,6 +619,40 @@ final class MessagingCoordinator extends ChangeNotifier {
               : item,
         )
         .toList(growable: false);
+  }
+
+  void _emitIncomingMessageNotices(
+    Map<String, ConversationItem> previous,
+    Set<String> changedConversations,
+  ) {
+    for (final conversationId in changedConversations) {
+      final before = previous[conversationId];
+      final after = conversationFor(conversationId);
+      if (after == null) continue;
+      if (after.unreadCount <= (before?.unreadCount ?? 0)) continue;
+      final message = after.lastMessage;
+      if (message == null || message.senderUserId == currentUserId) continue;
+      final peer = after.peer;
+      final preview = message.isRecalled
+          ? '消息已撤回'
+          : message.type == 'TEXT'
+          ? (message.content?.text ?? '')
+          : '[${message.type}]';
+      if (!_incomingMessageController.isClosed) {
+        _incomingMessageController.add(
+          IncomingMessageNotice(
+            conversationId: conversationId,
+            senderUserId: message.senderUserId,
+            senderName: peer?.displayName ?? '新消息',
+            preview: preview,
+            unreadCount: after.unreadCount,
+            muted:
+                after.preferences.mutedUntil?.isAfter(DateTime.now().toUtc()) ==
+                true,
+          ),
+        );
+      }
+    }
   }
 
   void _upsertConversation(ConversationItem updated) {
@@ -492,7 +697,18 @@ final class MessagingCoordinator extends ChangeNotifier {
     syncCursor: _syncCursor,
     pending: _pending,
     drafts: _drafts,
+    recentEmoji: _recentEmoji,
   );
+
+  String _friendlyMessagingRejection(MessagingApiException error) {
+    return switch (error.code) {
+      'MESSAGING_BLOCKED' => '消息未发送：你或对方已将另一方加入黑名单。',
+      'MESSAGING_FORBIDDEN' => '消息未发送：当前好友关系或隐私设置不允许发送。',
+      'MESSAGING_CONFLICT' => '消息未发送：会话状态已变化，请同步后重试。',
+      'INVALID_REQUEST' => '消息未发送：消息内容或引用目标已失效。',
+      _ => '消息未发送：${error.message}',
+    };
+  }
 
   String _friendlyError(Object error) {
     if (error is MessagingApiException) return error.message;
@@ -524,8 +740,27 @@ final class MessagingCoordinator extends ChangeNotifier {
     _disposed = true;
     unawaited(_eventSubscription?.cancel());
     unawaited(_stateSubscription?.cancel());
+    unawaited(_incomingMessageController.close());
     if (_ownsRealtime) unawaited(_realtime.dispose());
     if (_ownsGateway) _gateway.close();
     super.dispose();
   }
+}
+
+final class IncomingMessageNotice {
+  const IncomingMessageNotice({
+    required this.conversationId,
+    required this.senderUserId,
+    required this.senderName,
+    required this.preview,
+    required this.unreadCount,
+    required this.muted,
+  });
+
+  final String conversationId;
+  final String senderUserId;
+  final String senderName;
+  final String preview;
+  final int unreadCount;
+  final bool muted;
 }

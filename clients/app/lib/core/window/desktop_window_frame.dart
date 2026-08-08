@@ -52,6 +52,17 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
     }
   }
 
+  Future<void> _startResize(String edge) async {
+    if (_maximized) return;
+    try {
+      await _windowChannel.invokeMethod<void>('startResize', edge);
+    } on PlatformException {
+      // Older runner: keep the rest of the window controls usable.
+    } on MissingPluginException {
+      // Expected in widget tests.
+    }
+  }
+
   Future<void> _toggleMaximize() async {
     try {
       final next =
@@ -86,65 +97,190 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
     final background = dark ? const Color(0xFF202020) : const Color(0xFFF4F4F4);
     final border = dark ? const Color(0xFF343434) : const Color(0xFFD8D8D8);
 
-    return ColoredBox(
-      color: background,
-      child: Column(
-        children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanStart: (_) => _invoke('startDrag'),
-            onDoubleTap: _toggleMaximize,
-            child: Container(
-              key: const Key('desktop-window-titlebar'),
-              height: 32,
-              decoration: BoxDecoration(
-                color: background,
-                border: Border(bottom: BorderSide(color: border, width: 0.5)),
-              ),
-              child: Row(
-                children: [
-                  const SizedBox(width: 12),
-                  Text(
-                    'DD',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: dark
-                          ? const Color(0xFFBDBDBD)
-                          : const Color(0xFF7B7B7B),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ColoredBox(
+            color: background,
+            child: Column(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (_) => _invoke('startDrag'),
+                  onDoubleTap: _toggleMaximize,
+                  child: Container(
+                    key: const Key('desktop-window-titlebar'),
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: background,
+                      border: Border(
+                        bottom: BorderSide(color: border, width: 0.5),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const SizedBox(width: 11),
+                        Text(
+                          'DD',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: dark
+                                ? const Color(0xFFBDBDBD)
+                                : const Color(0xFF7B7B7B),
+                          ),
+                        ),
+                        const Spacer(),
+                        _WindowButton(
+                          tooltip: _alwaysOnTop ? '取消置顶窗口' : '置顶窗口',
+                          onPressed: _toggleAlwaysOnTop,
+                          icon: Icons.push_pin_outlined,
+                          selected: _alwaysOnTop,
+                        ),
+                        _WindowButton(
+                          tooltip: '最小化',
+                          onPressed: () => _invoke('minimize'),
+                          icon: Icons.remove_rounded,
+                        ),
+                        _WindowButton(
+                          tooltip: _maximized ? '还原' : '最大化',
+                          onPressed: _toggleMaximize,
+                          icon: _maximized
+                              ? Icons.filter_none_rounded
+                              : Icons.crop_square_rounded,
+                        ),
+                        _WindowButton(
+                          tooltip: '关闭',
+                          onPressed: () => _invoke('close'),
+                          icon: Icons.close_rounded,
+                          danger: true,
+                        ),
+                      ],
                     ),
                   ),
-                  const Spacer(),
-                  _WindowButton(
-                    tooltip: _alwaysOnTop ? '取消置顶窗口' : '置顶窗口',
-                    onPressed: _toggleAlwaysOnTop,
-                    icon: Icons.push_pin_outlined,
-                    selected: _alwaysOnTop,
-                  ),
-                  _WindowButton(
-                    tooltip: '最小化',
-                    onPressed: () => _invoke('minimize'),
-                    icon: Icons.remove_rounded,
-                  ),
-                  _WindowButton(
-                    tooltip: _maximized ? '还原' : '最大化',
-                    onPressed: _toggleMaximize,
-                    icon: _maximized
-                        ? Icons.filter_none_rounded
-                        : Icons.crop_square_rounded,
-                  ),
-                  _WindowButton(
-                    tooltip: '关闭',
-                    onPressed: () => _invoke('close'),
-                    icon: Icons.close_rounded,
-                    danger: true,
-                  ),
-                ],
-              ),
+                ),
+                Expanded(child: widget.child),
+              ],
             ),
           ),
-          Expanded(child: widget.child),
+        ),
+        if (!_maximized) ...[
+          _ResizeHandle(
+            edge: 'top',
+            cursor: SystemMouseCursors.resizeUpDown,
+            left: 8,
+            right: 8,
+            top: 0,
+            height: 6,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'bottom',
+            cursor: SystemMouseCursors.resizeUpDown,
+            left: 8,
+            right: 8,
+            bottom: 0,
+            height: 6,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'left',
+            cursor: SystemMouseCursors.resizeLeftRight,
+            left: 0,
+            top: 8,
+            bottom: 8,
+            width: 6,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'right',
+            cursor: SystemMouseCursors.resizeLeftRight,
+            right: 0,
+            top: 8,
+            bottom: 8,
+            width: 6,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'topLeft',
+            cursor: SystemMouseCursors.resizeUpLeftDownRight,
+            left: 0,
+            top: 0,
+            width: 9,
+            height: 9,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'topRight',
+            cursor: SystemMouseCursors.resizeUpRightDownLeft,
+            right: 0,
+            top: 0,
+            width: 9,
+            height: 9,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'bottomLeft',
+            cursor: SystemMouseCursors.resizeUpRightDownLeft,
+            left: 0,
+            bottom: 0,
+            width: 9,
+            height: 9,
+            onResize: _startResize,
+          ),
+          _ResizeHandle(
+            edge: 'bottomRight',
+            cursor: SystemMouseCursors.resizeUpLeftDownRight,
+            right: 0,
+            bottom: 0,
+            width: 9,
+            height: 9,
+            onResize: _startResize,
+          ),
         ],
+      ],
+    );
+  }
+}
+
+class _ResizeHandle extends StatelessWidget {
+  const _ResizeHandle({
+    required this.edge,
+    required this.cursor,
+    required this.onResize,
+    this.left,
+    this.right,
+    this.top,
+    this.bottom,
+    this.width,
+    this.height,
+  });
+
+  final String edge;
+  final MouseCursor cursor;
+  final Future<void> Function(String edge) onResize;
+  final double? left;
+  final double? right;
+  final double? top;
+  final double? bottom;
+  final double? width;
+  final double? height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: left,
+      right: right,
+      top: top,
+      bottom: bottom,
+      width: width,
+      height: height,
+      child: MouseRegion(
+        cursor: cursor,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onPanStart: (_) => onResize(edge),
+        ),
       ),
     );
   }
@@ -194,15 +330,14 @@ class _WindowButtonState extends State<_WindowButton> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: widget.onPressed,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 90),
-            width: 46,
-            height: 32,
+          child: Container(
+            width: 42,
+            height: 28,
             color: _hovered
                 ? hoverColor
                 : (widget.selected ? selectedColor : Colors.transparent),
             alignment: Alignment.center,
-            child: Icon(widget.icon, size: 15, color: foreground),
+            child: Icon(widget.icon, size: 14, color: foreground),
           ),
         ),
       ),

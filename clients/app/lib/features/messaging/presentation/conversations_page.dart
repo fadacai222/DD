@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
+import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../calls/domain/call_session.dart';
@@ -22,6 +23,7 @@ class ConversationsPage extends StatefulWidget {
     this.onStartCall,
     this.onOpenContacts,
     this.coordinator,
+    this.hostVisible = true,
     this.embedded = false,
   });
 
@@ -35,6 +37,7 @@ class ConversationsPage extends StatefulWidget {
   onStartCall;
   final VoidCallback? onOpenContacts;
   final MessagingCoordinator? coordinator;
+  final bool hostVisible;
   final bool embedded;
 
   @override
@@ -171,6 +174,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
                   currentUserDisplayName: widget.currentUserDisplayName,
                   currentUserAvatarRevision: widget.currentUserAvatarRevision,
                   onStartCall: widget.onStartCall,
+                  hostVisible: widget.hostVisible,
                   embedded: true,
                 ),
         ),
@@ -619,6 +623,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
           currentUserDisplayName: widget.currentUserDisplayName,
           currentUserAvatarRevision: widget.currentUserAvatarRevision,
           onStartCall: widget.onStartCall,
+          hostVisible: true,
         ),
       ),
     );
@@ -633,10 +638,37 @@ class _ConversationsPageState extends State<ConversationsPage> {
   Future<void> _showConversationActions(ConversationItem conversation) async {
     final current =
         _coordinator.conversationFor(conversation.id) ?? conversation;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) =>
-          SafeArea(child: Wrap(children: _conversationActionTiles(current))),
+    final muted = _isMuted(current);
+    final action = await showDdActionSheet<String>(
+      context,
+      items: [
+        DdActionSheetItem(
+          value: 'pin',
+          icon: current.preferences.isPinned
+              ? Icons.push_pin_outlined
+              : Icons.push_pin_rounded,
+          label: current.preferences.isPinned ? '取消置顶' : '置顶聊天',
+        ),
+        DdActionSheetItem(
+          value: muted ? 'unmute' : 'mute-8h',
+          icon: muted
+              ? Icons.notifications_active_outlined
+              : Icons.notifications_off_outlined,
+          label: muted ? '取消免打扰' : '免打扰 8 小时',
+        ),
+        if (!muted)
+          const DdActionSheetItem(
+            value: 'mute-7d',
+            icon: Icons.bedtime_outlined,
+            label: '免打扰 7 天',
+          ),
+        if (current.unreadCount > 0)
+          const DdActionSheetItem(
+            value: 'read',
+            icon: Icons.mark_chat_read_outlined,
+            label: '标为已读',
+          ),
+      ],
     );
     await _applyConversationAction(current, action);
   }
@@ -717,39 +749,6 @@ class _ConversationsPageState extends State<ConversationsPage> {
     );
   }
 
-  List<Widget> _conversationActionTiles(ConversationItem conversation) {
-    final muted = _isMuted(conversation);
-    return [
-      ListTile(
-        leading: Icon(
-          conversation.preferences.isPinned
-              ? Icons.push_pin_outlined
-              : Icons.push_pin_rounded,
-        ),
-        title: Text(conversation.preferences.isPinned ? '取消置顶' : '置顶聊天'),
-        onTap: () => Navigator.pop(context, 'pin'),
-      ),
-      if (muted)
-        ListTile(
-          leading: const Icon(Icons.notifications_active_rounded),
-          title: const Text('取消免打扰'),
-          onTap: () => Navigator.pop(context, 'unmute'),
-        )
-      else ...[
-        ListTile(
-          leading: const Icon(Icons.notifications_off_rounded),
-          title: const Text('消息免打扰 8 小时'),
-          onTap: () => Navigator.pop(context, 'mute-8h'),
-        ),
-        ListTile(
-          leading: const Icon(Icons.bedtime_outlined),
-          title: const Text('消息免打扰 7 天'),
-          onTap: () => Navigator.pop(context, 'mute-7d'),
-        ),
-      ],
-    ];
-  }
-
   Future<void> _applyConversationAction(
     ConversationItem conversation,
     String? action,
@@ -794,7 +793,14 @@ class _ConversationsPageState extends State<ConversationsPage> {
     if (message == null) return '还没有消息';
     if (message.isRecalled) return '消息已撤回';
     if (message.type == 'TEXT') return message.content?.text ?? '';
-    return '[${message.type}]';
+    return switch (message.type) {
+      'IMAGE' => '[图片]',
+      'GIF' => '[GIF]',
+      'STICKER' => '[表情]',
+      'VOICE' => '[语音]',
+      'FILE' => '[文件]',
+      _ => '[${message.type}]',
+    };
   }
 
   String _conversationTime(DateTime time) {

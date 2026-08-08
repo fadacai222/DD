@@ -881,7 +881,7 @@ P4 hello 必须携带：
 - 失败指数退避。
 - 单条消费失败通过 SAVEPOINT 回到可提交状态，再记录 attempts / last_error / available_at。
 
-开发环境 `run-auth-dev.ps1` 会同时启动 API 与 Worker；`stop-auth-dev.ps1` 会同时停止二者。
+开发环境 `run-auth-dev.ps1` 现在会统一启动 PostgreSQL / Redis / Mailpit / LiveKit，并构建启动 API 与 Worker；`stop-auth-dev.ps1` 会按状态文件只停止本轮脚本负责的进程/容器。LiveKit 开发端口为 signal `17880`、RTC TCP `17881`、RTC UDP `17882`、TURN UDP `13478`，并按自动检测到的 LAN IP 对 Android 真机开放 LocalSubnet。
 
 ### 9.5 Redis 跨节点实时唤醒
 
@@ -920,12 +920,20 @@ API A 提交消息
 当前聊天自动推进 read sequence
 ```
 
-2026-08-08 本轮已完成第一批聊天体验补强：
+2026-08-08 已完成两轮聊天体验补强：
 
 ```text
 Web 置顶 / 免打扰：修复 CORS PATCH/DELETE 预检，并在成功响应后本地立即 upsert 会话
 已读 UI：Conversation 新增 peerLastReadSequence；对端关闭 readReceiptsEnabled 时返回 null
+已读可见性：只有聊天页真正可见 + App resumed + 当前 route 才推进 read sequence，隐藏 IndexedStack 不算“正在阅读”
+未读：主消息入口/会话行保留红色角标；Android 未读会话支持“标为已读”
 PC/Web 键盘：Enter=发送、Shift+Enter=换行；输入法 composing 阶段不发送
+Android IME：adjustNothing + viewInsets + 合成层 Transform，减少键盘动画驱动长消息列表反复 layout；点击聊天空白可收键盘
+移动菜单：紧凑圆角 Action Sheet，危险删除为红色
+Token：Access Token 到期前主动轮换；401 发送失败保留 pending 并触发 refresh，不丢 clientMessageId
+通知：前台非当前会话使用软件内提醒；Windows/Android 进程存活后台使用本地系统通知，杀进程 Push 仍留 P10
+头像：大图在客户端后台旋转/缩放/压缩后上传；点击对方头像进入资料页
+通话：聊天入口复用 P0 Call/LiveKit；主开发环境已真正启动/配置 LAN LiveKit，重复 hangup 等同状态动作幂等
 Unicode Emoji：基础选择器已接入输入区
 撤回：移除 2 分钟硬限制及 RECALL_WINDOW_EXPIRED，自己的消息默认不限时
 客户端：正式 Auth → 主壳，移动四入口、桌面窄导航+会话/聊天双栏、微信式灰底和白/浅绿气泡

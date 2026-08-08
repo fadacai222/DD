@@ -89,8 +89,10 @@ bool Win32Window::Create(const std::wstring& title, const Point& origin,
   const UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   const double scale_factor = static_cast<double>(dpi) / 96.0;
 
-  constexpr DWORD kFramelessStyle =
-      WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+  // Keep the standard overlapped capabilities so DWM can provide shadows,
+  // rounded corners and normal snap/maximize behaviour. WM_NCCALCSIZE below
+  // removes the visible native caption while preserving those capabilities.
+  constexpr DWORD kFramelessStyle = WS_OVERLAPPEDWINDOW;
   window_handle_ = ::CreateWindow(
       window_class, title.c_str(), kFramelessStyle,
       Scale(static_cast<int>(origin.x), scale_factor),
@@ -105,6 +107,20 @@ bool Win32Window::Create(const std::wstring& title, const Point& origin,
   ::SetWindowPos(window_handle_, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
+
+  // Windows 11 DWM: round the top-level window and suppress the native accent
+  // border that can otherwise flash over Flutter's custom title bar.
+  constexpr DWORD kCornerPreferenceAttribute = 33;
+  constexpr DWORD kRoundPreference = 2;
+  constexpr DWORD kBorderColorAttribute = 34;
+  constexpr COLORREF kNoBorderColor = 0xFFFFFFFE;
+  ::DwmSetWindowAttribute(
+      window_handle_,
+      static_cast<DWMWINDOWATTRIBUTE>(kCornerPreferenceAttribute),
+      &kRoundPreference, sizeof(kRoundPreference));
+  ::DwmSetWindowAttribute(
+      window_handle_, static_cast<DWMWINDOWATTRIBUTE>(kBorderColorAttribute),
+      &kNoBorderColor, sizeof(kNoBorderColor));
   UpdateTheme(window_handle_);
   return OnCreate();
 }
@@ -169,15 +185,12 @@ LRESULT Win32Window::MessageHandler(HWND window, UINT message, WPARAM wparam,
       }
       return ::DefWindowProc(window, message, wparam, lparam);
     case WM_NCHITTEST: {
-      const LRESULT default_hit = ::DefWindowProc(window, message, wparam, lparam);
-      if (default_hit != HTCLIENT) {
-        return default_hit;
-      }
+      if (::IsZoomed(window)) return HTCLIENT;
       RECT rect{};
       ::GetWindowRect(window, &rect);
       const int x = GET_X_LPARAM(lparam);
       const int y = GET_Y_LPARAM(lparam);
-      constexpr int border = 6;
+      const int border = ::MulDiv(8, ::GetDpiForWindow(window), 96);
       const bool left = x >= rect.left && x < rect.left + border;
       const bool right = x <= rect.right && x > rect.right - border;
       const bool top = y >= rect.top && y < rect.top + border;

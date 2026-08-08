@@ -139,6 +139,9 @@ func (store *callStore) applyAction(id string, now time.Time, participantIdentit
 		if participantIdentity != call.CalleeIdentity {
 			return callSession{}, errCallForbidden
 		}
+		if call.Status == callStatusAccepted {
+			return call, nil
+		}
 		if call.Status != callStatusRinging {
 			return callSession{}, errInvalidCallTransition
 		}
@@ -149,6 +152,9 @@ func (store *callStore) applyAction(id string, now time.Time, participantIdentit
 		if participantIdentity != call.CalleeIdentity {
 			return callSession{}, errCallForbidden
 		}
+		if call.Status == callStatusRejected {
+			return call, nil
+		}
 		if call.Status != callStatusRinging {
 			return callSession{}, errInvalidCallTransition
 		}
@@ -157,6 +163,9 @@ func (store *callStore) applyAction(id string, now time.Time, participantIdentit
 		call.EndedAt = &endedAt
 		call.EndReason = "rejected"
 	case "hangup":
+		if call.Status == callStatusEnded || call.Status == callStatusRejected {
+			return call, nil
+		}
 		if !isActiveCall(call) {
 			return callSession{}, errInvalidCallTransition
 		}

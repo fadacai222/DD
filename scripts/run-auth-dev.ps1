@@ -211,11 +211,18 @@ Ensure-AuthTokenSecret
 
 if ([string]::IsNullOrWhiteSpace($env:DD_POSTGRES_PASSWORD)) { throw 'DD_POSTGRES_PASSWORD is missing from infra/dev/.env.' }
 if ([string]::IsNullOrWhiteSpace($env:DD_REDIS_PASSWORD)) { throw 'DD_REDIS_PASSWORD is missing from infra/dev/.env.' }
+if ([string]::IsNullOrWhiteSpace($env:DD_MINIO_ROOT_USER)) { throw 'DD_MINIO_ROOT_USER is missing from infra/dev/.env.' }
+if ([string]::IsNullOrWhiteSpace($env:DD_MINIO_ROOT_PASSWORD)) { throw 'DD_MINIO_ROOT_PASSWORD is missing from infra/dev/.env.' }
 if ([string]::IsNullOrWhiteSpace($env:EMAIL_CODE_PEPPER)) { throw 'EMAIL_CODE_PEPPER is missing from infra/dev/.env.' }
+if ([string]::IsNullOrWhiteSpace($env:DD_LIVEKIT_API_KEY)) { throw 'DD_LIVEKIT_API_KEY is missing from infra/dev/.env.' }
+if ([string]::IsNullOrWhiteSpace($env:DD_LIVEKIT_API_SECRET)) { throw 'DD_LIVEKIT_API_SECRET is missing from infra/dev/.env.' }
+$env:DD_LAN_IP = $LanIP
 
 $postgresWasRunning = Test-ComposeServiceRunning -Service 'postgres'
 $mailpitWasRunning = Test-ComposeServiceRunning -Service 'mailpit'
 $redisWasRunning = Test-ComposeServiceRunning -Service 'redis'
+$minioWasRunning = Test-ComposeServiceRunning -Service 'minio'
+$livekitWasRunning = Test-ComposeServiceRunning -Service 'livekit'
 $webWasRunning = Test-Path -LiteralPath $WebStateFile
 $apiProcess = $null
 $workerProcess = $null
@@ -227,11 +234,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Unable to configure Auth LAN firewall.' }
     $firewallReady = $true
 
-    & docker compose --env-file $EnvFile -f $ComposeFile up -d postgres mailpit redis
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to start PostgreSQL/Mailpit/Redis.' }
+    & docker compose --env-file $EnvFile -f $ComposeFile up -d postgres mailpit redis minio livekit
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to start PostgreSQL/Mailpit/Redis/MinIO/LiveKit.' }
     Wait-ComposeHealthy -Service 'postgres'
     Wait-ComposeHealthy -Service 'mailpit'
     Wait-ComposeHealthy -Service 'redis'
+    Wait-ComposeHealthy -Service 'minio'
+    Wait-ComposeHealthy -Service 'livekit'
+    & docker compose --env-file $EnvFile -f $ComposeFile run --rm minio-init
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize private MinIO bucket dd-media.' }
 
     $env:IM_ENV = 'development'
     $env:IM_PORT = '18473'
@@ -243,15 +254,20 @@ try {
     $env:DATABASE_URL = "postgres://dd:$($env:DD_POSTGRES_PASSWORD)@127.0.0.1:15432/dd?sslmode=disable"
     $escapedRedisPassword = [System.Uri]::EscapeDataString($env:DD_REDIS_PASSWORD)
     $env:REDIS_URL = "redis://:$escapedRedisPassword@127.0.0.1:16379/0"
+    $env:MEDIA_S3_ENDPOINT = "http://$LanIP`:19000"
+    $env:MEDIA_S3_BUCKET = 'dd-media'
+    $env:MEDIA_S3_REGION = 'us-east-1'
+    $env:MEDIA_S3_ACCESS_KEY = $env:DD_MINIO_ROOT_USER
+    $env:MEDIA_S3_SECRET_KEY = $env:DD_MINIO_ROOT_PASSWORD
     $env:SMTP_HOST = '127.0.0.1'
     $env:SMTP_PORT = '11025'
     $env:SMTP_FROM = 'noreply@dd.local'
     $env:SMTP_USERNAME = ''
     $env:SMTP_PASSWORD = ''
     $env:SMTP_REQUIRE_TLS = 'false'
-    $env:LIVEKIT_URL = ''
-    $env:LIVEKIT_API_KEY = ''
-    $env:LIVEKIT_API_SECRET = ''
+    $env:LIVEKIT_URL = "ws://$LanIP`:17880"
+    $env:LIVEKIT_API_KEY = $env:DD_LIVEKIT_API_KEY
+    $env:LIVEKIT_API_SECRET = $env:DD_LIVEKIT_API_SECRET
 
     Push-Location $ServerDir
     try {
@@ -313,6 +329,8 @@ try {
         postgresStartedByScript = -not $postgresWasRunning
         mailpitStartedByScript = -not $mailpitWasRunning
         redisStartedByScript = -not $redisWasRunning
+        minioStartedByScript = -not $minioWasRunning
+        livekitStartedByScript = -not $livekitWasRunning
         webStartedByScript = $startedWeb
         webUrl = $webUrl
     } | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding UTF8
@@ -323,6 +341,10 @@ try {
     Write-Host "  Android API: http://$LanIP`:18473"
     Write-Host '  Mailpit:     http://127.0.0.1:18025'
     Write-Host '  Redis:       127.0.0.1:16379'
+    Write-Host "  MinIO API:   http://$LanIP`:19000 (private dd-media bucket)"
+    Write-Host '  MinIO UI:    http://127.0.0.1:19001'
+    Write-Host "  LiveKit:     ws://$LanIP`:17880"
+    Write-Host "  RTC:         TCP $LanIP`:17881 / UDP $LanIP`:17882 / TURN UDP $LanIP`:13478"
     if ($null -ne $webUrl) { Write-Host "  Web:         $webUrl" }
     Write-Host "  API PID:     $($apiProcess.Id)"
     Write-Host "  Worker PID:  $($workerProcess.Id)"
@@ -349,6 +371,12 @@ catch {
     }
     if (-not $redisWasRunning) {
         & docker compose --env-file $EnvFile -f $ComposeFile stop redis *> $null
+    }
+    if (-not $minioWasRunning) {
+        & docker compose --env-file $EnvFile -f $ComposeFile stop minio *> $null
+    }
+    if (-not $livekitWasRunning) {
+        & docker compose --env-file $EnvFile -f $ComposeFile stop livekit *> $null
     }
     if ($firewallReady) {
         & $FirewallScript -LanIP $LanIP -Remove *> $null

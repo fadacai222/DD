@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 
 $RuleGroup = 'DD Auth Dev LAN'
 $RuleName = 'DD Auth Dev LAN TCP'
+$UdpRuleName = 'DD Auth Dev LAN UDP'
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -48,8 +49,21 @@ New-NetFirewallRule `
     -Profile Private `
     -Protocol TCP `
     -LocalAddress $LanIP `
-    -LocalPort 18473 `
+    -LocalPort 18473,17880,17881,19000 `
     -RemoteAddress LocalSubnet `
     -EdgeTraversalPolicy Block | Out-Null
 
-Write-Host "DD Auth Dev firewall ready for $LanIP`:18473 (Private + LocalSubnet only)."
+New-NetFirewallRule `
+    -DisplayName $UdpRuleName `
+    -Group $RuleGroup `
+    -Direction Inbound `
+    -Action Allow `
+    -Enabled True `
+    -Profile Private `
+    -Protocol UDP `
+    -LocalAddress $LanIP `
+    -LocalPort 17882,13478 `
+    -RemoteAddress LocalSubnet `
+    -EdgeTraversalPolicy Block | Out-Null
+
+Write-Host "DD Auth Dev firewall ready for API + LiveKit + private media on $LanIP (Private + LocalSubnet only)."

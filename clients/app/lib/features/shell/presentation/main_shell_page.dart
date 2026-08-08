@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/media/avatar_image_processor.dart';
+import '../../../core/notifications/app_notification_service.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/data/auth_api_client.dart';
 import '../../auth/domain/auth_session.dart';
@@ -13,6 +15,7 @@ import '../../calls/presentation/call_debug_controller.dart';
 import '../../calls/presentation/chat_call_page.dart';
 import '../../calls/presentation/two_party_call_controller.dart';
 import '../../contacts/presentation/contacts_page.dart';
+import '../../messaging/application/messaging_coordinator.dart';
 import '../../messaging/presentation/conversations_page.dart';
 
 class MainShellPage extends StatefulWidget {
@@ -35,8 +38,13 @@ class MainShellPage extends StatefulWidget {
   State<MainShellPage> createState() => _MainShellPageState();
 }
 
-class _MainShellPageState extends State<MainShellPage> {
+class _MainShellPageState extends State<MainShellPage>
+    with WidgetsBindingObserver {
   int _index = 0;
+  late final MessagingCoordinator _messagingCoordinator;
+  late final AppNotificationService _notificationService;
+  StreamSubscription<IncomingMessageNotice>? _incomingMessageSubscription;
+  AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   late final CallDebugController _callMediaController;
   late final TwoPartyCallController _callController;
   late final Future<bool> _callStartup;
@@ -47,6 +55,19 @@ class _MainShellPageState extends State<MainShellPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _messagingCoordinator = MessagingCoordinator(
+      origin: widget.origin,
+      accessToken: widget.session.tokens.accessToken,
+      currentUserId: widget.session.user.id,
+      deviceId: widget.session.device.id,
+      onUnauthorized: widget.onRefreshSession,
+    );
+    _notificationService = AppNotificationService();
+    unawaited(_notificationService.initialize());
+    _incomingMessageSubscription = _messagingCoordinator.incomingMessages
+        .listen(_handleIncomingMessage);
+    unawaited(_messagingCoordinator.initialize());
     _callMediaController = CallDebugController();
     _callController = TwoPartyCallController(_callMediaController);
     _callController.addListener(_handleCallState);
@@ -58,7 +79,15 @@ class _MainShellPageState extends State<MainShellPage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_incomingMessageSubscription?.cancel());
+    _messagingCoordinator.dispose();
     _callController.removeListener(_handleCallState);
     _callController.dispose();
     _callMediaController.dispose();
@@ -76,13 +105,17 @@ class _MainShellPageState extends State<MainShellPage> {
           if (desktop) {
             return Row(
               children: [
-                _DesktopRail(
-                  origin: widget.origin,
-                  session: widget.session,
-                  avatarRevision: _avatarRevision,
-                  selectedIndex: _index,
-                  onSelected: (value) => setState(() => _index = value),
-                  onSettings: _openAccountManagement,
+                AnimatedBuilder(
+                  animation: _messagingCoordinator,
+                  builder: (context, _) => _DesktopRail(
+                    origin: widget.origin,
+                    session: widget.session,
+                    avatarRevision: _avatarRevision,
+                    unreadCount: _messagingCoordinator.totalUnreadCount,
+                    selectedIndex: _index,
+                    onSelected: (value) => setState(() => _index = value),
+                    onSettings: _openAccountManagement,
+                  ),
                 ),
                 const VerticalDivider(width: 1, thickness: 0.5),
                 Expanded(child: SafeArea(left: false, child: pageStack)),
@@ -97,23 +130,29 @@ class _MainShellPageState extends State<MainShellPage> {
                   selectedIndex: _index,
                   onDestinationSelected: (value) =>
                       setState(() => _index = value),
-                  destinations: const [
+                  destinations: [
                     NavigationDestination(
-                      icon: Icon(Icons.chat_bubble_outline_rounded),
-                      selectedIcon: Icon(Icons.chat_bubble_rounded),
+                      icon: _UnreadNavigationIcon(
+                        coordinator: _messagingCoordinator,
+                        icon: Icons.chat_bubble_outline_rounded,
+                      ),
+                      selectedIcon: _UnreadNavigationIcon(
+                        coordinator: _messagingCoordinator,
+                        icon: Icons.chat_bubble_rounded,
+                      ),
                       label: '消息',
                     ),
-                    NavigationDestination(
+                    const NavigationDestination(
                       icon: Icon(Icons.people_outline_rounded),
                       selectedIcon: Icon(Icons.people_rounded),
                       label: '联系人',
                     ),
-                    NavigationDestination(
+                    const NavigationDestination(
                       icon: Icon(Icons.explore_outlined),
                       selectedIcon: Icon(Icons.explore_rounded),
                       label: '发现',
                     ),
-                    NavigationDestination(
+                    const NavigationDestination(
                       icon: Icon(Icons.person_outline_rounded),
                       selectedIcon: Icon(Icons.person_rounded),
                       label: '我的',
@@ -142,6 +181,8 @@ class _MainShellPageState extends State<MainShellPage> {
         deviceId: widget.session.device.id,
         currentUserDisplayName: widget.session.user.displayName,
         currentUserAvatarRevision: _avatarRevision,
+        coordinator: _messagingCoordinator,
+        hostVisible: _index == 0,
         onStartCall: _startCall,
         onOpenContacts: () => setState(() => _index = 1),
         embedded: true,
@@ -168,6 +209,53 @@ class _MainShellPageState extends State<MainShellPage> {
         onLogout: widget.onLogout,
       ),
     ];
+  }
+
+  void _handleIncomingMessage(IncomingMessageNotice notice) {
+    if (!mounted || notice.muted) return;
+    final alreadyReading =
+        _index == 0 &&
+        _messagingCoordinator.activeConversationId == notice.conversationId;
+    if (alreadyReading) return;
+
+    if (_lifecycleState == AppLifecycleState.resumed) {
+      final preview = notice.preview.trim().isEmpty
+          ? '新消息'
+          : notice.preview.trim();
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 3),
+            content: Row(
+              children: [
+                const Icon(
+                  Icons.chat_bubble_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '${notice.senderName}：$preview',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      return;
+    }
+
+    unawaited(
+      _notificationService.showMessage(
+        senderName: notice.senderName,
+        preview: notice.preview,
+        conversationId: notice.conversationId,
+      ),
+    );
   }
 
   void _handleCallState() {
@@ -238,29 +326,23 @@ class _MainShellPageState extends State<MainShellPage> {
     );
     final file = await openFile(acceptedTypeGroups: const [imageGroup]);
     if (file == null || !mounted) return;
-    final bytes = await file.readAsBytes();
-    if (bytes.isEmpty || bytes.length > 2 * 1024 * 1024) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('头像必须小于 2 MiB。')));
-      return;
-    }
-    final contentType =
-        file.mimeType?.split(';').first.trim().toLowerCase() ??
-        _avatarContentType(file.name);
-    if (contentType == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('只支持 JPEG、PNG、WebP 头像。')));
+    final sourceLength = await file.length();
+    if (!mounted) return;
+    if (sourceLength > maxAvatarSourceBytes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('源图片超过 64 MiB，为避免设备内存耗尽暂不处理。')),
+      );
       return;
     }
     setState(() => _avatarBusy = true);
     try {
+      final source = await file.readAsBytes();
+      final processed = await processAvatarImage(source);
       final updatedAt = await widget.authGateway.uploadProfileAvatar(
         origin: widget.origin,
         accessToken: widget.session.tokens.accessToken,
-        bytes: bytes,
-        contentType: contentType,
+        bytes: processed.bytes,
+        contentType: processed.contentType,
       );
       ProfileAvatar.evict(widget.origin, widget.session.user.id);
       if (!mounted) return;
@@ -304,14 +386,6 @@ class _MainShellPageState extends State<MainShellPage> {
     }
   }
 
-  String? _avatarContentType(String name) {
-    final lower = name.toLowerCase();
-    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-    if (lower.endsWith('.png')) return 'image/png';
-    if (lower.endsWith('.webp')) return 'image/webp';
-    return null;
-  }
-
   Future<void> _openAccountManagement() async {
     final logout = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
@@ -333,6 +407,7 @@ class _DesktopRail extends StatelessWidget {
     required this.origin,
     required this.session,
     required this.avatarRevision,
+    required this.unreadCount,
     required this.selectedIndex,
     required this.onSelected,
     required this.onSettings,
@@ -341,6 +416,7 @@ class _DesktopRail extends StatelessWidget {
   final Uri origin;
   final AuthSession session;
   final int avatarRevision;
+  final int unreadCount;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final VoidCallback onSettings;
@@ -370,6 +446,7 @@ class _DesktopRail extends StatelessWidget {
               icon: Icons.chat_bubble_outline_rounded,
               selectedIcon: Icons.chat_bubble_rounded,
               label: '消息',
+              badgeCount: unreadCount,
               selected: selectedIndex == 0,
               onTap: () => onSelected(0),
             ),
@@ -414,12 +491,69 @@ class _DesktopRail extends StatelessWidget {
   }
 }
 
+class _UnreadNavigationIcon extends StatelessWidget {
+  const _UnreadNavigationIcon({required this.coordinator, required this.icon});
+
+  final MessagingCoordinator coordinator;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: coordinator,
+      builder: (context, _) => Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Icon(icon),
+          if (coordinator.totalUnreadCount > 0)
+            Positioned(
+              right: -9,
+              top: -7,
+              child: _UnreadBadge(count: coordinator.totalUnreadCount),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UnreadBadge extends StatelessWidget {
+  const _UnreadBadge({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = count > 99 ? '99+' : '$count';
+    return Container(
+      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: DdColors.danger,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white, width: 1),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 9,
+          height: 1,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
 class _RailButton extends StatelessWidget {
   const _RailButton({
     super.key,
     required this.icon,
     required this.selectedIcon,
     required this.label,
+    this.badgeCount = 0,
     required this.selected,
     required this.onTap,
   });
@@ -427,6 +561,7 @@ class _RailButton extends StatelessWidget {
   final IconData icon;
   final IconData selectedIcon;
   final String label;
+  final int badgeCount;
   final bool selected;
   final VoidCallback onTap;
 
@@ -440,10 +575,22 @@ class _RailButton extends StatelessWidget {
         height: 52,
         child: InkWell(
           onTap: onTap,
-          child: Icon(
-            selected ? selectedIcon : icon,
-            size: 25,
-            color: selected ? DdColors.green : const Color(0xFFA4A4A4),
+          child: Stack(
+            alignment: Alignment.center,
+            clipBehavior: Clip.none,
+            children: [
+              Icon(
+                selected ? selectedIcon : icon,
+                size: 25,
+                color: selected ? DdColors.green : const Color(0xFFA4A4A4),
+              ),
+              if (badgeCount > 0)
+                Positioned(
+                  left: 34,
+                  top: 8,
+                  child: _UnreadBadge(count: badgeCount),
+                ),
+            ],
           ),
         ),
       ),

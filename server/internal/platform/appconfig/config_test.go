@@ -260,6 +260,27 @@ func TestLoadRejectsInvalidPorts(t *testing.T) {
 	}
 }
 
+func TestLoadMediaS3RequiresCompleteCredentials(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("MEDIA_S3_ENDPOINT", "http://127.0.0.1:19000")
+	t.Setenv("MEDIA_S3_BUCKET", "dd-media")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "MEDIA_S3_ACCESS_KEY") {
+		t.Fatalf("Load() error = %v, want media credential validation error", err)
+	}
+
+	t.Setenv("MEDIA_S3_ACCESS_KEY", "ddadmin")
+	t.Setenv("MEDIA_S3_SECRET_KEY", "dev-secret")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() with media credentials error = %v", err)
+	}
+	if config.MediaS3Endpoint != "http://127.0.0.1:19000" || config.MediaS3Bucket != "dd-media" {
+		t.Fatalf("media S3 config = %#v", config)
+	}
+}
+
 func clearConfigEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -279,6 +300,13 @@ func clearConfigEnvironment(t *testing.T) {
 		"DATABASE_URL_FILE",
 		"REDIS_URL",
 		"REDIS_URL_FILE",
+		"MEDIA_S3_ENDPOINT",
+		"MEDIA_S3_BUCKET",
+		"MEDIA_S3_REGION",
+		"MEDIA_S3_ACCESS_KEY",
+		"MEDIA_S3_ACCESS_KEY_FILE",
+		"MEDIA_S3_SECRET_KEY",
+		"MEDIA_S3_SECRET_KEY_FILE",
 		"AUTH_TOKEN_SECRET",
 		"AUTH_TOKEN_SECRET_FILE",
 		"IM_REGISTRATION_MODE",

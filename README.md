@@ -144,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-auth-dev.ps1
 ```
 
-具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。2026-08-08 的 P4 真人验收已暴露 Web 置顶/免打扰、已读状态 UI、回车发送、Emoji/Sticker/GIF、撤回规则、图片/语音条和整体视觉方向等缺口；当前人工批次已暂停，等聊天体验修复版后再重新验收。
+具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。2026-08-08 的 P4 真人验收暴露出的 Web 置顶/免打扰、误已读/红点、回车发送、移动菜单、Android 键盘、Windows 原生窗口、头像大图、通知和聊天内 LiveKit 通话问题，当前修复版已经完成自动回归与 Windows/Web/Android 构建。下一步是**先 stop/start 一次旧 auth-dev，让新版主开发环境启动 LiveKit，再按人工测试文档复测失败项**；Sticker/GIF、图片消息、语音条、独立“已送达”和杀进程 Push 仍属于后续阶段。
 
 详细当前完成度见 [开发进度跟踪.md](开发进度跟踪.md)。
 

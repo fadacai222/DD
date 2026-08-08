@@ -1,6 +1,8 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
+#include <variant>
 
 #include <flutter/standard_method_codec.h>
 
@@ -61,6 +63,30 @@ bool FlutterWindow::OnCreate() {
         if (call.method_name() == "startDrag") {
           ::ReleaseCapture();
           ::SendMessage(window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "startResize") {
+          const auto* edge = std::get_if<std::string>(call.arguments());
+          if (edge == nullptr) {
+            result->Error("INVALID_RESIZE_EDGE", "Resize edge is missing");
+            return;
+          }
+          const int hit = *edge == "left"       ? HTLEFT
+                          : *edge == "right"     ? HTRIGHT
+                          : *edge == "top"       ? HTTOP
+                          : *edge == "bottom"    ? HTBOTTOM
+                          : *edge == "topLeft"   ? HTTOPLEFT
+                          : *edge == "topRight"  ? HTTOPRIGHT
+                          : *edge == "bottomLeft" ? HTBOTTOMLEFT
+                          : *edge == "bottomRight" ? HTBOTTOMRIGHT
+                                                   : HTNOWHERE;
+          if (hit == HTNOWHERE) {
+            result->Error("INVALID_RESIZE_EDGE", "Resize edge is invalid");
+            return;
+          }
+          ::ReleaseCapture();
+          ::SendMessage(window, WM_NCLBUTTONDOWN, hit, 0);
           result->Success();
           return;
         }

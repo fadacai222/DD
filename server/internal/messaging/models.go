@@ -39,7 +39,14 @@ type UserPreview struct {
 }
 
 type TextContent struct {
-	Text string `json:"text"`
+	Text       string `json:"text,omitempty"`
+	MediaID    string `json:"mediaId,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	FileName   string `json:"fileName,omitempty"`
+	MIMEType   string `json:"mimeType,omitempty"`
+	SizeBytes  int64  `json:"sizeBytes,omitempty"`
+	DurationMS int    `json:"durationMs,omitempty"`
 }
 
 type Message struct {
@@ -75,17 +82,17 @@ type ConversationPreferences struct {
 }
 
 type Conversation struct {
-	ID               string                  `json:"id"`
-	Type             string                  `json:"type"`
-	Peer             *UserPreview            `json:"peer,omitempty"`
-	LastSequence     int64                   `json:"lastSequence"`
+	ID                   string                  `json:"id"`
+	Type                 string                  `json:"type"`
+	Peer                 *UserPreview            `json:"peer,omitempty"`
+	LastSequence         int64                   `json:"lastSequence"`
 	LastReadSequence     int64                   `json:"lastReadSequence"`
 	PeerLastReadSequence *int64                  `json:"peerLastReadSequence,omitempty"`
 	UnreadCount          int64                   `json:"unreadCount"`
-	LastMessage      *Message                `json:"lastMessage,omitempty"`
-	Preferences      ConversationPreferences `json:"preferences"`
-	CreatedAt        time.Time               `json:"createdAt"`
-	UpdatedAt        time.Time               `json:"updatedAt"`
+	LastMessage          *Message                `json:"lastMessage,omitempty"`
+	Preferences          ConversationPreferences `json:"preferences"`
+	CreatedAt            time.Time               `json:"createdAt"`
+	UpdatedAt            time.Time               `json:"updatedAt"`
 }
 
 type DirectConversationInput struct {
@@ -138,17 +145,52 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 	if input.Type == "" {
 		input.Type = "TEXT"
 	}
-	if input.Type != "TEXT" {
+	switch input.Type {
+	case "TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE":
+	default:
 		return SendMessageInput{}, ErrUnsupportedType
 	}
 	if input.Content == nil {
 		return SendMessageInput{}, ErrInvalidInput
 	}
-	if strings.TrimSpace(input.Content.Text) == "" || utf8.RuneCountInString(input.Content.Text) > MaximumTextRunes {
-		return SendMessageInput{}, ErrInvalidInput
-	}
-	if strings.ContainsRune(input.Content.Text, '\x00') {
-		return SendMessageInput{}, ErrInvalidInput
+	switch input.Type {
+	case "TEXT":
+		if strings.TrimSpace(input.Content.Text) == "" || utf8.RuneCountInString(input.Content.Text) > MaximumTextRunes {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		if strings.ContainsRune(input.Content.Text, '\x00') || hasMediaFields(input.Content) {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+	case "IMAGE", "GIF", "STICKER":
+		mediaID, err := normalizeMediaID(input.Content.MediaID)
+		if err != nil {
+			return SendMessageInput{}, err
+		}
+		if input.Content.Width < 1 || input.Content.Width > 20000 || input.Content.Height < 1 || input.Content.Height > 20000 {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		if input.Content.Text != "" || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		input.Content.MediaID = mediaID
+	case "FILE":
+		mediaID, err := normalizeMediaID(input.Content.MediaID)
+		if err != nil {
+			return SendMessageInput{}, err
+		}
+		if input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		input.Content.MediaID = mediaID
+	case "VOICE":
+		mediaID, err := normalizeMediaID(input.Content.MediaID)
+		if err != nil {
+			return SendMessageInput{}, err
+		}
+		if input.Content.DurationMS < 250 || input.Content.DurationMS > 10*60*1000 || input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		input.Content.MediaID = mediaID
 	}
 	if input.ReplyToMessageID != nil {
 		value := strings.TrimSpace(*input.ReplyToMessageID)
@@ -158,6 +200,18 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		input.ReplyToMessageID = &value
 	}
 	return input, nil
+}
+
+func hasMediaFields(content *TextContent) bool {
+	return content.MediaID != "" || content.Width != 0 || content.Height != 0 || content.FileName != "" || content.MIMEType != "" || content.SizeBytes != 0 || content.DurationMS != 0
+}
+
+func normalizeMediaID(raw string) (string, error) {
+	mediaID := strings.TrimSpace(raw)
+	if _, err := uuid.Parse(mediaID); err != nil {
+		return "", ErrInvalidInput
+	}
+	return mediaID, nil
 }
 
 func normalizeHistoryLimit(limit int) (int, error) {

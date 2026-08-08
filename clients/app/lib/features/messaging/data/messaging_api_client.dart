@@ -35,6 +35,30 @@ abstract interface class MessagingGateway {
     String? replyToMessageId,
   });
 
+  Future<ChatMessage> sendImage({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String mediaId,
+    required int width,
+    required int height,
+    String? replyToMessageId,
+  });
+
+  Future<ChatMessage> sendMedia({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String type,
+    required String mediaId,
+    int? width,
+    int? height,
+    int? durationMs,
+    String? replyToMessageId,
+  });
+
   Future<ConversationItem> updatePreferences({
     required Uri origin,
     required String accessToken,
@@ -175,7 +199,70 @@ final class MessagingApiClient implements MessagingGateway {
         'clientMessageId': clientMessageId,
         'type': 'TEXT',
         'content': {'text': text},
-        if (replyToMessageId != null) 'replyToMessageId': replyToMessageId,
+        'replyToMessageId': ?replyToMessageId,
+      },
+    );
+    return ChatMessage.fromJson(_decodeData(response, const {201}));
+  }
+
+  @override
+  Future<ChatMessage> sendImage({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String mediaId,
+    required int width,
+    required int height,
+    String? replyToMessageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/conversations/$conversationId/messages',
+      accessToken,
+      method: 'POST',
+      body: {
+        'clientMessageId': clientMessageId,
+        'type': 'IMAGE',
+        'content': {'mediaId': mediaId, 'width': width, 'height': height},
+        'replyToMessageId': ?replyToMessageId,
+      },
+    );
+    return ChatMessage.fromJson(_decodeData(response, const {201}));
+  }
+
+  @override
+  Future<ChatMessage> sendMedia({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+    required String clientMessageId,
+    required String type,
+    required String mediaId,
+    int? width,
+    int? height,
+    int? durationMs,
+    String? replyToMessageId,
+  }) async {
+    final normalizedType = type.toUpperCase();
+    if (!const {'GIF', 'STICKER', 'FILE', 'VOICE'}.contains(normalizedType)) {
+      throw const FormatException('Unsupported media message type');
+    }
+    final response = await _authorized(
+      origin,
+      '/api/v1/conversations/$conversationId/messages',
+      accessToken,
+      method: 'POST',
+      body: {
+        'clientMessageId': clientMessageId,
+        'type': normalizedType,
+        'content': {
+          'mediaId': mediaId,
+          'width': ?width,
+          'height': ?height,
+          'durationMs': ?durationMs,
+        },
+        'replyToMessageId': ?replyToMessageId,
       },
     );
     return ChatMessage.fromJson(_decodeData(response, const {201}));
@@ -201,9 +288,8 @@ final class MessagingApiClient implements MessagingGateway {
       accessToken,
       method: 'PATCH',
       body: {
-        if (isPinned != null) 'isPinned': isPinned,
-        if (mutedUntil != null)
-          'mutedUntil': mutedUntil.toUtc().toIso8601String(),
+        'isPinned': ?isPinned,
+        'mutedUntil': ?mutedUntil?.toUtc().toIso8601String(),
         if (clearMute) 'clearMute': true,
       },
     );

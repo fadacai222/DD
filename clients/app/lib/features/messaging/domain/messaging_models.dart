@@ -18,14 +18,47 @@ final class MessagingUserPreview {
 }
 
 final class TextMessageContent {
-  const TextMessageContent({required this.text});
+  const TextMessageContent({
+    this.text = '',
+    this.mediaId,
+    this.width,
+    this.height,
+    this.fileName,
+    this.mimeType,
+    this.sizeBytes,
+    this.durationMs,
+  });
 
   factory TextMessageContent.fromJson(Map<String, dynamic> json) =>
       TextMessageContent(
         text: json['text'] is String ? json['text'] as String : '',
+        mediaId: json['mediaId'] is String ? json['mediaId'] as String : null,
+        width: json['width'] is int ? json['width'] as int : null,
+        height: json['height'] is int ? json['height'] as int : null,
+        fileName: json['fileName'] is String ? json['fileName'] as String : null,
+        mimeType: json['mimeType'] is String ? json['mimeType'] as String : null,
+        sizeBytes: json['sizeBytes'] is int ? json['sizeBytes'] as int : null,
+        durationMs: json['durationMs'] is int ? json['durationMs'] as int : null,
       );
 
   final String text;
+  final String? mediaId;
+  final int? width;
+  final int? height;
+  final String? fileName;
+  final String? mimeType;
+  final int? sizeBytes;
+  final int? durationMs;
+
+  bool get isImage =>
+      mediaId != null &&
+      mediaId!.isNotEmpty &&
+      width != null &&
+      width! > 0 &&
+      height != null &&
+      height! > 0;
+
+  bool get hasMedia => mediaId != null && mediaId!.isNotEmpty;
 }
 
 final class ChatMessage {
@@ -240,8 +273,16 @@ final class PendingTextMessage {
   const PendingTextMessage({
     required this.clientMessageId,
     required this.conversationId,
-    required this.text,
     required this.createdAt,
+    this.type = 'TEXT',
+    this.text = '',
+    this.mediaId,
+    this.width,
+    this.height,
+    this.fileName,
+    this.mimeType,
+    this.sizeBytes,
+    this.durationMs,
     this.replyToMessageId,
     this.lastError,
   });
@@ -250,7 +291,17 @@ final class PendingTextMessage {
       PendingTextMessage(
         clientMessageId: _requiredString(json, 'clientMessageId'),
         conversationId: _requiredString(json, 'conversationId'),
-        text: _requiredString(json, 'text'),
+        type: json['type'] is String && (json['type'] as String).isNotEmpty
+            ? (json['type'] as String).toUpperCase()
+            : 'TEXT',
+        text: json['text'] is String ? json['text'] as String : '',
+        mediaId: json['mediaId'] is String ? json['mediaId'] as String : null,
+        width: json['width'] is int ? json['width'] as int : null,
+        height: json['height'] is int ? json['height'] as int : null,
+        fileName: json['fileName'] is String ? json['fileName'] as String : null,
+        mimeType: json['mimeType'] is String ? json['mimeType'] as String : null,
+        sizeBytes: json['sizeBytes'] is int ? json['sizeBytes'] as int : null,
+        durationMs: json['durationMs'] is int ? json['durationMs'] as int : null,
         createdAt: _requiredDate(json, 'createdAt'),
         replyToMessageId: json['replyToMessageId'] is String
             ? json['replyToMessageId'] as String
@@ -262,15 +313,38 @@ final class PendingTextMessage {
 
   final String clientMessageId;
   final String conversationId;
+  final String type;
   final String text;
+  final String? mediaId;
+  final int? width;
+  final int? height;
+  final String? fileName;
+  final String? mimeType;
+  final int? sizeBytes;
+  final int? durationMs;
   final DateTime createdAt;
   final String? replyToMessageId;
   final String? lastError;
 
+  bool get isImage => type == 'IMAGE';
+  bool get isGif => type == 'GIF';
+  bool get isSticker => type == 'STICKER';
+  bool get isFile => type == 'FILE';
+  bool get isVoice => type == 'VOICE';
+  bool get isMedia => isImage || isGif || isSticker || isFile || isVoice;
+
   PendingTextMessage copyWith({String? lastError}) => PendingTextMessage(
     clientMessageId: clientMessageId,
     conversationId: conversationId,
+    type: type,
     text: text,
+    mediaId: mediaId,
+    width: width,
+    height: height,
+    fileName: fileName,
+    mimeType: mimeType,
+    sizeBytes: sizeBytes,
+    durationMs: durationMs,
     createdAt: createdAt,
     replyToMessageId: replyToMessageId,
     lastError: lastError,
@@ -279,7 +353,15 @@ final class PendingTextMessage {
   Map<String, dynamic> toJson() => {
     'clientMessageId': clientMessageId,
     'conversationId': conversationId,
-    'text': text,
+    'type': type,
+    if (text.isNotEmpty) 'text': text,
+    if (mediaId != null) 'mediaId': mediaId,
+    if (width != null) 'width': width,
+    if (height != null) 'height': height,
+    if (fileName != null) 'fileName': fileName,
+    if (mimeType != null) 'mimeType': mimeType,
+    if (sizeBytes != null) 'sizeBytes': sizeBytes,
+    if (durationMs != null) 'durationMs': durationMs,
     'createdAt': createdAt.toUtc().toIso8601String(),
     if (replyToMessageId != null) 'replyToMessageId': replyToMessageId,
     if (lastError != null) 'lastError': lastError,

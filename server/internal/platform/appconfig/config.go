@@ -46,6 +46,11 @@ type Config struct {
 	LiveKitAPISecret   string
 	DatabaseURL        string
 	RedisURL           string
+	MediaS3Endpoint    string
+	MediaS3Bucket      string
+	MediaS3Region      string
+	MediaS3AccessKey   string
+	MediaS3SecretKey   string
 	AuthTokenSecret    string
 	RegistrationMode   RegistrationMode
 	EmailCodePepper    string
@@ -96,6 +101,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	redisURL, err := ReadSecret("REDIS_URL")
+	if err != nil {
+		return Config{}, err
+	}
+	mediaS3AccessKey, err := ReadSecret("MEDIA_S3_ACCESS_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	mediaS3SecretKey, err := ReadSecret("MEDIA_S3_SECRET_KEY")
 	if err != nil {
 		return Config{}, err
 	}
@@ -157,6 +170,11 @@ func Load() (Config, error) {
 		LiveKitAPISecret:   liveKitAPISecret,
 		DatabaseURL:        databaseURL,
 		RedisURL:           redisURL,
+		MediaS3Endpoint:    strings.TrimRight(strings.TrimSpace(os.Getenv("MEDIA_S3_ENDPOINT")), "/"),
+		MediaS3Bucket:      strings.TrimSpace(os.Getenv("MEDIA_S3_BUCKET")),
+		MediaS3Region:      strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
+		MediaS3AccessKey:   mediaS3AccessKey,
+		MediaS3SecretKey:   mediaS3SecretKey,
 		AuthTokenSecret:    authTokenSecret,
 		RegistrationMode:   registrationMode,
 		EmailCodePepper:    emailCodePepper,
@@ -176,6 +194,14 @@ func Load() (Config, error) {
 func (config Config) Validate() error {
 	if utf8.RuneCountInString(strings.TrimSpace(config.InstanceName)) > 80 {
 		return errors.New("IM_INSTANCE_NAME must contain at most 80 characters")
+	}
+	if strings.TrimSpace(config.MediaS3Endpoint) != "" {
+		if strings.TrimSpace(config.MediaS3Bucket) == "" {
+			return errors.New("MEDIA_S3_BUCKET is required when MEDIA_S3_ENDPOINT is configured")
+		}
+		if strings.TrimSpace(config.MediaS3AccessKey) == "" || strings.TrimSpace(config.MediaS3SecretKey) == "" {
+			return errors.New("MEDIA_S3_ACCESS_KEY and MEDIA_S3_SECRET_KEY are required when MEDIA_S3_ENDPOINT is configured")
+		}
 	}
 	if strings.TrimSpace(config.DatabaseURL) != "" {
 		if len(config.AuthTokenSecret) < minimumProductionSecret {

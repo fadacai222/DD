@@ -208,6 +208,30 @@ http://<电脑LAN-IP>:18473
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-call-poc-lan.ps1
 ```
 
+### 主开发环境已接入 LiveKit（2026-08-08）
+
+独立 `run-call-poc-lan.ps1` 仍保留给 P0 媒体专项诊断，但**日常聊天内通话不再要求另外启动 PoC 环境**。主开发入口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
+```
+
+现在会与 PostgreSQL / Redis / Mailpit 一起启动 LiveKit，并按检测到的 LAN IP 提供：
+
+```text
+Signal      ws://<LAN-IP>:17880
+RTC/TCP     <LAN-IP>:17881
+RTC/UDP     <LAN-IP>:17882/udp
+TURN/UDP    <LAN-IP>:13478/udp
+API         http://<LAN-IP>:18473
+```
+
+防火墙只开放 Private Profile + LocalSubnet。聊天页的语音/视频按钮继续复用 P0 Call API 和 LiveKit Token 链，但媒体服务已经并入主开发环境，不再出现“UI 有通话入口、实际环境却把 LIVEKIT_URL/API_KEY/SECRET 清空”的断链。
+
+旧版本 `run-auth-dev.ps1` 启动出来的环境不会热更新容器配置。**截至 2026-08-08 12:14，当前机器仍是 10:23 启动的旧 auth-dev，LiveKit service 未运行；测试聊天内通话前必须先执行 `stop-auth-dev.ps1` 再重新 `run-auth-dev.ps1`。**
+
+另外 Call PoC 的 accept/reject/hangup 对重复的同状态操作现按幂等处理；客户端遇到 `INVALID_CALL_STATE` 会重新获取/清理最新状态，避免一端已经结束后另一端“挂不断”。这些仍属于 PoC 状态机加固，不等于 P7 数据库持久化通话已完成。
+
 Android Debug APK 一键安装：
 
 ```powershell
@@ -283,7 +307,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-call-poc.ps1
 - 2026-08-07：Windows ↔ Web 真实浏览器媒体互通通过；修复 LiveKit 误公布 Docker `172.18.x.x` ICE 地址后，浏览器 PeerConnection 正常建立。
 - 2026-08-07：Android LAN Docker 路径预验证通过：`192.168.6.158:18473` 与 `:7880` HTTP 探针均为 200，LiveKit 启动日志确认 `nodeIP=192.168.6.158`。
 - 2026-08-07：Windows ↔ Android 真机媒体互通通过；呼叫/接听、音频、视频、静音、摄像头开关与挂断同步正常。
-- 2026-08-08：用户确认 `人工测试清单.md` 本轮项目全部通过，包括 Web ↔ Android、Windows/Web/Android 三端 relay-only TURN、Android 后台/锁屏/短时断网恢复、蓝牙音频路由和窄屏布局。
+- 2026-08-08：用户确认 `人工测试清单.md` P0 批次全部通过，包括 Web ↔ Android、Windows/Web/Android 三端 relay-only TURN、Android 后台/锁屏/短时断网恢复、蓝牙音频路由和窄屏布局。
+- 2026-08-08：聊天主壳接入语音/视频后发现主 `run-auth-dev.ps1` 仍清空 LiveKit 配置且未启动 LiveKit，导致 Android ↔ Windows 无法进入媒体房间；现已将 LAN LiveKit/RTC/TURN 合并进主开发环境，并补通话重复状态动作幂等。新的聊天内通话真人回归仍待重启旧 auth-dev 后执行。
 
 ## 尚未完成
 
@@ -308,7 +333,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target wind
 
 1. P2 正式注册/登录/Access/Refresh Token 已开始落地，但当前 P0 呼叫接口还没有接入正式 Auth 会话，客户端仍可自行填写呼叫身份；最终 P7 通话必须改为从已认证 user/device 会话派生身份和权限。
 2. 通话状态目前保存在 Go 进程内存中，服务重启会丢失；已有 45 秒 PoC 级自动超时，但没有数据库持久化、离线推送和未接来电历史。
-3. 当前“响铃”是前台页面状态，没有系统铃声、后台来电通知、锁屏接听和多设备仲裁。
+3. 当前“响铃”主要仍是客户端进程存活时的前台/实时连接状态；普通消息已接本地系统通知基线，但通话还没有完整的系统级来电通知、杀进程唤醒、锁屏接听和多设备仲裁。
 4. `LIVEKIT_URL=auto` 会根据请求 Host 推导本地 LiveKit 地址，只用于开发环境；生产必须配置固定的可信 `wss://` 地址。
 5. 当前 Compose 已有开发级 TURN/UDP `3478` + relay `30000-30019/udp`，但没有生产级 TLS、TURN/TLS、高可用和公网 NAT 配置；LAN relay-only 验证不能替代公网 TURN/TLS 验收。
 6. Android Debug 允许明文 HTTP；Release 默认禁止明文通信。

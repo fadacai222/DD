@@ -105,8 +105,9 @@ abstract final class AppTheme {
             if (states.contains(WidgetState.disabled)) {
               return dark ? const Color(0xFF3A3A3A) : const Color(0xFFDADADA);
             }
-            if (states.contains(WidgetState.pressed))
+            if (states.contains(WidgetState.pressed)) {
               return DdColors.greenPressed;
+            }
             return DdColors.green;
           }),
           foregroundColor: const WidgetStatePropertyAll(Colors.white),
@@ -119,8 +120,9 @@ abstract final class AppTheme {
       textButtonTheme: TextButtonThemeData(
         style: ButtonStyle(
           foregroundColor: WidgetStateProperty.resolveWith((states) {
-            if (states.contains(WidgetState.disabled))
+            if (states.contains(WidgetState.disabled)) {
               return DdColors.textTertiary;
+            }
             return DdColors.greenPressed;
           }),
         ),

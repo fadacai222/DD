@@ -198,7 +198,14 @@ final class TwoPartyCallController extends ChangeNotifier {
     try {
       await action();
     } on CallApiException catch (error) {
-      _setError(_friendlyApiError(error), preserveCall: true);
+      if (error.code == 'INVALID_CALL_STATE') {
+        await _recoverActiveCall(clearWhenMissing: true);
+        if (_currentCall?.isActive == true) {
+          _setError('通话状态已自动同步，请再试一次。', preserveCall: true);
+        }
+      } else {
+        _setError(_friendlyApiError(error), preserveCall: true);
+      }
     } catch (error) {
       _setError('通话操作失败：${_safeError(error)}', preserveCall: true);
     } finally {
@@ -221,7 +228,7 @@ final class TwoPartyCallController extends ChangeNotifier {
     }
   }
 
-  Future<void> _recoverActiveCall() async {
+  Future<void> _recoverActiveCall({bool clearWhenMissing = false}) async {
     final apiBaseUri = _apiBaseUri;
     if (_closed || apiBaseUri == null || _identity.isEmpty) return;
 
@@ -232,6 +239,26 @@ final class TwoPartyCallController extends ChangeNotifier {
       );
       if (active != null) {
         await _applyCall(active);
+      } else if (clearWhenMissing) {
+        final stale = _currentCall;
+        if (_media.connected) await _media.leave();
+        if (stale != null && stale.isActive) {
+          _currentCall = CallSession(
+            id: stale.id,
+            roomName: stale.roomName,
+            callerIdentity: stale.callerIdentity,
+            callerName: stale.callerName,
+            calleeIdentity: stale.calleeIdentity,
+            kind: stale.kind,
+            status: CallSessionStatus.ended,
+            createdAt: stale.createdAt,
+            acceptedAt: stale.acceptedAt,
+            endedAt: DateTime.now().toUtc(),
+            endReason: 'state_changed',
+          );
+        }
+        _errorMessage = null;
+        _notify();
       }
     } catch (error) {
       _setError('恢复通话状态失败：${_safeError(error)}', preserveCall: true);
@@ -285,7 +312,7 @@ final class TwoPartyCallController extends ChangeNotifier {
         enableCamera: call.kind == CallKind.video,
       );
       if (!joined) {
-        throw StateError('媒体房间连接失败');
+        throw StateError(_media.lastError ?? '媒体房间连接失败');
       }
     } catch (error) {
       _setError('无法进入音视频房间：${_safeError(error)}', preserveCall: true);
@@ -385,7 +412,7 @@ final class TwoPartyCallController extends ChangeNotifier {
     return switch (error.code) {
       'CALL_BUSY' => '对方或你正在通话中。',
       'CALL_NOT_FOUND' => '该通话已经不存在。',
-      'INVALID_CALL_STATE' => '通话状态已变化，请以另一端最新状态为准。',
+      'INVALID_CALL_STATE' => '通话状态已变化，正在自动同步。',
       'CALL_FORBIDDEN' => '当前身份无权操作这通电话。',
       _ => '通话服务错误：${error.message}',
     };
