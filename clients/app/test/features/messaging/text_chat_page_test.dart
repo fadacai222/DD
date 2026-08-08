@@ -288,12 +288,14 @@ final class _ChatStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required List<String> heardVoiceMessageIds,
   }) async {
     state = MessagingLocalState(
       syncCursor: syncCursor,
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
       recentEmoji: List<String>.from(recentEmoji),
+      heardVoiceMessageIds: List<String>.from(heardVoiceMessageIds),
     );
   }
 }

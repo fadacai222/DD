@@ -214,6 +214,7 @@ final class _ConversationStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required List<String> heardVoiceMessageIds,
   }) async {}
 
   @override

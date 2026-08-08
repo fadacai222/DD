@@ -10,12 +10,14 @@ final class MessagingLocalState {
     required this.pending,
     this.drafts = const {},
     this.recentEmoji = const [],
+    this.heardVoiceMessageIds = const [],
   });
 
   final int syncCursor;
   final List<PendingTextMessage> pending;
   final Map<String, String> drafts;
   final List<String> recentEmoji;
+  final List<String> heardVoiceMessageIds;
 }
 
 abstract interface class MessagingLocalStore {
@@ -25,6 +27,7 @@ abstract interface class MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required List<String> heardVoiceMessageIds,
   });
   Future<void> clear();
 }
@@ -37,7 +40,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
   }) : _storage = storage ?? const FlutterSecureStorage(),
        _key = 'dd.messaging.v1.$userId.$deviceId';
 
-  static const int schemaVersion = 2;
+  static const int schemaVersion = 3;
   final FlutterSecureStorage _storage;
   final String _key;
 
@@ -84,12 +87,23 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
           if (recentEmoji.length == 12) break;
         }
       }
+      final heardVoiceMessageIds = <String>[];
+      final rawHeardVoiceMessageIds = decoded['heardVoiceMessageIds'];
+      if (rawHeardVoiceMessageIds is List) {
+        for (final item in rawHeardVoiceMessageIds.whereType<String>()) {
+          final id = item.trim();
+          if (id.isEmpty || heardVoiceMessageIds.contains(id)) continue;
+          heardVoiceMessageIds.add(id);
+          if (heardVoiceMessageIds.length == 500) break;
+        }
+      }
       final cursor = decoded['syncCursor'];
       return MessagingLocalState(
         syncCursor: cursor is int && cursor >= 0 ? cursor : 0,
         pending: pending,
         drafts: drafts,
         recentEmoji: List.unmodifiable(recentEmoji),
+        heardVoiceMessageIds: List.unmodifiable(heardVoiceMessageIds),
       );
     } catch (_) {
       await clear();
@@ -103,6 +117,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required List<String> heardVoiceMessageIds,
   }) {
     return _storage.write(
       key: _key,
@@ -112,6 +127,9 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
         'pending': pending.map((item) => item.toJson()).toList(growable: false),
         'drafts': drafts,
         'recentEmoji': recentEmoji.take(12).toList(growable: false),
+        'heardVoiceMessageIds': heardVoiceMessageIds
+            .take(500)
+            .toList(growable: false),
       }),
     );
   }

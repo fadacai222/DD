@@ -53,6 +53,7 @@ final class MessagingCoordinator extends ChangeNotifier {
   List<PendingTextMessage> _pending = const [];
   Map<String, String> _drafts = const {};
   List<String> _recentEmoji = const [];
+  List<String> _heardVoiceMessageIds = const [];
   StreamSubscription<RealtimeEvent>? _eventSubscription;
   StreamSubscription<RealtimeConnectionState>? _stateSubscription;
   int _syncCursor = 0;
@@ -94,6 +95,16 @@ final class MessagingCoordinator extends ChangeNotifier {
   bool canLoadOlder(String conversationId) => _hasMore[conversationId] == true;
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
   List<String> get recentEmoji => List.unmodifiable(_recentEmoji);
+  bool isVoiceHeard(String messageId) => _heardVoiceMessageIds.contains(messageId);
+
+  Future<void> markVoiceHeard(String messageId) async {
+    final id = messageId.trim();
+    if (id.isEmpty || _heardVoiceMessageIds.contains(id)) return;
+    final next = <String>[id, ..._heardVoiceMessageIds];
+    _heardVoiceMessageIds = List.unmodifiable(next.take(500));
+    await _persistLocalState();
+    _notify();
+  }
 
   Future<void> rememberRecentEmoji(String emoji) async {
     if (emoji.trim().isEmpty) return;
@@ -138,6 +149,7 @@ final class MessagingCoordinator extends ChangeNotifier {
       _pending = local.pending;
       _drafts = Map.unmodifiable(local.drafts);
       _recentEmoji = List.unmodifiable(local.recentEmoji);
+      _heardVoiceMessageIds = List.unmodifiable(local.heardVoiceMessageIds);
       _eventSubscription = _realtime.events.listen((event) {
         if (event.type == 'event_available') {
           unawaited(syncNow());
@@ -698,6 +710,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     pending: _pending,
     drafts: _drafts,
     recentEmoji: _recentEmoji,
+    heardVoiceMessageIds: _heardVoiceMessageIds,
   );
 
   String _friendlyMessagingRejection(MessagingApiException error) {

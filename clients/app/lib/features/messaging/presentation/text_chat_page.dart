@@ -118,7 +118,6 @@ class _TextChatPageState extends State<TextChatPage>
   Duration _voicePosition = Duration.zero;
   Duration _voiceDuration = Duration.zero;
   double _voicePlaybackRate = 1;
-  final Set<String> _heardVoiceMessageIds = {};
   ChatMessage? _replyingTo;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
@@ -662,7 +661,7 @@ class _TextChatPageState extends State<TextChatPage>
             1.0,
           )
         : 0.0;
-    final heard = _heardVoiceMessageIds.contains(message.id);
+    final heard = widget.coordinator.isVoiceHeard(message.id);
     return SizedBox(
       width: width,
       child: InkWell(
@@ -760,9 +759,9 @@ class _TextChatPageState extends State<TextChatPage>
           _playingVoiceMessageId = message.id;
           _voicePosition = Duration.zero;
           _voiceDuration = Duration.zero;
-          _heardVoiceMessageIds.add(message.id);
         });
       }
+      await widget.coordinator.markVoiceHeard(message.id);
       await _voicePlayer.play(UrlSource(grant.url.toString()));
     } catch (_) {
       if (mounted) _showImageError('语音播放失败，请稍后重试。');

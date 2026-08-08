@@ -429,7 +429,7 @@
   - Verify：Android/iOS/Windows/Web 权限、取消、断网、重试测试。
 
 - [ ] **P5-011 Flutter 语音播放**
-  - Progress：授权 URL + audioplayers 播放/暂停、进度、已听标记、1x/1.5x/2x 倍速已接；真实波形、移动端听筒/扬声器切换和音频焦点专项仍待补。
+  - Progress：授权 URL + audioplayers 播放/暂停、进度、1x/1.5x/2x 倍速已接；“已听”状态现进入 versioned 本地消息状态并最多保留 500 条，重启后仍可恢复，不再只活在页面内存。真实波形、移动端听筒/扬声器切换和音频焦点专项仍待补。
   - Acceptance：波形、进度、已听、倍速、听筒/扬声器策略。
   - Verify：多条连续播放和音频焦点测试。
 

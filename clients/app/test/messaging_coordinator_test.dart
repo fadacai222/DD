@@ -166,6 +166,34 @@ void main() {
     expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000789']);
   });
 
+  test('heard voice state is persisted and restored', () async {
+    final store = _MemoryMessagingStore();
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-heard',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-heard',
+      gateway: _FakeMessagingGateway(),
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.initialize();
+    await coordinator.markVoiceHeard('voice-message-1');
+    await coordinator.markVoiceHeard('voice-message-1');
+    expect(coordinator.isVoiceHeard('voice-message-1'), isTrue);
+    expect(store.state.heardVoiceMessageIds, ['voice-message-1']);
+  });
+
   test('recent emoji is deduplicated, ordered and capped', () async {
     final store = _MemoryMessagingStore();
     final realtime = RealtimeClient(
@@ -542,12 +570,14 @@ final class _MemoryMessagingStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required List<String> heardVoiceMessageIds,
   }) async {
     state = MessagingLocalState(
       syncCursor: syncCursor,
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
       recentEmoji: List<String>.from(recentEmoji),
+      heardVoiceMessageIds: List<String>.from(heardVoiceMessageIds),
     );
   }
 }
