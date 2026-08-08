@@ -102,6 +102,7 @@ class _TextChatPageState extends State<TextChatPage>
   bool _imageSending = false;
   bool _gifSending = false;
   bool _stickerSending = false;
+  bool _fileSending = false;
   bool _voiceRecording = false;
   bool _voiceCancelGesture = false;
   bool _voiceSending = false;
@@ -485,6 +486,10 @@ class _TextChatPageState extends State<TextChatPage>
         message.type == 'VOICE' &&
         message.content?.hasMedia == true &&
         message.content?.durationMs != null;
+    final fileContent =
+        !recalled &&
+        message.type == 'FILE' &&
+        message.content?.hasMedia == true;
     final maxWidth = widget.embedded ? 520.0 : 290.0;
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxWidth),
@@ -520,6 +525,8 @@ class _TextChatPageState extends State<TextChatPage>
                   _chatImage(message.content!)
                 else if (voiceContent)
                   _voiceBubble(message, mine)
+                else if (fileContent)
+                  _fileBubble(message, mine)
                 else
                   Text(
                     recalled
@@ -577,6 +584,62 @@ class _TextChatPageState extends State<TextChatPage>
     final peerRead = conversation.peerLastReadSequence;
     if (peerRead != null && peerRead >= message.sequence) return '已读';
     return '已发送';
+  }
+
+  Widget _fileBubble(ChatMessage message, bool mine) {
+    final content = message.content!;
+    final name = (content.fileName ?? '').trim().isEmpty
+        ? '文件'
+        : content.fileName!.trim();
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => unawaited(_openMediaFile(content.mediaId!)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.insert_drive_file_outlined, size: 32),
+            const SizedBox(width: 9),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  if (content.sizeBytes != null)
+                    Text(
+                      _formatBytes(content.sizeBytes!),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textSecondary,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMediaFile(String mediaId) async {
+    try {
+      final grant = await _downloadGrantFor(mediaId);
+      await Clipboard.setData(ClipboardData(text: grant.url.toString()));
+      if (mounted) _showImageError('临时下载地址已复制，可在浏览器中打开。');
+    } catch (_) {
+      if (mounted) _showImageError('文件下载地址获取失败，请稍后重试。');
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KiB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MiB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GiB';
   }
 
   Widget _voiceBubble(ChatMessage message, bool mine) {
@@ -1700,9 +1763,14 @@ class _TextChatPageState extends State<TextChatPage>
                 },
               ),
               const SizedBox(width: 10),
-              const _DisabledComposerAction(
+              _ComposerAction(
                 icon: Icons.insert_drive_file_outlined,
-                label: '文件',
+                label: _fileSending ? '上传中…' : '文件',
+                enabled: !_fileSending,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  unawaited(_pickAndSendFile());
+                },
               ),
             ],
           ),
@@ -1865,6 +1933,70 @@ class _TextChatPageState extends State<TextChatPage>
     } finally {
       if (mounted) setState(() => _gifSending = false);
     }
+  }
+
+  Future<void> _pickAndSendFile() async {
+    if (_fileSending) return;
+    final file = await openFile();
+    if (file == null || !mounted) return;
+    final sourceLength = await file.length();
+    if (!mounted) return;
+    if (sourceLength <= 0) {
+      _showImageError('不能发送空文件。');
+      return;
+    }
+    // 当前实现会把文件读入内存后上传；在改成流式上传前主动限制，避免
+    // 2 GiB 服务端上限反过来把移动端/桌面端进程直接撑爆。
+    if (sourceLength > 256 * 1024 * 1024) {
+      _showImageError('文件超过 256 MiB；流式上传完成前客户端暂不接受更大的文件。');
+      return;
+    }
+    setState(() => _fileSending = true);
+    try {
+      final source = await file.readAsBytes();
+      final mimeType = _fileMimeType(file.name);
+      final grant = await _mediaApi.uploadMedia(
+        origin: widget.coordinator.origin,
+        accessToken: widget.coordinator.accessToken,
+        bytes: source,
+        fileName: file.name.isEmpty ? 'file.bin' : file.name,
+        mimeType: mimeType,
+        purpose: 'CHAT_FILE',
+      );
+      final replyToMessageId = _replyingTo?.id;
+      if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
+      await widget.coordinator.sendMedia(
+        widget.conversation.id,
+        type: 'FILE',
+        mediaId: grant.mediaId,
+        fileName: file.name,
+        mimeType: mimeType,
+        sizeBytes: source.length,
+        replyToMessageId: replyToMessageId,
+      );
+      if (mounted) _scrollToBottom();
+    } on MessagingApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } on FormatException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('文件发送失败，请稍后重试。');
+    } finally {
+      if (mounted) setState(() => _fileSending = false);
+    }
+  }
+
+  String _fileMimeType(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.txt') || lower.endsWith('.log') || lower.endsWith('.md')) {
+      return 'text/plain';
+    }
+    if (lower.endsWith('.zip')) return 'application/zip';
+    if (lower.endsWith('.json')) return 'application/json';
+    if (lower.endsWith('.mp3')) return 'audio/mpeg';
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    return 'application/octet-stream';
   }
 
   void _showImageError(String message) {

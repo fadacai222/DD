@@ -380,15 +380,18 @@
 
 ## P5：媒体、文件、图片与语音条
 
-- [ ] **P5-001 创建媒体表和对象命名规则**
+- [x] **P5-001 创建媒体表和对象命名规则**
+  - Progress：`000007_media` 已落地 media_objects / media_uploads / media_variants；对象 Key 使用用途前缀 + 年月 + 24-byte CSPRNG 随机值，不暴露用户 ID/文件名。
   - Acceptance：随机 Key、归属、状态、哈希、派生文件和软删除完整。
   - Verify：迁移和对象 Key 不可猜测测试。
 
-- [ ] **P5-002 实现上传申请与配额预占**
+- [x] **P5-002 实现上传申请与配额预占**
+  - Progress：上传申请按用户 advisory transaction lock 原子预占；限制 32 个活动上传和 512 MiB 活动预留，按 IMAGE/GIF/STICKER/VOICE/FILE 校验 MIME 与大小。
   - Acceptance：大小、类型、用户和实例配额校验；并发不超卖。
   - Verify：并发配额测试。
 
-- [ ] **P5-003 实现预签名上传和完成确认**
+- [x] **P5-003 实现预签名上传和完成确认**
+  - Progress：S3/MinIO 预签名 PUT、SHA-256/Content-Type/Size 完成校验、READY 状态和幂等 complete 已接；消息发送只接受发送者本人 READY 且 purpose 匹配的 mediaId。
   - Acceptance：短时效、限定对象和大小；未确认对象不可发消息。
   - Verify：跨用户、过期和篡改请求测试。
 
@@ -404,27 +407,33 @@
   - Acceptance：超时未确认对象、孤儿派生文件可安全清理。
   - Verify：清理任务幂等测试。
 
-- [ ] **P5-007 实现受控下载**
+- [x] **P5-007 实现受控下载**
+  - Progress：owner 或仍可见该消息的 ACTIVE conversation member 才能取得短时下载 URL；本地删除/撤回后不再通过消息关系授权。
   - Acceptance：下载前验证资源权限；签名 URL 短时有效。
   - Verify：IDOR 和 URL 转发测试。
 
 - [ ] **P5-008 Flutter 图片消息**
+  - Progress：跨端文件选择、后台解码/EXIF 方向处理/JPEG 压缩、预签名上传、可靠消息、缩略显示、点击大图和授权下载已接；剪贴板粘贴、桌面拖拽、精细上传进度/取消仍待补。
   - Acceptance：移动端相册/文件选择、Windows/Web 文件选择、剪贴板粘贴、桌面拖拽、压缩、上传进度、缩略图、点击大图预览、发送失败重试/取消。
   - Verify：大图、断网、取消、粘贴、拖拽、跨端显示测试。
 
 - [ ] **P5-009 Flutter 文件消息和桌面拖拽**
+  - Progress：普通文件选择/私有上传/FILE 可靠消息/文件名与大小气泡/短时授权下载地址已接；当前客户端因内存上传主动限 256 MiB，后续需流式上传、进度/取消和桌面拖拽。
   - Acceptance：大小提示、进度、取消、重试和打开策略安全。
   - Verify：Windows/Web/Android 测试。
 
 - [ ] **P5-010 Flutter 语音录制**
+  - Progress：`record` 已接 WAV 录制；Android 长按/上滑取消、桌面/Web 点击开始结束、10 分钟上限、私有上传并进入 durable pending 已实现，真实权限/设备行为留晚间人工验收。
   - Acceptance：Android/iOS 支持按住说话、上滑取消、录制计时、最大时长、权限拒绝恢复；Windows/Web 支持点击开始/结束录音；录音完成进入可靠发送队列。
   - Verify：Android/iOS/Windows/Web 权限、取消、断网、重试测试。
 
 - [ ] **P5-011 Flutter 语音播放**
+  - Progress：授权 URL + audioplayers 播放/暂停、进度、已听标记、1x/1.5x/2x 倍速已接；真实波形、移动端听筒/扬声器切换和音频焦点专项仍待补。
   - Acceptance：波形、进度、已听、倍速、听筒/扬声器策略。
   - Verify：多条连续播放和音频焦点测试。
 
 - [ ] **P5-012 Sticker / GIF 媒体管线**
+  - Progress：本地 GIF 与 PNG/WebP/GIF 图片表情已经走对象存储、可靠消息和授权下载；自定义贴纸收藏/贴纸包、最近表情管理和可选第三方 GIF 搜索仍待开发。
   - Acceptance：本地 GIF 可上传/发送/播放；静态 Sticker 可收藏并组成自定义贴纸包；资源走对象存储和权限校验。第三方 GIF 搜索 Provider 为可选插件，不得成为核心依赖。
   - Verify：无第三方网络时本地 GIF/Sticker 仍可发送；跨用户越权、超大文件和畸形媒体测试。
 

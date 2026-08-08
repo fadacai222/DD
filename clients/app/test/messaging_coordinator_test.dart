@@ -84,6 +84,47 @@ void main() {
     expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000456']);
   });
 
+  test('file message stays durable while offline and preserves metadata', () async {
+    final store = _MemoryMessagingStore();
+    final gateway = _FakeMessagingGateway()..failNextSend = true;
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-file',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-file',
+      gateway: gateway,
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.sendMedia(
+      'conversation-a',
+      type: 'FILE',
+      mediaId: '00000000-0000-0000-0000-000000000654',
+      fileName: 'report.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 2048,
+    );
+    expect(coordinator.pending, hasLength(1));
+    expect(coordinator.pending.single.type, 'FILE');
+    expect(coordinator.pending.single.fileName, 'report.pdf');
+    expect(store.state.pending.single.sizeBytes, 2048);
+
+    await coordinator.flushPending();
+    expect(coordinator.pending, isEmpty);
+    expect(gateway.sentMediaTypes, ['FILE']);
+    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000654']);
+  });
+
   test('voice message stays durable while offline and preserves duration', () async {
     final store = _MemoryMessagingStore();
     final gateway = _FakeMessagingGateway()..failNextSend = true;

@@ -41,7 +41,11 @@
     },
     {
       "name": "Messaging",
-      "description": "Direct conversations, idempotent text messages, read state, recall and cursor-based recovery sync."
+      "description": "Direct conversations, idempotent messages, read state, recall and cursor-based recovery sync."
+    },
+    {
+      "name": "Media",
+      "description": "Private media upload reservations, completion verification and short-lived authorized downloads."
     }
   ],
   "paths": {
@@ -693,6 +697,68 @@
         }
       }
     },
+    "/api/v1/media/uploads": {
+      "post": {
+        "operationId": "createMediaUpload",
+        "summary": "Reserve a private media upload",
+        "tags": ["Media"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateMediaUploadRequest"}}}},
+        "responses": {
+          "201": {"description": "Short-lived object-storage upload grant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MediaUploadGrantResponse"}}}},
+          "400": {"description": "Invalid media metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "413": {"description": "Upload exceeds quota or size policy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Media service unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/media/uploads/{uploadId}/complete": {
+      "post": {
+        "operationId": "completeMediaUpload",
+        "summary": "Verify and finalize an uploaded media object",
+        "tags": ["Media"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UploadId"}],
+        "responses": {
+          "200": {"description": "Media object is ready for use", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteMediaUploadResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Upload reservation not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Uploaded object does not match reservation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "Upload reservation expired", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/media/{mediaId}": {
+      "get": {
+        "operationId": "getMediaMetadata",
+        "summary": "Get authorized media metadata",
+        "tags": ["Media"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MediaId"}],
+        "responses": {
+          "200": {"description": "Media metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MediaObjectResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current user cannot access this media", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Media not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/media/{mediaId}/download-url": {
+      "post": {
+        "operationId": "createMediaDownloadUrl",
+        "summary": "Create a short-lived authorized download URL",
+        "tags": ["Media"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MediaId"}],
+        "responses": {
+          "200": {"description": "Short-lived download grant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MediaDownloadGrantResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current user cannot access this media", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Media not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/system/live": {
       "get": {
         "operationId": "getLiveness",
@@ -799,7 +865,9 @@
       "ContactRequestId": {"name": "requestId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "UserId": {"name": "userId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "ConversationId": {"name": "conversationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-      "MessageId": {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      "MessageId": {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "UploadId": {"name": "uploadId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "MediaId": {"name": "mediaId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
     },
     "headers": {
       "RequestId": {
@@ -835,6 +903,72 @@
       }
     },
     "schemas": {
+      "CreateMediaUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fileName", "size", "mimeType", "sha256", "purpose"],
+        "properties": {
+          "fileName": {"type": "string", "minLength": 1, "maxLength": 255},
+          "size": {"type": "integer", "format": "int64", "minimum": 1},
+          "mimeType": {"type": "string", "minLength": 1, "maxLength": 120},
+          "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "STICKER", "GIF"]}
+        }
+      },
+      "MediaUploadGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["uploadId", "mediaId", "uploadUrl", "expiresAt", "requiredHeaders"],
+        "properties": {
+          "uploadId": {"type": "string", "format": "uuid"},
+          "mediaId": {"type": "string", "format": "uuid"},
+          "uploadUrl": {"type": "string", "format": "uri"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "requiredHeaders": {"type": "object", "additionalProperties": {"type": "string"}}
+        }
+      },
+      "MediaUploadGrantResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MediaUploadGrant"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MediaObject": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "originalName", "mimeType", "sizeBytes", "sha256", "purpose", "status", "encryptionMode", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "ownerUserId": {"type": "string", "format": "uuid"},
+          "originalName": {"type": "string"},
+          "mimeType": {"type": "string"},
+          "sizeBytes": {"type": "integer", "format": "int64", "minimum": 0},
+          "sha256": {"type": "string"},
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "STICKER", "GIF"]},
+          "status": {"type": "string", "enum": ["UPLOADING", "READY", "QUARANTINED", "FAILED", "DELETED"]},
+          "encryptionMode": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "readyAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "MediaObjectResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MediaObject"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "CompleteMediaUpload": {
+        "type": "object", "additionalProperties": false, "required": ["media"],
+        "properties": {"media": {"$ref": "#/components/schemas/MediaObject"}}
+      },
+      "CompleteMediaUploadResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/CompleteMediaUpload"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MediaDownloadGrant": {
+        "type": "object", "additionalProperties": false, "required": ["downloadUrl", "expiresAt"],
+        "properties": {"downloadUrl": {"type": "string", "format": "uri"}, "expiresAt": {"type": "string", "format": "date-time"}}
+      },
+      "MediaDownloadGrantResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MediaDownloadGrant"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
       "AuthDeviceInput": {
         "type": "object",
         "additionalProperties": false,
