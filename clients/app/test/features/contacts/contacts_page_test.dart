@@ -29,6 +29,11 @@ void main() {
     expect(find.text('联系人'), findsWidgets);
     expect(tester.takeException(), isNull);
 
+    // The mobile address book now opens on Contacts by default; adding a
+    // friend remains an explicit action/tab.
+    await tester.tap(find.widgetWithText(Tab, '添加朋友'));
+    await tester.pumpAndSettle();
+
     await tester.enterText(
       find.byKey(const Key('contacts-search-handle')),
       'bob_01',

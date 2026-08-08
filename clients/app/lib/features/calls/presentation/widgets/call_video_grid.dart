@@ -3,6 +3,91 @@ import 'package:livekit_client/livekit_client.dart';
 
 import '../call_debug_controller.dart';
 
+class CallVideoStage extends StatelessWidget {
+  const CallVideoStage({required this.controller, super.key});
+
+  final CallDebugController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    RemoteParticipant? remote;
+    VideoTrack? remoteTrack;
+    for (final participant in controller.remoteParticipants) {
+      final candidate = CallVideoGrid._remoteVideoTrack(participant);
+      if (candidate != null) {
+        remote = participant;
+        remoteTrack = candidate;
+        break;
+      }
+      remote ??= participant;
+    }
+    final localTrack = controller.localVideoTrack;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final pipWidth = (constraints.maxWidth * 0.27).clamp(104.0, 168.0);
+        final pipHeight = (pipWidth * 1.34).clamp(138.0, 224.0);
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(
+              color: const Color(0xFF161616),
+              child: remoteTrack == null
+                  ? _VideoPlaceholder(active: true, isLocal: false)
+                  : VideoTrackRenderer(
+                      remoteTrack,
+                      fit: VideoViewFit.cover,
+                      mirrorMode: VideoViewMirrorMode.off,
+                    ),
+            ),
+            if (remote != null && remote!.isSpeaking)
+              const Positioned(
+                left: 14,
+                top: 16,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Color(0xAA07C160),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.all(7),
+                    child: Icon(
+                      Icons.graphic_eq_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                  ),
+                ),
+              ),
+            Positioned(
+              right: 14,
+              bottom: 112,
+              width: pipWidth,
+              height: pipHeight,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2B2B2B),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: localTrack == null
+                      ? const _VideoPlaceholder(active: true, isLocal: true)
+                      : VideoTrackRenderer(
+                          localTrack,
+                          fit: VideoViewFit.cover,
+                          mirrorMode: VideoViewMirrorMode.auto,
+                        ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class CallVideoGrid extends StatelessWidget {
   const CallVideoGrid({required this.controller, super.key});
 

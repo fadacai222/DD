@@ -34,7 +34,11 @@ void main() {
                 'mediaId': '00000000-0000-0000-0000-000000000222',
                 'uploadUrl': 'https://storage.invalid/object',
                 'expiresAt': '2026-08-08T12:00:00Z',
-                'requiredHeaders': {'Content-Type': 'application/octet-stream'},
+                'requiredHeaders': {
+                  'Content-Type': 'application/octet-stream',
+                  'x-amz-meta-dd-sha256':
+                      'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
+                },
               },
               'requestId': 'req-create',
             }),
@@ -43,6 +47,10 @@ void main() {
         }
         if (request.method == 'PUT' && request.url.host == 'storage.invalid') {
           putCalls++;
+          expect(
+            request.headers['x-amz-meta-dd-sha256'],
+            'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
+          );
           expect(request.bodyBytes, utf8.encode('hello world'));
           return http.Response('', 200);
         }

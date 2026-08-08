@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../theme/app_theme.dart';
 import '../domain/call_session.dart';
@@ -8,45 +10,165 @@ import 'call_debug_controller.dart';
 import 'two_party_call_controller.dart';
 import 'widgets/call_video_grid.dart';
 
-/// 从聊天页进入的正式通话界面。
-/// 底层仍复用已经通过 P0 验证的 CallSession + LiveKit 媒体链，
-/// 但不再暴露测试身份、URL、房间名等调试控件。
-class ChatCallPage extends StatelessWidget {
+class ChatCallPage extends StatefulWidget {
   const ChatCallPage({
     super.key,
     required this.controller,
     required this.mediaController,
     required this.peerName,
+    this.onFinished,
   });
 
   final TwoPartyCallController controller;
   final CallDebugController mediaController;
   final String peerName;
+  final Future<void> Function(CallSession call, Duration duration)? onFinished;
+
+  @override
+  State<ChatCallPage> createState() => _ChatCallPageState();
+}
+
+class _ChatCallPageState extends State<ChatCallPage> {
+  Timer? _durationTimer;
+  Timer? _autoCloseTimer;
+  Duration _elapsed = Duration.zero;
+  String? _finishedCallId;
+
+  bool get _android =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleCallState);
+    if (_android) {
+      unawaited(
+        SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]),
+      );
+    }
+    _handleCallState();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleCallState);
+    _durationTimer?.cancel();
+    _autoCloseTimer?.cancel();
+    if (_android) {
+      unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]));
+    }
+    super.dispose();
+  }
+
+  void _handleCallState() {
+    if (!mounted) return;
+    final call = widget.controller.currentCall;
+    if (call?.status == CallSessionStatus.accepted) {
+      _ensureDurationTimer();
+      _updateElapsed(call!);
+    } else {
+      _durationTimer?.cancel();
+      _durationTimer = null;
+    }
+
+    if (call != null &&
+        (call.status == CallSessionStatus.ended ||
+            call.status == CallSessionStatus.rejected)) {
+      _scheduleFinished(call);
+    }
+    setState(() {});
+  }
+
+  void _ensureDurationTimer() {
+    if (_durationTimer != null) return;
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final call = widget.controller.currentCall;
+      if (!mounted || call?.status != CallSessionStatus.accepted) return;
+      setState(() => _updateElapsed(call!));
+    });
+  }
+
+  void _updateElapsed(CallSession call) {
+    final acceptedAt = call.acceptedAt;
+    if (acceptedAt == null) {
+      _elapsed = Duration.zero;
+      return;
+    }
+    final end = call.endedAt ?? DateTime.now().toUtc();
+    final duration = end.difference(acceptedAt.toUtc());
+    _elapsed = duration.isNegative ? Duration.zero : duration;
+  }
+
+  void _scheduleFinished(CallSession call) {
+    if (_finishedCallId == call.id) return;
+    _finishedCallId = call.id;
+    _updateElapsed(call);
+    if (call.acceptedAt != null && widget.onFinished != null) {
+      unawaited(widget.onFinished!(call, _elapsed));
+    }
+    _autoCloseTimer?.cancel();
+    _autoCloseTimer = Timer(const Duration(seconds: 1), () {
+      widget.controller.clearEndedCall();
+      if (mounted) Navigator.of(context).maybePop();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([controller, mediaController]),
+      animation: Listenable.merge([widget.controller, widget.mediaController]),
       builder: (context, _) {
-        final call = controller.currentCall;
+        final call = widget.controller.currentCall;
         final video = call?.kind == CallKind.video;
+        final accepted = call?.status == CallSessionStatus.accepted;
         return Scaffold(
-          backgroundColor: const Color(0xFF171717),
+          backgroundColor: const Color(0xFF111111),
           body: SafeArea(
             child: Stack(
+              fit: StackFit.expand,
               children: [
-                Positioned.fill(
-                  child: call?.status == CallSessionStatus.accepted && video
-                      ? Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 52, 14, 116),
-                          child: CallVideoGrid(controller: mediaController),
-                        )
-                      : _AudioCallBody(
-                          peerName: peerName,
-                          status: _statusLabel(call),
-                          error: controller.errorMessage,
+                if (accepted && video)
+                  CallVideoStage(controller: widget.mediaController)
+                else
+                  _AudioCallBody(
+                    peerName: widget.peerName,
+                    status: _statusLabel(call),
+                    error: widget.controller.errorMessage,
+                    elapsed: accepted ? _formatDuration(_elapsed) : null,
+                  ),
+                if (accepted && video)
+                  Positioned(
+                    left: 72,
+                    right: 72,
+                    top: 16,
+                    child: Center(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.38),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                          child: Text(
+                            _formatDuration(_elapsed),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontFeatures: <FontFeature>[
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 Positioned(
                   left: 8,
                   top: 6,
@@ -62,8 +184,8 @@ class ChatCallPage extends StatelessWidget {
                   right: 18,
                   bottom: 22,
                   child: _CallControls(
-                    controller: controller,
-                    mediaController: mediaController,
+                    controller: widget.controller,
+                    mediaController: widget.mediaController,
                   ),
                 ),
               ],
@@ -75,13 +197,17 @@ class ChatCallPage extends StatelessWidget {
   }
 
   String _statusLabel(CallSession? call) {
-    if (controller.errorMessage != null) return controller.errorMessage!;
+    if (widget.controller.errorMessage != null) {
+      return widget.controller.errorMessage!;
+    }
     if (call == null) {
-      return controller.signalingConnected ? '正在建立通话…' : '正在连接通话服务…';
+      return widget.controller.signalingConnected
+          ? '正在建立通话…'
+          : '正在连接通话服务…';
     }
     return switch (call.status) {
       CallSessionStatus.ringing =>
-        call.isIncomingFor(controller.identity)
+        call.isIncomingFor(widget.controller.identity)
             ? '邀请你进行${call.kind == CallKind.video ? '视频' : '语音'}通话'
             : '正在等待对方接听…',
       CallSessionStatus.accepted =>
@@ -90,6 +216,13 @@ class ChatCallPage extends StatelessWidget {
       CallSessionStatus.ended => '通话已结束',
     };
   }
+
+  String _formatDuration(Duration value) {
+    final totalSeconds = value.inSeconds.clamp(0, 24 * 60 * 60 - 1);
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
 }
 
 class _AudioCallBody extends StatelessWidget {
@@ -97,11 +230,13 @@ class _AudioCallBody extends StatelessWidget {
     required this.peerName,
     required this.status,
     required this.error,
+    required this.elapsed,
   });
 
   final String peerName;
   final String status;
   final String? error;
+  final String? elapsed;
 
   @override
   Widget build(BuildContext context) {
@@ -151,11 +286,12 @@ class _AudioCallBody extends StatelessWidget {
             ),
             const SizedBox(height: 9),
             Text(
-              status,
+              elapsed ?? status,
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: error == null ? Colors.white60 : const Color(0xFFFF8C8C),
                 fontSize: 13,
+                fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -226,17 +362,7 @@ class _CallControls extends StatelessWidget {
     }
 
     if (call.status != CallSessionStatus.accepted) {
-      return Center(
-        child: _RoundCallButton(
-          icon: Icons.close_rounded,
-          label: '关闭',
-          color: const Color(0xFF3A3A3A),
-          onTap: () {
-            controller.clearEndedCall();
-            Navigator.maybePop(context);
-          },
-        ),
-      );
+      return const SizedBox.shrink();
     }
 
     return Row(
@@ -247,7 +373,7 @@ class _CallControls extends StatelessWidget {
               ? Icons.mic_rounded
               : Icons.mic_off_rounded,
           label: mediaController.microphoneEnabled ? '静音' : '取消静音',
-          color: const Color(0xFF333333),
+          color: const Color(0xB3333333),
           onTap: mediaController.toggleMicrophone,
         ),
         if (call.kind == CallKind.video) ...[
@@ -257,7 +383,7 @@ class _CallControls extends StatelessWidget {
                 ? Icons.videocam_rounded
                 : Icons.videocam_off_rounded,
             label: mediaController.cameraEnabled ? '关闭视频' : '开启视频',
-            color: const Color(0xFF333333),
+            color: const Color(0xB3333333),
             onTap: mediaController.toggleCamera,
           ),
         ],

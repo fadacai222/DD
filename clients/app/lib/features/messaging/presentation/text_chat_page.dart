@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -110,11 +111,15 @@ class _TextChatPageState extends State<TextChatPage>
   final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
   double _fileUploadProgress = 0;
   MediaUploadCancellation? _fileUploadCancellation;
+  bool _voiceMode = false;
   bool _voiceRecording = false;
   bool _voiceCancelGesture = false;
   bool _voiceSending = false;
   int _voiceElapsedSeconds = 0;
+  double _voiceAmplitude = 0;
+  int? _voicePointerId;
   Timer? _voiceTimer;
+  StreamSubscription<double>? _voiceAmplitudeSubscription;
   Future<void>? _voiceStartFuture;
   String? _playingVoiceMessageId;
   Duration _voicePosition = Duration.zero;
@@ -125,6 +130,7 @@ class _TextChatPageState extends State<TextChatPage>
 
   bool get _keyboardSendEnabled =>
       kIsWeb ||
+      defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.windows ||
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.linux;
@@ -140,6 +146,11 @@ class _TextChatPageState extends State<TextChatPage>
     _scrollController = ScrollController();
     _mediaApi = MediaApiClient();
     _voiceRecorder = ChatVoiceRecorder();
+    _voiceAmplitudeSubscription = _voiceRecorder.amplitudes.listen((value) {
+      if (mounted && _voiceRecording) {
+        setState(() => _voiceAmplitude = value);
+      }
+    });
     _voicePlayer = AudioPlayer();
     _voicePlayer.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
@@ -188,6 +199,7 @@ class _TextChatPageState extends State<TextChatPage>
     WidgetsBinding.instance.removeObserver(this);
     _draftSaveTimer?.cancel();
     _voiceTimer?.cancel();
+    unawaited(_voiceAmplitudeSubscription?.cancel());
     unawaited(_voiceRecorder.dispose());
     unawaited(_voicePlayer.dispose());
     unawaited(
@@ -467,12 +479,39 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
 
-    return GestureDetector(
+    final secondaryTap = GestureDetector(
       behavior: HitTestBehavior.translucent,
-      onLongPress: () => _showMessageActions(message, mine),
       onSecondaryTapDown: (details) =>
           _showMessageMenuAt(message, mine, details.globalPosition),
       child: row,
+    );
+    final fastVoiceLongPress =
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android &&
+        message.type == 'VOICE';
+    if (fastVoiceLongPress) {
+      return RawGestureDetector(
+        behavior: HitTestBehavior.translucent,
+        gestures: <Type, GestureRecognizerFactory>{
+          LongPressGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+                () => LongPressGestureRecognizer(
+                  duration: const Duration(milliseconds: 320),
+                  allowedButtonsFilter: (buttons) => buttons == kPrimaryButton,
+                ),
+                (recognizer) {
+                  recognizer.onLongPress = () =>
+                      _showMessageActions(message, mine);
+                },
+              ),
+        },
+        child: secondaryTap,
+      );
+    }
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPress: () => _showMessageActions(message, mine),
+      child: secondaryTap,
     );
   }
 
@@ -482,6 +521,7 @@ class _TextChatPageState extends State<TextChatPage>
     bool mine,
   ) {
     final recalled = message.isRecalled;
+    final callSummary = recalled ? null : _parseCallSummary(message.content?.text);
     final visualContent =
         !recalled &&
         const {'IMAGE', 'GIF', 'STICKER'}.contains(message.type) &&
@@ -527,7 +567,9 @@ class _TextChatPageState extends State<TextChatPage>
                   _replyReference(message.replyToMessageId!, mine),
                   const SizedBox(height: 6),
                 ],
-                if (visualContent)
+                if (callSummary != null)
+                  _callSummaryBubble(callSummary)
+                else if (visualContent)
                   _chatImage(message.content!)
                 else if (voiceContent)
                   _voiceBubble(message, mine)
@@ -580,6 +622,35 @@ class _TextChatPageState extends State<TextChatPage>
           ),
         ],
       ),
+    );
+  }
+
+  ({bool video, String text})? _parseCallSummary(String? raw) {
+    final text = raw?.trim() ?? '';
+    if (text.startsWith('语音通话 · 通话时长 ')) {
+      return (video: false, text: text.substring('语音通话 · '.length));
+    }
+    if (text.startsWith('视频通话 · 通话时长 ')) {
+      return (video: true, text: text.substring('视频通话 · '.length));
+    }
+    return null;
+  }
+
+  Widget _callSummaryBubble(({bool video, String text}) summary) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          summary.video ? Icons.videocam_outlined : Icons.call_outlined,
+          size: 20,
+          color: DdColors.greenPressed,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          summary.text,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        ),
+      ],
     );
   }
 
@@ -1202,7 +1273,11 @@ class _TextChatPageState extends State<TextChatPage>
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 _voiceControlButton(),
-                Expanded(child: _composerField()),
+                Expanded(
+                  child: _mobileHoldToTalk && _voiceMode
+                      ? _holdToTalkField()
+                      : _composerField(),
+                ),
                 IconButton(
                   key: const Key('chat-emoji'),
                   tooltip: 'Emoji',
@@ -1215,7 +1290,7 @@ class _TextChatPageState extends State<TextChatPage>
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: _composer,
                   builder: (context, value, _) {
-                    final hasText = value.text.trim().isNotEmpty;
+                    final hasText = !_voiceMode && value.text.trim().isNotEmpty;
                     if (hasText) {
                       return Padding(
                         padding: const EdgeInsets.only(left: 2, bottom: 3),
@@ -1251,7 +1326,7 @@ class _TextChatPageState extends State<TextChatPage>
                 ),
               ],
             ),
-            if (_keyboardSendEnabled)
+            if (_keyboardSendEnabled && !_voiceMode)
               const Padding(
                 padding: EdgeInsets.only(top: 3, right: 46),
                 child: Align(
@@ -1365,37 +1440,76 @@ class _TextChatPageState extends State<TextChatPage>
 
   Widget _voiceRecordingBanner() {
     final cancelling = _voiceCancelGesture;
+    final activeBars = (2 + (_voiceAmplitude * 7).round()).clamp(2, 9);
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 120),
-      margin: const EdgeInsets.only(bottom: 7),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      duration: const Duration(milliseconds: 100),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 9, 12, 9),
       decoration: BoxDecoration(
         color: cancelling
             ? const Color(0xFFFFE5E5)
-            : DdColors.ownBubble.withValues(alpha: 0.65),
-        borderRadius: BorderRadius.circular(6),
+            : DdColors.ownBubble.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         children: [
-          Icon(
-            cancelling ? Icons.delete_outline_rounded : Icons.mic_rounded,
-            size: 18,
-            color: cancelling ? DdColors.danger : DdColors.greenPressed,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              cancelling
-                  ? '松开取消发送'
-                  : _mobileHoldToTalk
-                  ? '正在录音 · 上滑取消'
-                  : '正在录音 · 再点一次发送',
-              style: TextStyle(
-                fontSize: 12,
-                color: cancelling ? DdColors.danger : DdColors.textPrimary,
-              ),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 100),
+            width: 58,
+            height: 44,
+            decoration: BoxDecoration(
+              color: cancelling
+                  ? DdColors.danger
+                  : Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.delete_outline_rounded,
+              color: cancelling ? Colors.white : DdColors.textSecondary,
             ),
           ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 27,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: List<Widget>.generate(11, (index) {
+                      final distance = (index - 5).abs();
+                      final base = 5.0 + (5 - distance).clamp(0, 5) * 1.7;
+                      final energized = index < activeBars || index >= 11 - activeBars;
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 80),
+                        width: 3,
+                        height: energized ? base + _voiceAmplitude * 11 : base,
+                        margin: const EdgeInsets.symmetric(horizontal: 2),
+                        decoration: BoxDecoration(
+                          color: cancelling
+                              ? DdColors.danger
+                              : DdColors.greenPressed,
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  cancelling ? '松手取消' : '松开发送',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: cancelling ? DdColors.danger : DdColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
           Text(
             '${_voiceElapsedSeconds ~/ 60}:${(_voiceElapsedSeconds % 60).toString().padLeft(2, '0')}',
             style: const TextStyle(
@@ -1409,10 +1523,12 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _voiceControlButton() {
-    final icon = _voiceRecording
+    final mobile = _mobileHoldToTalk;
+    final icon = mobile && _voiceMode
+        ? Icons.keyboard_alt_outlined
+        : _voiceRecording
         ? Icons.stop_circle_outlined
         : Icons.mic_none_rounded;
-    final color = _voiceRecording ? DdColors.danger : null;
     final child = SizedBox(
       width: 48,
       height: 48,
@@ -1423,34 +1539,30 @@ class _TextChatPageState extends State<TextChatPage>
                 height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
-            : Icon(icon, size: 25, color: color),
+            : Icon(
+                icon,
+                size: 25,
+                color: _voiceRecording ? DdColors.danger : null,
+              ),
       ),
     );
-    if (_mobileHoldToTalk) {
+    if (mobile) {
       return Tooltip(
-        message: '按住说话，上滑取消',
+        message: _voiceMode ? '切换到键盘' : '切换到语音',
         child: GestureDetector(
           key: const Key('chat-voice'),
           behavior: HitTestBehavior.opaque,
-          onLongPressStart: _voiceSending
+          onTap: _voiceSending || _voiceRecording
               ? null
-              : (_) => unawaited(_beginVoiceRecording()),
-          onLongPressMoveUpdate: _voiceSending
-              ? null
-              : (details) {
-                  final next = details.offsetFromOrigin.dy < -72;
-                  if (next != _voiceCancelGesture && mounted) {
-                    setState(() => _voiceCancelGesture = next);
+              : () {
+                  _dismissKeyboard();
+                  setState(() => _voiceMode = !_voiceMode);
+                  if (!_voiceMode) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) _composerFocusNode.requestFocus();
+                    });
                   }
                 },
-          onLongPressEnd: _voiceSending
-              ? null
-              : (_) => unawaited(
-                  _finishVoiceRecording(cancel: _voiceCancelGesture),
-                ),
-          onLongPressCancel: _voiceSending
-              ? null
-              : () => unawaited(_finishVoiceRecording(cancel: true)),
           child: child,
         ),
       );
@@ -1468,6 +1580,66 @@ class _TextChatPageState extends State<TextChatPage>
                     : _beginVoiceRecording(),
               ),
         child: child,
+      ),
+    );
+  }
+
+  Widget _holdToTalkField() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Listener(
+        key: const Key('chat-hold-to-talk'),
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: (event) {
+          if (_voiceSending || _voicePointerId != null) return;
+          _voicePointerId = event.pointer;
+          if (_voiceCancelGesture && mounted) {
+            setState(() => _voiceCancelGesture = false);
+          }
+          unawaited(_beginVoiceRecording());
+        },
+        onPointerMove: (event) {
+          if (event.pointer != _voicePointerId) return;
+          final nextCancel = event.localPosition.dx <= 66;
+          if (nextCancel != _voiceCancelGesture && mounted) {
+            setState(() => _voiceCancelGesture = nextCancel);
+          }
+        },
+        onPointerUp: (event) {
+          if (event.pointer != _voicePointerId) return;
+          _voicePointerId = null;
+          unawaited(_finishVoiceRecording(cancel: _voiceCancelGesture));
+        },
+        onPointerCancel: (event) {
+          if (event.pointer != _voicePointerId) return;
+          _voicePointerId = null;
+          unawaited(_finishVoiceRecording(cancel: true));
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 80),
+          height: 44,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: _voiceRecording
+                ? (_voiceCancelGesture
+                      ? const Color(0xFFFFE4E4)
+                      : const Color(0xFFE7E7E7))
+                : Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF2B2B2B)
+                : const Color(0xFFF3F3F3),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(
+            _voiceRecording
+                ? (_voiceCancelGesture ? '松手取消' : '松开发送')
+                : '按住说话',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+              color: _voiceCancelGesture ? DdColors.danger : null,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1546,8 +1718,9 @@ class _TextChatPageState extends State<TextChatPage>
         origin: widget.coordinator.origin,
         accessToken: widget.coordinator.accessToken,
         bytes: recorded.bytes,
-        fileName: 'voice-${DateTime.now().microsecondsSinceEpoch}.wav',
-        mimeType: 'audio/wav',
+        fileName:
+            'voice-${DateTime.now().microsecondsSinceEpoch}.${recorded.fileExtension}',
+        mimeType: recorded.mimeType,
         purpose: 'CHAT_VOICE',
       );
       final replyToMessageId = _replyingTo?.id;
@@ -1558,7 +1731,7 @@ class _TextChatPageState extends State<TextChatPage>
         widget.conversation.id,
         type: 'VOICE',
         mediaId: grant.mediaId,
-        mimeType: 'audio/wav',
+        mimeType: recorded.mimeType,
         sizeBytes: recorded.bytes.length,
         durationMs: recorded.durationMs,
         replyToMessageId: replyToMessageId,
@@ -1581,6 +1754,8 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _composerField() {
+    final android =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
     final field = TextField(
       key: const Key('chat-composer'),
       controller: _composer,
@@ -1589,7 +1764,8 @@ class _TextChatPageState extends State<TextChatPage>
       maxLines: 5,
       maxLength: 4000,
       keyboardType: TextInputType.multiline,
-      textInputAction: TextInputAction.newline,
+      textInputAction: android ? TextInputAction.send : TextInputAction.newline,
+      onSubmitted: android ? (_) => _sendFromKeyboard() : null,
       decoration: const InputDecoration(
         hintText: '输入消息',
         counterText: '',

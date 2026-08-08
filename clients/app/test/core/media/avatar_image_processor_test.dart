@@ -16,5 +16,41 @@ void main() {
     expect(decoded, isNotNull);
     expect(decoded!.width, lessThanOrEqualTo(1536));
     expect(decoded.height, lessThanOrEqualTo(1536));
+    expect(decoded.width, decoded.height);
+  });
+
+  test('manual crop selection is applied before avatar compression', () async {
+    final source = img.Image(width: 200, height: 100);
+    img.fillRect(
+      source,
+      x1: 0,
+      y1: 0,
+      x2: 99,
+      y2: 99,
+      color: img.ColorRgb8(230, 30, 30),
+    );
+    img.fillRect(
+      source,
+      x1: 100,
+      y1: 0,
+      x2: 199,
+      y2: 99,
+      color: img.ColorRgb8(25, 45, 225),
+    );
+
+    final processed = await processAvatarImage(
+      img.encodePng(source),
+      crop: const AvatarCropSelection(
+        left: 0.5,
+        top: 0,
+        width: 0.5,
+        height: 1,
+      ),
+    );
+    final decoded = img.decodeJpg(processed.bytes)!;
+    final center = decoded.getPixel(decoded.width ~/ 2, decoded.height ~/ 2);
+
+    expect(decoded.width, decoded.height);
+    expect(center.b, greaterThan(center.r));
   });
 }

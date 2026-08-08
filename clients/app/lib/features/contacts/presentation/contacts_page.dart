@@ -51,7 +51,9 @@ class _ContactsPageState extends State<ContactsPage>
     super.initState();
     _ownsGateway = widget.gateway == null;
     _gateway = widget.gateway ?? ContactsApiClient();
-    _tabs = TabController(length: 4, vsync: this);
+    // Mobile should land on the actual address book. "添加朋友" is an
+    // action, not the primary contacts destination.
+    _tabs = TabController(length: 4, initialIndex: 2, vsync: this);
     _searchHandle = TextEditingController();
     _requestMessage = TextEditingController();
     _directorySearch = TextEditingController();

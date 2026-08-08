@@ -48,7 +48,10 @@ func TestS3StorePresignPutUsesOpaquePathAndShortExpiry(t *testing.T) {
 	if strings.TrimSpace(headers["x-amz-checksum-sha256"]) == "" {
 		t.Fatal("required checksum header is missing")
 	}
-	if got := query.Get("X-Amz-SignedHeaders"); got != "content-type;host;x-amz-checksum-sha256" {
+	if got := headers["x-amz-meta-dd-sha256"]; got != sha256Hex {
+		t.Fatalf("required checksum metadata = %q", got)
+	}
+	if got := query.Get("X-Amz-SignedHeaders"); got != "content-type;host;x-amz-checksum-sha256;x-amz-meta-dd-sha256" {
 		t.Fatalf("X-Amz-SignedHeaders = %q", got)
 	}
 	if !expiresAt.Equal(now.Add(10 * time.Minute)) {

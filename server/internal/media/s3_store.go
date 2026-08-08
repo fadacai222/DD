@@ -93,6 +93,11 @@ func (store *S3Store) PresignPut(key, contentType, sha256Hex string, ttl time.Du
 	headers := map[string]string{
 		"Content-Type":          contentType,
 		"x-amz-checksum-sha256": checksum,
+		// S3-compatible stores are inconsistent about returning checksum
+		// headers on HEAD. Persist the expected digest as signed object metadata
+		// as well so completion can still verify the uploaded object without
+		// weakening size/content-type integrity checks.
+		"x-amz-meta-dd-sha256": sha256Hex,
 	}
 	signed, expiresAt, err := store.presign(http.MethodPut, key, ttl, headers)
 	return signed, headers, expiresAt, err
@@ -133,6 +138,16 @@ func (store *S3Store) Stat(ctx context.Context, key string) (ObjectInfo, error) 
 			return ObjectInfo{}, errors.New("stat media object: invalid SHA-256 checksum")
 		}
 		checksumHex = hex.EncodeToString(checksumBytes)
+	}
+	if checksumHex == "" {
+		metadataChecksum := strings.ToLower(strings.TrimSpace(response.Header.Get("X-Amz-Meta-Dd-Sha256")))
+		if metadataChecksum != "" {
+			checksumBytes, decodeErr := hex.DecodeString(metadataChecksum)
+			if decodeErr != nil || len(checksumBytes) != sha256.Size {
+				return ObjectInfo{}, errors.New("stat media object: invalid SHA-256 metadata")
+			}
+			checksumHex = metadataChecksum
+		}
 	}
 	return ObjectInfo{
 		Size:        size,

@@ -1,12 +1,44 @@
 #include "flutter_window.h"
 
+#include <windows.h>
+
 #include <optional>
 #include <string>
 #include <variant>
 
 #include <flutter/standard_method_codec.h>
 
+#include "desktop_notification.h"
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+std::wstring WideFromUtf8(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+  const int required = ::MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+      nullptr, 0);
+  if (required <= 0) {
+    return std::wstring();
+  }
+  std::wstring result(required, L'\0');
+  ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                        static_cast<int>(value.size()), result.data(), required);
+  return result;
+}
+
+std::string MapString(const flutter::EncodableMap& map, const char* key) {
+  const auto iterator = map.find(flutter::EncodableValue(std::string(key)));
+  if (iterator == map.end()) {
+    return std::string();
+  }
+  const auto* value = std::get_if<std::string>(&iterator->second);
+  return value == nullptr ? std::string() : *value;
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -61,32 +93,37 @@ bool FlutterWindow::OnCreate() {
           return;
         }
         if (call.method_name() == "startDrag") {
+          // SendMessage enters Windows' modal move/size loop synchronously. When
+          // called from Flutter's platform-channel handler that blocks the
+          // platform thread until the drag ends, which presents as a frozen
+          // title bar. Queue the non-client drag instead and return to Flutter
+          // immediately.
           ::ReleaseCapture();
-          ::SendMessage(window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+          POINT cursor{};
+          ::GetCursorPos(&cursor);
+          if (!::PostMessage(window, WM_NCLBUTTONDOWN, HTCAPTION,
+                             MAKELPARAM(cursor.x, cursor.y))) {
+            result->Error("WINDOW_DRAG_FAILED", "Unable to start window drag");
+            return;
+          }
           result->Success();
           return;
         }
-        if (call.method_name() == "startResize") {
-          const auto* edge = std::get_if<std::string>(call.arguments());
-          if (edge == nullptr) {
-            result->Error("INVALID_RESIZE_EDGE", "Resize edge is missing");
+        if (call.method_name() == "showNotification") {
+          const auto* arguments =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          if (arguments == nullptr) {
+            result->Error("INVALID_NOTIFICATION", "Notification payload is missing");
             return;
           }
-          const int hit = *edge == "left"       ? HTLEFT
-                          : *edge == "right"     ? HTRIGHT
-                          : *edge == "top"       ? HTTOP
-                          : *edge == "bottom"    ? HTBOTTOM
-                          : *edge == "topLeft"   ? HTTOPLEFT
-                          : *edge == "topRight"  ? HTTOPRIGHT
-                          : *edge == "bottomLeft" ? HTBOTTOMLEFT
-                          : *edge == "bottomRight" ? HTBOTTOMRIGHT
-                                                   : HTNOWHERE;
-          if (hit == HTNOWHERE) {
-            result->Error("INVALID_RESIZE_EDGE", "Resize edge is invalid");
+          const bool shown = dd::ShowDesktopNotification(
+              window, WideFromUtf8(MapString(*arguments, "title")),
+              WideFromUtf8(MapString(*arguments, "body")),
+              WideFromUtf8(MapString(*arguments, "avatarPath")));
+          if (!shown) {
+            result->Error("NOTIFICATION_FAILED", "Unable to create desktop notification");
             return;
           }
-          ::ReleaseCapture();
-          ::SendMessage(window, WM_NCLBUTTONDOWN, hit, 0);
           result->Success();
           return;
         }
