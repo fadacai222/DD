@@ -31,6 +31,21 @@ final class MediaDownloadGrant {
   final DateTime expiresAt;
 }
 
+final class MediaUploadCancellation {
+  bool _cancelled = false;
+
+  bool get isCancelled => _cancelled;
+
+  void cancel() => _cancelled = true;
+}
+
+final class MediaUploadCancelled implements Exception {
+  const MediaUploadCancelled();
+
+  @override
+  String toString() => '媒体上传已取消。';
+}
+
 final class MediaApiClient {
   MediaApiClient({http.Client? httpClient})
     : _client = httpClient ?? createAuthHttpClient();
@@ -42,6 +57,8 @@ final class MediaApiClient {
     required String accessToken,
     required Uint8List bytes,
     required String fileName,
+    void Function(int sentBytes, int totalBytes)? onProgress,
+    MediaUploadCancellation? cancellation,
   }) => uploadMedia(
     origin: origin,
     accessToken: accessToken,
@@ -49,6 +66,8 @@ final class MediaApiClient {
     fileName: fileName,
     mimeType: 'image/jpeg',
     purpose: 'CHAT_IMAGE',
+    onProgress: onProgress,
+    cancellation: cancellation,
   );
 
   Future<MediaUploadGrant> uploadMedia({
@@ -58,35 +77,92 @@ final class MediaApiClient {
     required String fileName,
     required String mimeType,
     required String purpose,
+    void Function(int sentBytes, int totalBytes)? onProgress,
+    MediaUploadCancellation? cancellation,
   }) async {
     if (bytes.isEmpty) throw const FormatException('媒体文件为空。');
+    return uploadStream(
+      origin: origin,
+      accessToken: accessToken,
+      streamFactory: () => Stream<List<int>>.value(bytes),
+      size: bytes.length,
+      fileName: fileName,
+      mimeType: mimeType,
+      purpose: purpose,
+      onProgress: onProgress,
+      cancellation: cancellation,
+    );
+  }
+
+  Future<MediaUploadGrant> uploadStream({
+    required Uri origin,
+    required String accessToken,
+    required Stream<List<int>> Function() streamFactory,
+    required int size,
+    required String fileName,
+    required String mimeType,
+    required String purpose,
+    void Function(int sentBytes, int totalBytes)? onProgress,
+    MediaUploadCancellation? cancellation,
+  }) async {
+    if (size <= 0) throw const FormatException('媒体文件为空。');
+    _throwIfCancelled(cancellation);
+
+    final digest = await sha256.bind(streamFactory()).first;
+    _throwIfCancelled(cancellation);
     final grant = await createUpload(
       origin: origin,
       accessToken: accessToken,
       fileName: fileName,
-      size: bytes.length,
+      size: size,
       mimeType: mimeType,
-      sha256Hex: sha256.convert(bytes).toString(),
+      sha256Hex: digest.toString(),
       purpose: purpose,
     );
-    final response = await _client.put(
-      grant.uploadUrl,
-      headers: grant.requiredHeaders,
-      body: bytes,
-    );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw MessagingApiException(
-        statusCode: response.statusCode,
-        code: 'MEDIA_STORAGE_UPLOAD_FAILED',
-        message: '媒体上传失败（对象存储返回 ${response.statusCode}）。',
-      );
+
+    final request = http.StreamedRequest('PUT', grant.uploadUrl)
+      ..headers.addAll(grant.requiredHeaders)
+      ..contentLength = size;
+    var sentBytes = 0;
+    final responseFuture = _client.send(request);
+    try {
+      await for (final chunk in streamFactory()) {
+        _throwIfCancelled(cancellation);
+        request.sink.add(chunk);
+        sentBytes += chunk.length;
+        onProgress?.call(sentBytes.clamp(0, size), size);
+      }
+      await request.sink.close();
+      _throwIfCancelled(cancellation);
+      final response = await responseFuture;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw MessagingApiException(
+          statusCode: response.statusCode,
+          code: 'MEDIA_STORAGE_UPLOAD_FAILED',
+          message: '媒体上传失败（对象存储返回 ${response.statusCode}）。',
+        );
+      }
+    } catch (_) {
+      await request.sink.close();
+      try {
+        await responseFuture;
+      } catch (_) {
+        // The caller's upload/cancellation error is the useful one here.
+      }
+      rethrow;
     }
+
     await completeUpload(
       origin: origin,
       accessToken: accessToken,
       uploadId: grant.uploadId,
     );
+    onProgress?.call(size, size);
     return grant;
+  }
+
+  void _throwIfCancelled(MediaUploadCancellation? cancellation) {
+    if (cancellation?.isCancelled == true) throw const MediaUploadCancelled();
   }
 
   Future<MediaUploadGrant> createUpload({

@@ -100,9 +100,14 @@ class _TextChatPageState extends State<TextChatPage>
   final Map<String, Future<MediaDownloadGrant>> _mediaDownloadInflight = {};
   Timer? _draftSaveTimer;
   bool _imageSending = false;
+  int _imageBatchCurrent = 0;
+  int _imageBatchTotal = 0;
+  double _imageUploadProgress = 0;
   bool _gifSending = false;
   bool _stickerSending = false;
   bool _fileSending = false;
+  double _fileUploadProgress = 0;
+  MediaUploadCancellation? _fileUploadCancellation;
   bool _voiceRecording = false;
   bool _voiceCancelGesture = false;
   bool _voiceSending = false;
@@ -1134,6 +1139,8 @@ class _TextChatPageState extends State<TextChatPage>
           mainAxisSize: MainAxisSize.min,
           children: [
             if (replyingTo != null) _replyPreview(replyingTo),
+            if (_imageSending) _imageUploadBanner(),
+            if (_fileSending) _fileUploadBanner(),
             if (_voiceRecording) _voiceRecordingBanner(),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -1201,6 +1208,93 @@ class _TextChatPageState extends State<TextChatPage>
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _imageUploadBanner() {
+    final percent = (_imageUploadProgress * 100).clamp(0, 100).round();
+    final batch = _imageBatchTotal > 1
+        ? ' · $_imageBatchCurrent/$_imageBatchTotal'
+        : '';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: DdColors.ownBubble.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.image_outlined,
+            size: 18,
+            color: DdColors.greenPressed,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('正在发送图片$batch · $percent%', style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 5),
+                LinearProgressIndicator(
+                  value: _imageUploadProgress.clamp(0, 1),
+                  minHeight: 3,
+                  backgroundColor: DdColors.divider,
+                  color: DdColors.greenPressed,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fileUploadBanner() {
+    final percent = (_fileUploadProgress * 100).clamp(0, 100).round();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+      decoration: BoxDecoration(
+        color: DdColors.ownBubble.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.upload_file_rounded,
+            size: 18,
+            color: DdColors.greenPressed,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '正在上传文件 · $percent%',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                const SizedBox(height: 5),
+                LinearProgressIndicator(
+                  value: _fileUploadProgress.clamp(0, 1),
+                  minHeight: 3,
+                  backgroundColor: DdColors.divider,
+                  color: DdColors.greenPressed,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            key: const Key('cancel-file-upload'),
+            tooltip: '取消上传',
+            visualDensity: VisualDensity.compact,
+            onPressed: _fileUploadCancellation?.cancel,
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+        ],
       ),
     );
   }
@@ -1764,12 +1858,18 @@ class _TextChatPageState extends State<TextChatPage>
               ),
               const SizedBox(width: 10),
               _ComposerAction(
-                icon: Icons.insert_drive_file_outlined,
-                label: _fileSending ? '上传中…' : '文件',
-                enabled: !_fileSending,
+                icon: _fileSending ? Icons.close_rounded : Icons.insert_drive_file_outlined,
+                label: _fileSending
+                    ? '取消 ${(100 * _fileUploadProgress).round()}%'
+                    : '文件',
+                enabled: true,
                 onTap: () {
                   Navigator.pop(sheetContext);
-                  unawaited(_pickAndSendFile());
+                  if (_fileSending) {
+                    _fileUploadCancellation?.cancel();
+                  } else {
+                    unawaited(_pickAndSendFile());
+                  }
                 },
               ),
             ],
@@ -1785,36 +1885,60 @@ class _TextChatPageState extends State<TextChatPage>
       label: '图片',
       extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp'],
     );
-    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
-    if (file == null || !mounted) return;
-    final sourceLength = await file.length();
-    if (!mounted) return;
-    if (sourceLength > maxChatImageSourceBytes) {
-      _showImageError('源图片超过 96 MiB，为避免设备内存耗尽无法处理。');
+    final files = await openFiles(acceptedTypeGroups: const [typeGroup]);
+    if (files.isEmpty || !mounted) return;
+    if (files.length > 30) {
+      _showImageError('一次最多发送 30 张图片。');
       return;
     }
-    setState(() => _imageSending = true);
+    final replyToMessageId = _replyingTo?.id;
+    if (_replyingTo != null) setState(() => _replyingTo = null);
+    setState(() {
+      _imageSending = true;
+      _imageBatchCurrent = 0;
+      _imageBatchTotal = files.length;
+      _imageUploadProgress = 0;
+    });
+    var sentCount = 0;
     try {
-      final source = await file.readAsBytes();
-      final processed = await processChatImage(source);
-      final grant = await _mediaApi.uploadChatImage(
-        origin: widget.coordinator.origin,
-        accessToken: widget.coordinator.accessToken,
-        bytes: processed.bytes,
-        fileName: '${DateTime.now().microsecondsSinceEpoch}.jpg',
-      );
-      final replyToMessageId = _replyingTo?.id;
-      if (_replyingTo != null && mounted) {
-        setState(() => _replyingTo = null);
+      for (var index = 0; index < files.length; index++) {
+        final file = files[index];
+        final sourceLength = await file.length();
+        if (sourceLength > maxChatImageSourceBytes) {
+          _showImageError('${file.name.isEmpty ? '第 ${index + 1} 张图片' : file.name} 超过 96 MiB，已跳过。');
+          continue;
+        }
+        if (mounted) {
+          setState(() {
+            _imageBatchCurrent = index + 1;
+            _imageUploadProgress = 0;
+          });
+        }
+        final source = await file.readAsBytes();
+        final processed = await processChatImage(source);
+        final grant = await _mediaApi.uploadChatImage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          bytes: processed.bytes,
+          fileName: '${DateTime.now().microsecondsSinceEpoch}-$index.jpg',
+          onProgress: (sent, total) {
+            if (!mounted || total <= 0) return;
+            final next = (sent / total).clamp(0.0, 1.0);
+            if ((next - _imageUploadProgress).abs() < 0.02 && next < 1) return;
+            setState(() => _imageUploadProgress = next);
+          },
+        );
+        await widget.coordinator.sendImage(
+          widget.conversation.id,
+          mediaId: grant.mediaId,
+          width: processed.width,
+          height: processed.height,
+          replyToMessageId: sentCount == 0 ? replyToMessageId : null,
+        );
+        sentCount++;
+        if (mounted) _scrollToBottom();
       }
-      await widget.coordinator.sendImage(
-        widget.conversation.id,
-        mediaId: grant.mediaId,
-        width: processed.width,
-        height: processed.height,
-        replyToMessageId: replyToMessageId,
-      );
-      if (mounted) _scrollToBottom();
+      if (sentCount == 0 && mounted) _showImageError('没有可发送的图片。');
     } on MessagingApiException catch (error) {
       if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
@@ -1822,7 +1946,14 @@ class _TextChatPageState extends State<TextChatPage>
     } catch (_) {
       if (mounted) _showImageError('图片发送失败，请稍后重试。');
     } finally {
-      if (mounted) setState(() => _imageSending = false);
+      if (mounted) {
+        setState(() {
+          _imageSending = false;
+          _imageBatchCurrent = 0;
+          _imageBatchTotal = 0;
+          _imageUploadProgress = 0;
+        });
+      }
     }
   }
 
@@ -1945,23 +2076,33 @@ class _TextChatPageState extends State<TextChatPage>
       _showImageError('不能发送空文件。');
       return;
     }
-    // 当前实现会把文件读入内存后上传；在改成流式上传前主动限制，避免
-    // 2 GiB 服务端上限反过来把移动端/桌面端进程直接撑爆。
-    if (sourceLength > 256 * 1024 * 1024) {
-      _showImageError('文件超过 256 MiB；流式上传完成前客户端暂不接受更大的文件。');
+    if (sourceLength > 2 * 1024 * 1024 * 1024) {
+      _showImageError('文件超过 2 GiB，当前实例拒绝上传。');
       return;
     }
-    setState(() => _fileSending = true);
+    final cancellation = MediaUploadCancellation();
+    _fileUploadCancellation = cancellation;
+    setState(() {
+      _fileSending = true;
+      _fileUploadProgress = 0;
+    });
     try {
-      final source = await file.readAsBytes();
       final mimeType = _fileMimeType(file.name);
-      final grant = await _mediaApi.uploadMedia(
+      final grant = await _mediaApi.uploadStream(
         origin: widget.coordinator.origin,
         accessToken: widget.coordinator.accessToken,
-        bytes: source,
+        streamFactory: file.openRead,
+        size: sourceLength,
         fileName: file.name.isEmpty ? 'file.bin' : file.name,
         mimeType: mimeType,
         purpose: 'CHAT_FILE',
+        cancellation: cancellation,
+        onProgress: (sent, total) {
+          if (!mounted || total <= 0) return;
+          final progress = sent / total;
+          if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1) return;
+          setState(() => _fileUploadProgress = progress.clamp(0, 1));
+        },
       );
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
@@ -1971,10 +2112,12 @@ class _TextChatPageState extends State<TextChatPage>
         mediaId: grant.mediaId,
         fileName: file.name,
         mimeType: mimeType,
-        sizeBytes: source.length,
+        sizeBytes: sourceLength,
         replyToMessageId: replyToMessageId,
       );
       if (mounted) _scrollToBottom();
+    } on MediaUploadCancelled {
+      if (mounted) _showImageError('已取消文件上传。');
     } on MessagingApiException catch (error) {
       if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
@@ -1982,7 +2125,15 @@ class _TextChatPageState extends State<TextChatPage>
     } catch (_) {
       if (mounted) _showImageError('文件发送失败，请稍后重试。');
     } finally {
-      if (mounted) setState(() => _fileSending = false);
+      if (identical(_fileUploadCancellation, cancellation)) {
+        _fileUploadCancellation = null;
+      }
+      if (mounted) {
+        setState(() {
+          _fileSending = false;
+          _fileUploadProgress = 0;
+        });
+      }
     }
   }
 

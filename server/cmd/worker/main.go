@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
@@ -45,16 +47,48 @@ func main() {
 		os.Exit(2)
 	}
 
+	var mediaService *media.Service
+	if endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("MEDIA_S3_ENDPOINT")), "/"); endpoint != "" {
+		accessKey, secretErr := appconfig.ReadSecret("MEDIA_S3_ACCESS_KEY")
+		if secretErr != nil {
+			logger.Error("worker media access-key configuration failed", "error", secretErr)
+			os.Exit(2)
+		}
+		secretKey, secretErr := appconfig.ReadSecret("MEDIA_S3_SECRET_KEY")
+		if secretErr != nil {
+			logger.Error("worker media secret-key configuration failed", "error", secretErr)
+			os.Exit(2)
+		}
+		store, storeErr := media.NewS3Store(media.S3Config{
+			Endpoint:  endpoint,
+			Bucket:    strings.TrimSpace(os.Getenv("MEDIA_S3_BUCKET")),
+			Region:    strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
+			AccessKey: accessKey,
+			SecretKey: secretKey,
+		})
+		if storeErr != nil {
+			logger.Error("worker media object storage initialization failed", "error", storeErr)
+			os.Exit(2)
+		}
+		mediaService, err = media.NewService(media.Config{Pool: pool, Store: store})
+		if err != nil {
+			logger.Error("worker media service initialization failed", "error", err)
+			os.Exit(2)
+		}
+	}
+
 	logger.Info("worker started", "service", "dd-worker", "version", version)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	outboxTicker := time.NewTicker(500 * time.Millisecond)
+	defer outboxTicker.Stop()
+	mediaCleanupTicker := time.NewTicker(time.Minute)
+	defer mediaCleanupTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Info("worker stopped", "service", "dd-worker", "version", version)
 			return
-		case <-ticker.C:
+		case <-outboxTicker.C:
 			batchContext, batchCancel := context.WithTimeout(ctx, 5*time.Second)
 			processed, dispatchErr := messagingService.DispatchOutbox(batchContext, 100)
 			batchCancel()
@@ -64,6 +98,20 @@ func main() {
 			}
 			if processed > 0 {
 				logger.Info("outbox batch dispatched", "service", "dd-worker", "events", processed)
+			}
+		case <-mediaCleanupTicker.C:
+			if mediaService == nil {
+				continue
+			}
+			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
+			removed, cleanupErr := mediaService.CleanupExpiredUploads(cleanupContext, 100)
+			cleanupCancel()
+			if cleanupErr != nil {
+				logger.Error("expired media cleanup failed", "service", "dd-worker", "error", cleanupErr)
+				continue
+			}
+			if removed > 0 {
+				logger.Info("expired media cleaned", "service", "dd-worker", "objects", removed)
 			}
 		}
 	}
