@@ -1,0 +1,5 @@
+{
+  "type": "EVENT_AVAILABLE",
+  "eventId": "evt_fixture01",
+  "cursor": "cur_fixture02"
+}

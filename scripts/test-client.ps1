@@ -9,12 +9,40 @@ $GoExe = 'C:\Program Files\Go\bin\go.exe'
 $GoFmtExe = 'C:\Program Files\Go\bin\gofmt.exe'
 $FlutterExe = 'C:\dev\flutter\bin\flutter.bat'
 $DartExe = 'C:\dev\flutter\bin\cache\dart-sdk\bin\dart.exe'
-$Port = 18473
+
+function Get-FreeTcpPort {
+    for ($Attempt = 0; $Attempt -lt 200; $Attempt++) {
+        $Candidate = Get-Random -Minimum 10000 -Maximum 65536
+        $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Candidate)
+        try {
+            $Listener.Start()
+            return $Candidate
+        }
+        catch [System.Net.Sockets.SocketException] {
+            continue
+        }
+        finally {
+            $Listener.Stop()
+        }
+    }
+
+    throw 'Unable to allocate a free five-digit TCP port for smoke testing.'
+}
+
+$Port = Get-FreeTcpPort
 
 foreach ($Tool in @($GoExe, $GoFmtExe, $FlutterExe, $DartExe)) {
     if (-not (Test-Path -LiteralPath $Tool)) {
         throw "Required tool not found: $Tool"
     }
+}
+
+$DeveloperMode = Get-ItemPropertyValue `
+    -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
+    -Name 'AllowDevelopmentWithoutDevLicense' `
+    -ErrorAction SilentlyContinue
+if ($DeveloperMode -ne 1) {
+    throw 'Windows Developer Mode is required for Flutter plugins. Run .\scripts\enable-windows-developer-mode.ps1 first.'
 }
 
 function Invoke-Checked {
@@ -65,9 +93,10 @@ Invoke-Checked $DartExe @('analyze', '--fatal-infos') $AppPath 'App analyze fail
 Invoke-Checked $FlutterExe @('test', '--reporter', 'expanded') $AppPath 'Flutter tests failed.'
 
 Write-Host '[4/5] Live REST and WebSocket smoke test'
+Write-Host "Temporary smoke-test port: $Port"
 $Existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($Existing) {
-    throw "Port $Port is already in use. Stop the existing process first."
+    throw "Dynamically selected test port $Port became occupied before startup. Re-run the test."
 }
 
 $Binary = Join-Path $env:TEMP ("openimx-realtime-test-$PID.exe")

@@ -1,0 +1,398 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:realtime_poc/realtime_poc.dart';
+
+import '../data/call_signaling_client.dart';
+import '../data/http_call_session_api.dart';
+import '../domain/call_media_gateway.dart';
+import '../domain/call_session.dart';
+
+final class TwoPartyCallController extends ChangeNotifier {
+  TwoPartyCallController(
+    this._media, {
+    CallSessionApi? api,
+    CallSignalingFactory? signalingFactory,
+  }) : _api = api ?? HttpCallSessionApi(),
+       _signalingFactory = signalingFactory ?? _defaultSignalingFactory;
+
+  static final RegExp _safeIdentifier = RegExp(
+    r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$',
+  );
+
+  final CallMediaGateway _media;
+  final CallSessionApi _api;
+  final CallSignalingFactory _signalingFactory;
+
+  CallSignalingClient? _signaling;
+  StreamSubscription<RealtimeEvent>? _eventSubscription;
+  StreamSubscription<RealtimeConnectionState>? _stateSubscription;
+  StreamSubscription<Object>? _errorSubscription;
+
+  Uri? _apiBaseUri;
+  String _identity = '';
+  String _displayName = '';
+  CallSession? _currentCall;
+  RealtimeConnectionState _signalingState =
+      RealtimeConnectionState.disconnected;
+  bool _busy = false;
+  bool _mediaJoinInProgress = false;
+  bool _initialRecoveryComplete = false;
+  bool _closed = false;
+  String? _errorMessage;
+
+  CallSession? get currentCall => _currentCall;
+  RealtimeConnectionState get signalingState => _signalingState;
+  bool get busy => _busy;
+  bool get mediaJoinInProgress => _mediaJoinInProgress;
+  String? get errorMessage => _errorMessage;
+  String get identity => _identity;
+  String get displayName => _displayName;
+  bool get signalingConnected =>
+      _signalingState == RealtimeConnectionState.connected;
+  bool get isIncoming => _currentCall?.isIncomingFor(_identity) ?? false;
+  bool get isOutgoing => _currentCall?.isOutgoingFor(_identity) ?? false;
+  bool get isInCall =>
+      _currentCall?.status == CallSessionStatus.accepted && _media.connected;
+
+  String get peerIdentity {
+    final call = _currentCall;
+    if (call == null || _identity.isEmpty) return '';
+    return call.peerIdentityFor(_identity);
+  }
+
+  Future<bool> start({
+    required String apiBaseUrl,
+    required String participantIdentity,
+    required String participantName,
+  }) async {
+    if (_closed || _busy) return false;
+
+    final apiBaseUri = _parseApiBaseUri(apiBaseUrl);
+    final identity = participantIdentity.trim();
+    final displayName = participantName.trim();
+    if (apiBaseUri == null ||
+        !_safeIdentifier.hasMatch(identity) ||
+        displayName.isEmpty ||
+        displayName.runes.length > 80) {
+      _setError('参数无效：服务地址需为 http/https，身份只能用字母、数字、点、下划线或短横线。');
+      return false;
+    }
+
+    _busy = true;
+    _errorMessage = null;
+    _notify();
+    try {
+      await _disposeSignaling();
+      _apiBaseUri = apiBaseUri;
+      _identity = identity;
+      _displayName = displayName;
+
+      final signaling = _signalingFactory(
+        apiBaseUri: apiBaseUri,
+        participantIdentity: identity,
+      );
+      _signaling = signaling;
+      _eventSubscription = signaling.events.listen(_handleRealtimeEvent);
+      _stateSubscription = signaling.states.listen((state) {
+        final wasConnected =
+            _signalingState == RealtimeConnectionState.connected;
+        _signalingState = state;
+        if (state == RealtimeConnectionState.connected &&
+            !wasConnected &&
+            _initialRecoveryComplete) {
+          unawaited(_recoverActiveCall());
+        }
+        _notify();
+      });
+      _errorSubscription = signaling.errors.listen((error) {
+        _setError('实时信令异常：${_safeError(error)}', preserveCall: true);
+      });
+
+      await signaling.connect();
+      await _recoverActiveCall();
+      _initialRecoveryComplete = true;
+      return true;
+    } catch (error) {
+      _setError('连接通话服务失败：${_safeError(error)}', preserveCall: true);
+      await _disposeSignaling();
+      return false;
+    } finally {
+      _busy = false;
+      _notify();
+    }
+  }
+
+  Future<void> placeCall({
+    required String calleeIdentity,
+    required CallKind kind,
+  }) async {
+    final apiBaseUri = _apiBaseUri;
+    final target = calleeIdentity.trim();
+    if (_closed ||
+        _busy ||
+        apiBaseUri == null ||
+        !signalingConnected ||
+        _currentCall?.isActive == true) {
+      return;
+    }
+    if (target.isEmpty) {
+      _setError('请输入对方身份。');
+      return;
+    }
+    if (target == _identity) {
+      _setError('不能呼叫自己。');
+      return;
+    }
+    if (!_safeIdentifier.hasMatch(target)) {
+      _setError('对方身份格式无效。');
+      return;
+    }
+
+    await _runAction(() async {
+      final call = await _api.createCall(
+        apiBaseUri: apiBaseUri,
+        callerIdentity: _identity,
+        callerName: _displayName,
+        calleeIdentity: target,
+        kind: kind,
+      );
+      await _applyCall(call);
+    });
+  }
+
+  Future<void> accept() => _applyServerAction('accept');
+
+  Future<void> reject() => _applyServerAction('reject');
+
+  Future<void> hangup() => _applyServerAction('hangup');
+
+  void clearEndedCall() {
+    final call = _currentCall;
+    if (call == null || call.isActive) return;
+    _currentCall = null;
+    _errorMessage = null;
+    _notify();
+  }
+
+  Future<void> _applyServerAction(String action) async {
+    final apiBaseUri = _apiBaseUri;
+    final call = _currentCall;
+    if (_closed || _busy || apiBaseUri == null || call == null) return;
+
+    await _runAction(() async {
+      final updated = await _api.applyAction(
+        apiBaseUri: apiBaseUri,
+        callId: call.id,
+        participantIdentity: _identity,
+        action: action,
+      );
+      await _applyCall(updated);
+    });
+  }
+
+  Future<void> _runAction(Future<void> Function() action) async {
+    _busy = true;
+    _errorMessage = null;
+    _notify();
+    try {
+      await action();
+    } on CallApiException catch (error) {
+      _setError(_friendlyApiError(error), preserveCall: true);
+    } catch (error) {
+      _setError('通话操作失败：${_safeError(error)}', preserveCall: true);
+    } finally {
+      _busy = false;
+      _notify();
+    }
+  }
+
+  void _handleRealtimeEvent(RealtimeEvent event) {
+    if (event.type != 'call.incoming' && event.type != 'call.updated') return;
+    try {
+      final call = CallSession.fromJson(event.payload);
+      if (call.callerIdentity != _identity &&
+          call.calleeIdentity != _identity) {
+        return;
+      }
+      unawaited(_applyCall(call));
+    } catch (error) {
+      _setError('收到无效通话事件：${_safeError(error)}', preserveCall: true);
+    }
+  }
+
+  Future<void> _recoverActiveCall() async {
+    final apiBaseUri = _apiBaseUri;
+    if (_closed || apiBaseUri == null || _identity.isEmpty) return;
+
+    try {
+      final active = await _api.fetchActiveCall(
+        apiBaseUri: apiBaseUri,
+        participantIdentity: _identity,
+      );
+      if (active != null) {
+        await _applyCall(active);
+      }
+    } catch (error) {
+      _setError('恢复通话状态失败：${_safeError(error)}', preserveCall: true);
+    }
+  }
+
+  Future<void> _applyCall(CallSession call) async {
+    if (_closed) return;
+    final previous = _currentCall;
+    if (previous != null && previous.id != call.id && previous.isActive) {
+      return;
+    }
+
+    _currentCall = call;
+    _errorMessage = null;
+    _notify();
+
+    if (call.status == CallSessionStatus.accepted) {
+      await _ensureMediaConnected(call);
+      return;
+    }
+    if (!call.isActive && _media.connected) {
+      await _media.leave();
+      _notify();
+    }
+  }
+
+  Future<void> _ensureMediaConnected(CallSession call) async {
+    final apiBaseUri = _apiBaseUri;
+    if (_closed ||
+        apiBaseUri == null ||
+        _media.connected ||
+        _mediaJoinInProgress ||
+        _currentCall?.id != call.id) {
+      return;
+    }
+
+    _mediaJoinInProgress = true;
+    _notify();
+    try {
+      final token = await _api.issueToken(
+        apiBaseUri: apiBaseUri,
+        callId: call.id,
+        participantIdentity: _identity,
+        participantName: _displayName,
+      );
+      final joined = await _media.joinWithCredentials(
+        credentials: token,
+        roomName: call.roomName,
+        enableMicrophone: true,
+        enableCamera: call.kind == CallKind.video,
+      );
+      if (!joined) {
+        throw StateError('媒体房间连接失败');
+      }
+    } catch (error) {
+      _setError('无法进入音视频房间：${_safeError(error)}', preserveCall: true);
+      await _bestEffortHangup(call);
+    } finally {
+      _mediaJoinInProgress = false;
+      _notify();
+    }
+  }
+
+  Future<void> _bestEffortHangup(CallSession call) async {
+    final apiBaseUri = _apiBaseUri;
+    if (apiBaseUri == null || !call.isActive) return;
+    try {
+      final ended = await _api.applyAction(
+        apiBaseUri: apiBaseUri,
+        callId: call.id,
+        participantIdentity: _identity,
+        action: 'hangup',
+      );
+      _currentCall = ended;
+    } catch (_) {
+      // Keep the original media error visible; the peer will time out manually.
+    }
+  }
+
+  Future<void> shutdown() async {
+    if (_closed) return;
+    _closed = true;
+    await _disposeSignaling();
+    if (_media.connected) {
+      await _media.leave();
+    }
+    _api.close();
+  }
+
+  @override
+  void dispose() {
+    unawaited(shutdown());
+    super.dispose();
+  }
+
+  Future<void> _disposeSignaling() async {
+    // Stop the underlying client first: its dispose path synchronously cancels
+    // connect/reconnect/heartbeat timers before the first await. This matters when
+    // logging out while a websocket handshake is still pending.
+    final signaling = _signaling;
+    _signaling = null;
+    final signalingDispose = signaling?.dispose();
+
+    await _eventSubscription?.cancel();
+    await _stateSubscription?.cancel();
+    await _errorSubscription?.cancel();
+    _eventSubscription = null;
+    _stateSubscription = null;
+    _errorSubscription = null;
+    await signalingDispose;
+    _signalingState = RealtimeConnectionState.disconnected;
+    _initialRecoveryComplete = false;
+  }
+
+  void _setError(String message, {bool preserveCall = false}) {
+    _errorMessage = message;
+    if (!preserveCall) _currentCall = null;
+    _notify();
+  }
+
+  void _notify() {
+    if (!_closed) notifyListeners();
+  }
+
+  static CallSignalingClient _defaultSignalingFactory({
+    required Uri apiBaseUri,
+    required String participantIdentity,
+  }) {
+    return RealtimeCallSignalingClient(
+      apiBaseUri: apiBaseUri,
+      participantIdentity: participantIdentity,
+    );
+  }
+
+  static Uri? _parseApiBaseUri(String raw) {
+    final uri = Uri.tryParse(raw.trim());
+    if (uri == null ||
+        !uri.isAbsolute ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      return null;
+    }
+    return uri.replace(path: '', query: null, fragment: null);
+  }
+
+  static String _friendlyApiError(CallApiException error) {
+    return switch (error.code) {
+      'CALL_BUSY' => '对方或你正在通话中。',
+      'CALL_NOT_FOUND' => '该通话已经不存在。',
+      'INVALID_CALL_STATE' => '通话状态已变化，请以另一端最新状态为准。',
+      'CALL_FORBIDDEN' => '当前身份无权操作这通电话。',
+      _ => '通话服务错误：${error.message}',
+    };
+  }
+
+  static String _safeError(Object error) {
+    final text = error.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    return text.length <= 240 ? text : '${text.substring(0, 237)}…';
+  }
+}

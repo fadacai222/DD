@@ -17,9 +17,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous,
   project.set_dart_entrypoint_arguments(GetCommandLineArguments());
 
   FlutterWindow window(project);
-  const Win32Window::Point origin(40, 40);
-  const Win32Window::Size size(1280, 800);
-  if (!window.Create(L"OpenIMX Realtime Console", origin, size)) {
+  const Win32Window::Point origin(80, 60);
+  const Win32Window::Size size(881, 657);
+  if (!window.Create(L"DD", origin, size)) {
     ::CoUninitialize();
     return EXIT_FAILURE;
   }

@@ -2,6 +2,8 @@
 
 #include <optional>
 
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -22,6 +24,52 @@ bool FlutterWindow::OnCreate() {
   }
 
   RegisterPlugins(flutter_controller_->engine());
+  window_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "dd/window",
+      &flutter::StandardMethodCodec::GetInstance());
+  window_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        const HWND window = GetHandle();
+        if (window == nullptr) {
+          result->Error("WINDOW_UNAVAILABLE", "Window handle is unavailable");
+          return;
+        }
+        if (call.method_name() == "minimize") {
+          ::ShowWindow(window, SW_MINIMIZE);
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "toggleMaximize") {
+          ::ShowWindow(window, ::IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
+          result->Success(flutter::EncodableValue(::IsZoomed(window) != FALSE));
+          return;
+        }
+        if (call.method_name() == "close") {
+          ::PostMessage(window, WM_CLOSE, 0, 0);
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "toggleAlwaysOnTop") {
+          const LONG_PTR ex_style = ::GetWindowLongPtr(window, GWL_EXSTYLE);
+          const bool currently_topmost = (ex_style & WS_EX_TOPMOST) != 0;
+          ::SetWindowPos(window, currently_topmost ? HWND_NOTOPMOST : HWND_TOPMOST,
+                         0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+          result->Success(flutter::EncodableValue(!currently_topmost));
+          return;
+        }
+        if (call.method_name() == "startDrag") {
+          ::ReleaseCapture();
+          ::SendMessage(window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "isMaximized") {
+          result->Success(flutter::EncodableValue(::IsZoomed(window) != FALSE));
+          return;
+        }
+        result->NotImplemented();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   flutter_controller_->engine()->SetNextFrameCallback([this]() { Show(); });
   flutter_controller_->ForceRedraw();
@@ -29,6 +77,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  window_channel_.reset();
   flutter_controller_.reset();
   Win32Window::OnDestroy();
 }

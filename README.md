@@ -1,6 +1,6 @@
-# 复刻微信：开源自托管 IM 项目企划
+# DD：开源自托管 IM
 
-> 项目代号：OpenIMX（临时名，正式发布前必须更换为原创品牌名）
+> 当前项目名：DD。项目目标是提供独立、自托管、多端即时通讯能力；**UI 与交互习惯参考微信，功能开放性与能力丰富度参考 Telegram，WhatsApp 不作为产品设计参考**；品牌、图标和素材保持 DD 原创。
 
 这是一个面向个人、团队和小型社区的开源自托管即时通讯系统。目标是让任何拥有公网服务器、域名和基础 Docker 运维能力的人，都能搭建一套独立可控的 IM 服务。
 
@@ -32,6 +32,13 @@
 - [API 与数据模型草案](docs/05-API与数据模型草案.md)
 - [测试验收与发布标准](docs/06-测试验收与发布标准.md)
 - [P0 实时通信 PoC](docs/07-P0实时通信PoC.md)
+- [P0 音视频通话 PoC](docs/08-P0音视频通话PoC.md)
+- [P0 E2EE 候选库评估](docs/09-P0-E2EE候选库评估.md)
+- [P2 账号认证垂直切片](docs/10-P2账号认证垂直切片.md)
+- [P3 好友与关系链](docs/11-P3好友关系链.md)
+- [产品体验与 UI / 功能基线](docs/12-产品体验与UI功能基线.md)
+- [开发进度跟踪](开发进度跟踪.md)
+- [当前人工测试](人工测试.md)
 - [开发实施计划](tasks/plan.md)
 - [开发 Todolist](tasks/todo.md)
 - [架构决策记录](docs/decisions/)
@@ -68,18 +75,78 @@
 
 ## 当前状态
 
-P0 实时通信链路已经完成第一轮验证：
+截至 2026-08-08，项目已经推进到 **P2 正式账号主体完成 + P3 好友关系链主体完成，准备进入 P4 可靠文字消息与同步**。
 
-- Go 实时服务端：`/health`、`/version`、`/ws`。
-- WebSocket `hello/hello_ack/server_ready/ping/pong/error` 最小协议。
-- 可复用 Dart 实时客户端：自动重连、事件游标去重、HTTP 健康检查。
-- 正式 Flutter 调试 App：服务器配置、连接控制、Ping/Pong、状态和事件日志。
-- 服务端重启后，客户端能够检测断线、自动重连并继续接收事件。
-- Go、Dart、Flutter 测试和静态分析已通过。
-- Windows Release、Web Release、Android Debug APK 已成功构建。
-- 一键检查、重连测试和三端构建脚本已经提供。
+### P0 已完成当前 Windows / Web / Android 验收批次
 
-当前仍未验证 iOS、macOS、Linux 构建和 Android 真机 UI。详见 [P0 实时通信 PoC](docs/07-P0实时通信PoC.md)。
+- REST / WebSocket 实时通信 PoC 已通过。
+- Windows ↔ Web、Windows ↔ Android、Web ↔ Android 音视频人工验收均通过。
+- 呼叫、来电、接听、拒绝、取消、45 秒超时、挂断同步均通过。
+- Windows / Web / Android TURN relay-only 人工诊断通过。
+- TURN/UDP 使用 `3478` 入口和 `30000-30019/udp` relay 范围。
+- Android 后台 / 锁屏 / 短时断网恢复、媒体控制、窄屏适配通过本轮人工验收。
+- 公网 TURN/TLS、4G/5G 跨运营商、iOS/macOS/Linux 仍属于后续专项。
+
+### P1 工程基础已经形成
+
+仓库已有：
+
+```text
+Go: api / worker / migrate
+Flutter: Windows / Web / Android
+Admin: React + TypeScript
+PostgreSQL / Redis / MinIO / Mailpit / LiveKit
+OpenAPI / Realtime Schema / Migration / CI
+```
+
+### P2 正式账号主体已落地
+
+当前已包含：
+
+- 邮箱验证码、注册事务、Argon2id。
+- 登录失败限流和 Auth 安全审计。
+- Access / Refresh Token、轮换、Family 重放整族撤销。
+- 密码找回 / 重置，成功后撤销全部旧会话。
+- `/api/v1/me` 资料和隐私。
+- 设备列表、指定设备远程退出、全部退出。
+- 被撤销设备的 Access Token 下一次请求立即失效。
+- Native `flutter_secure_storage` + App 启动自动恢复。
+- Web HttpOnly Cookie + 页面启动自动恢复，不把 Refresh Token 放进 JS 存储。
+- Flutter 注册、登录、密码找回、资料、隐私、设备管理 UI。
+- PostgreSQL + Mailpit 真实账号生命周期集成测试已进入 CI。
+
+### P3 好友关系链主体已落地
+
+正式关系链现在支持：
+
+- 精确 Handle 搜索，不返回邮箱。
+- 好友申请、接受、拒绝、撤销、过期。
+- 同向重复申请幂等。
+- 双方并发互相申请自动收敛为好友。
+- 接受好友时原子创建双向 contacts，并创建/复用 DIRECT conversation。
+- 联系人备注、标签、星标。
+- 删除好友但保留历史会话语义。
+- 拉黑、解除拉黑、取消 PENDING、搜索隐藏和再申请阻断。
+- Flutter “搜索 / 申请 / 联系人 / 黑名单”四 Tab 页面。
+- PostgreSQL 真库并发集成和 P3 Flutter Widget/API Client 自动测试。
+
+详细设计见 [P3 好友与关系链](docs/11-P3好友关系链.md)。
+
+本地人工验收现在统一使用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
+```
+
+测试完成：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-auth-dev.ps1
+```
+
+具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。2026-08-08 的 P4 真人验收已暴露 Web 置顶/免打扰、已读状态 UI、回车发送、Emoji/Sticker/GIF、撤回规则、图片/语音条和整体视觉方向等缺口；当前人工批次已暂停，等聊天体验修复版后再重新验收。
+
+详细当前完成度见 [开发进度跟踪.md](开发进度跟踪.md)。
 
 仍需冻结的高风险决策：
 

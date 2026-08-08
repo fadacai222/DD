@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'features/realtime/presentation/realtime_debug_page.dart';
+import 'core/window/desktop_window_frame.dart';
+import 'features/auth/presentation/auth_page.dart';
 import 'theme/app_theme.dart';
 
 class ImClientApp extends StatelessWidget {
@@ -10,11 +11,13 @@ class ImClientApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'OpenIMX Realtime Console',
+      title: 'DD',
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: ThemeMode.system,
-      home: const RealtimeDebugPage(),
+      builder: (context, child) =>
+          DesktopWindowFrame(child: child ?? const SizedBox.shrink()),
+      home: const AuthPage(),
     );
   }
 }

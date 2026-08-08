@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dd.invalid/schemas/realtime-v1.schema.json",
+  "title": "DD Realtime Protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/helloAck" },
+    { "$ref": "#/$defs/eventAvailable" },
+    { "$ref": "#/$defs/ping" },
+    { "$ref": "#/$defs/pong" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "deviceId", "lastCursor"],
+      "properties": {
+        "type": { "const": "HELLO" },
+        "protocolVersion": { "const": 1 },
+        "deviceId": { "type": "string", "pattern": "^dev_[A-Za-z0-9_-]{8,128}$" },
+        "lastCursor": { "type": ["string", "null"], "maxLength": 256 }
+      }
+    },
+    "helloAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "connectionId", "serverTime"],
+      "properties": {
+        "type": { "const": "HELLO_ACK" },
+        "protocolVersion": { "const": 1 },
+        "connectionId": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "serverTime": { "type": "string", "format": "date-time" }
+      }
+    },
+    "eventAvailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "eventId", "cursor"],
+      "properties": {
+        "type": { "const": "EVENT_AVAILABLE" },
+        "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "cursor": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "timestamp"],
+      "properties": {
+        "type": { "const": "PING" },
+        "timestamp": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pong": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "timestamp"],
+      "properties": {
+        "type": { "const": "PONG" },
+        "timestamp": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "code", "message"],
+      "properties": {
+        "type": { "const": "ERROR" },
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "requestId": { "type": ["string", "null"], "maxLength": 128 }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "type": "HELLO",
+  "protocolVersion": 1,
+  "deviceId": "dev_fixture01",
+  "lastCursor": "cur_fixture01"
+}

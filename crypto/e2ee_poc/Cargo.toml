@@ -1,0 +1,11 @@
+[package]
+name = "dd-e2ee-poc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vodozemac = { version = "=0.10.0", default-features = false }
+serde_json = "1.0"
+
+[dev-dependencies]

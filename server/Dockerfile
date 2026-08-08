@@ -1,9 +1,10 @@
 FROM golang:1.26.5-alpine AS build
 
-WORKDIR /src
-COPY go.mod ./
+WORKDIR /src/server
+COPY server/go.mod server/go.sum ./
 RUN go mod download
-COPY . .
+COPY server/ ./
+COPY packages/realtime_protocol/fixtures /src/packages/realtime_protocol/fixtures
 
 ARG VERSION=dev
 RUN go test ./... && \

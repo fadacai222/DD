@@ -45,7 +45,7 @@ class _RealtimeDebugPageState extends State<RealtimeDebugPage> {
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('OpenIMX'),
+            Text('DD'),
             Text(
               'Realtime transport verification',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w400),

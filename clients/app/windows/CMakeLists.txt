@@ -21,6 +21,12 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 
 add_definitions(-DUNICODE -D_UNICODE)
 
+# Force MSVC to read Flutter plugin sources as UTF-8. Without this, Chinese
+# Windows installations use code page 936 and C4819 becomes fatal under /WX.
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")

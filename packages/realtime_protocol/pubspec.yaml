@@ -1,0 +1,10 @@
+name: dd_realtime_protocol
+description: Shared DD realtime protocol v1 contract and fixtures.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.12.0 <4.0.0"
+
+dev_dependencies:
+  test: ^1.26.3

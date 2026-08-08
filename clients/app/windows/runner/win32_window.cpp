@@ -1,6 +1,7 @@
 #include "win32_window.h"
 
 #include <dwmapi.h>
+#include <windowsx.h>
 #include <flutter_windows.h>
 
 namespace {
@@ -88,8 +89,10 @@ bool Win32Window::Create(const std::wstring& title, const Point& origin,
   const UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   const double scale_factor = static_cast<double>(dpi) / 96.0;
 
+  constexpr DWORD kFramelessStyle =
+      WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
   window_handle_ = ::CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      window_class, title.c_str(), kFramelessStyle,
       Scale(static_cast<int>(origin.x), scale_factor),
       Scale(static_cast<int>(origin.y), scale_factor),
       Scale(static_cast<int>(size.width), scale_factor),
@@ -99,6 +102,9 @@ bool Win32Window::Create(const std::wstring& title, const Point& origin,
     return false;
   }
 
+  ::SetWindowPos(window_handle_, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
   UpdateTheme(window_handle_);
   return OnCreate();
 }
@@ -157,6 +163,55 @@ LRESULT CALLBACK Win32Window::WndProc(HWND window, UINT message, WPARAM wparam,
 LRESULT Win32Window::MessageHandler(HWND window, UINT message, WPARAM wparam,
                                     LPARAM lparam) noexcept {
   switch (message) {
+    case WM_NCCALCSIZE:
+      if (wparam == TRUE) {
+        return 0;
+      }
+      return ::DefWindowProc(window, message, wparam, lparam);
+    case WM_NCHITTEST: {
+      const LRESULT default_hit = ::DefWindowProc(window, message, wparam, lparam);
+      if (default_hit != HTCLIENT) {
+        return default_hit;
+      }
+      RECT rect{};
+      ::GetWindowRect(window, &rect);
+      const int x = GET_X_LPARAM(lparam);
+      const int y = GET_Y_LPARAM(lparam);
+      constexpr int border = 6;
+      const bool left = x >= rect.left && x < rect.left + border;
+      const bool right = x <= rect.right && x > rect.right - border;
+      const bool top = y >= rect.top && y < rect.top + border;
+      const bool bottom = y <= rect.bottom && y > rect.bottom - border;
+      if (top && left) return HTTOPLEFT;
+      if (top && right) return HTTOPRIGHT;
+      if (bottom && left) return HTBOTTOMLEFT;
+      if (bottom && right) return HTBOTTOMRIGHT;
+      if (left) return HTLEFT;
+      if (right) return HTRIGHT;
+      if (top) return HTTOP;
+      if (bottom) return HTBOTTOM;
+      return HTCLIENT;
+    }
+    case WM_GETMINMAXINFO: {
+      auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+      info->ptMinTrackSize.x = 720;
+      info->ptMinTrackSize.y = 520;
+
+      // WS_POPUP frameless windows need explicit work-area bounds or a maximized
+      // window may cover the taskbar. Match normal Windows window behavior.
+      const HMONITOR monitor = ::MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO monitor_info{};
+      monitor_info.cbSize = sizeof(MONITORINFO);
+      if (::GetMonitorInfo(monitor, &monitor_info)) {
+        const RECT& work = monitor_info.rcWork;
+        const RECT& full = monitor_info.rcMonitor;
+        info->ptMaxPosition.x = work.left - full.left;
+        info->ptMaxPosition.y = work.top - full.top;
+        info->ptMaxSize.x = work.right - work.left;
+        info->ptMaxSize.y = work.bottom - work.top;
+      }
+      return 0;
+    }
     case WM_DESTROY:
       window_handle_ = nullptr;
       child_content_ = nullptr;

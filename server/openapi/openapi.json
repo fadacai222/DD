@@ -1,0 +1,1484 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "DD Core API",
+    "version": "0.1.0",
+    "description": "Stable v1 contract for DD instance discovery, service health, account authentication, contacts, and P4 reliable text messaging/sync. P0 call endpoints remain experimental and are intentionally excluded until promoted into /api/v1.",
+    "license": {
+      "name": "License decision pending",
+      "url": "https://dd.invalid/license-pending"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://{instanceHost}",
+      "description": "Self-hosted DD instance",
+      "variables": {
+        "instanceHost": {
+          "default": "dd.invalid",
+          "description": "Hostname of the self-hosted instance"
+        }
+      }
+    }
+  ],
+  "security": [],
+  "tags": [
+    {
+      "name": "Discovery",
+      "description": "Instance discovery endpoints used before authentication."
+    },
+    {
+      "name": "System",
+      "description": "Liveness, readiness and version information."
+    },
+    {
+      "name": "Auth",
+      "description": "Email registration, password login and refresh-token rotation."
+    },
+    {
+      "name": "Contacts",
+      "description": "Exact handle discovery, contact requests, contact metadata and blocking."
+    },
+    {
+      "name": "Messaging",
+      "description": "Direct conversations, idempotent text messages, read state, recall and cursor-based recovery sync."
+    }
+  ],
+  "paths": {
+    "/.well-known/openimx/client": {
+      "get": {
+        "operationId": "getWellKnownClientConfiguration",
+        "summary": "Discover a DD instance",
+        "description": "Returns the minimal unauthenticated connection document. This endpoint is intentionally not wrapped in the normal API envelope.",
+        "tags": ["Discovery"],
+        "responses": {
+          "200": {
+            "description": "Client discovery document",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Instance"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/api/v1/instance": {
+      "get": {
+        "operationId": "getInstance",
+        "summary": "Get instance configuration",
+        "tags": ["Discovery"],
+        "responses": {
+          "200": {
+            "description": "Instance configuration",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/register/email/send-code": {
+      "post": {
+        "operationId": "requestEmailCode",
+        "summary": "Request an email verification code",
+        "description": "Requests a short-lived registration code. Accepted responses do not reveal whether the email is already registered.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/EmailCodeRequest"}
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Request accepted",
+            "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestId"}, "Retry-After": {"schema": {"type": "integer", "minimum": 1}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmailCodeAcceptedResponse"}}}
+          },
+          "400": {"description": "Invalid email or purpose", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Registration is disabled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Verification-code rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Authentication service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "operationId": "registerAccount",
+        "summary": "Register a new account",
+        "description": "Atomically consumes a registration code and creates the user, privacy settings, Argon2id password record, first device and refresh-token family.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RegisterRequest"}}}
+        },
+        "responses": {
+          "201": {"description": "Account created and authenticated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthSessionResponse"}}}},
+          "400": {"description": "Input or verification code is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Registration is disabled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Email or handle is already in use", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Authentication service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "loginWithPassword",
+        "summary": "Login with email and password",
+        "description": "Uses a unified invalid-credentials response for unknown accounts and wrong passwords, creates a device session and starts a refresh-token family.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Authenticated session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthSessionResponse"}}}},
+          "400": {"description": "Request shape or device metadata is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Email or password is incorrect", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Too many failed login attempts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Authentication service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/token/refresh": {
+      "post": {
+        "operationId": "rotateRefreshToken",
+        "summary": "Rotate a refresh token",
+        "description": "Consumes one refresh token and returns a new access/refresh pair. Reusing a consumed refresh token revokes its entire token family.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RefreshRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Refresh token rotated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthSessionResponse"}}}},
+          "400": {"description": "Request shape is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Refresh token is invalid, expired, revoked or reused", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Authentication service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/password/reset/send-code": {
+      "post": {
+        "operationId": "requestPasswordResetCode",
+        "summary": "Request a password reset code",
+        "description": "Always uses accepted semantics for syntactically valid requests so callers cannot enumerate registered emails.",
+        "tags": ["Auth"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PasswordResetCodeRequest"}}}},
+        "responses": {
+          "202": {"description": "Request accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmailCodeAcceptedResponse"}}}},
+          "400": {"description": "Request is malformed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Reset-code rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/password/reset": {
+      "post": {
+        "operationId": "resetPassword",
+        "summary": "Reset the account password",
+        "description": "Consumes a short-lived one-time code, updates the Argon2id password hash and revokes every existing device and refresh-token session.",
+        "tags": ["Auth"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PasswordResetRequest"}}}},
+        "responses": {
+          "200": {"description": "Password reset and existing sessions revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "400": {"description": "Code, password or request is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/auth/logout-all": {
+      "post": {
+        "operationId": "logoutAllDevices",
+        "summary": "Revoke every device session",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "All device sessions revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "summary": "Get current profile and privacy settings",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Current profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountMeResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "updateCurrentUser",
+        "summary": "Update profile and privacy settings",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateMeRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountMeResponse"}}}},
+          "400": {"description": "Profile input is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/me/avatar": {
+      "put": {
+        "operationId": "updateCurrentUserAvatar",
+        "summary": "Upload or replace the current user's avatar",
+        "description": "Accepts JPEG, PNG or WebP image bytes up to 2 MiB. SVG and other active formats are rejected.",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+            "image/png": {"schema": {"type": "string", "format": "binary"}},
+            "image/webp": {"schema": {"type": "string", "format": "binary"}}
+          }
+        },
+        "responses": {
+          "200": {"description": "Avatar updated"},
+          "400": {"description": "Avatar type or bytes are invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "413": {"description": "Avatar exceeds 2 MiB", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "deleteCurrentUserAvatar",
+        "summary": "Remove the current user's avatar",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Avatar removed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/avatars/{userId}": {
+      "get": {
+        "operationId": "getUserAvatar",
+        "summary": "Get one active user's avatar",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "userId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {
+            "description": "Avatar image bytes",
+            "content": {
+              "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+              "image/png": {"schema": {"type": "string", "format": "binary"}},
+              "image/webp": {"schema": {"type": "string", "format": "binary"}}
+            }
+          },
+          "400": {"description": "User id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Avatar was not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "operationId": "listCurrentUserDevices",
+        "summary": "List the current user's devices",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Device list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/devices/{deviceId}": {
+      "delete": {
+        "operationId": "revokeDevice",
+        "summary": "Revoke one owned device session",
+        "description": "The device must belong to the authenticated user; cross-user device ids are not revocable.",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "deviceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "Device revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "400": {"description": "Device id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Device was not found for this user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/users/by-handle/{handle}": {
+      "get": {
+        "operationId": "findUserByHandle",
+        "summary": "Find one active user by exact handle",
+        "description": "Exact authenticated lookup only. Email is never returned, blocked relationships are hidden as not found, and lookups are rate limited.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "handle", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{2,31}$"}}],
+        "responses": {
+          "200": {"description": "User and current relationship state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchUserResponse"}}}},
+          "400": {"description": "Handle is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "No visible active user exists for this handle", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Handle-search rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contact-requests": {
+      "get": {
+        "operationId": "listContactRequests",
+        "summary": "List incoming or outgoing contact requests",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "direction", "in": "query", "required": true, "schema": {"type": "string", "enum": ["incoming", "outgoing"]}},
+          {"$ref": "#/components/parameters/Page"},
+          {"$ref": "#/components/parameters/PageSize"}
+        ],
+        "responses": {
+          "200": {"description": "Paginated contact requests", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestPageResponse"}}}},
+          "400": {"description": "Pagination or direction is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "sendContactRequest",
+        "summary": "Send a contact request by exact handle",
+        "description": "Repeated same-direction pending requests are idempotent. If both users concurrently request each other, the existing reverse request is atomically accepted.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SendContactRequest"}}}},
+        "responses": {
+          "201": {"description": "Pending request created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestResponse"}}}},
+          "200": {"description": "Reverse pending request was accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestResponse"}}}},
+          "400": {"description": "Handle or message is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target is not visible; blocked and missing targets are intentionally indistinguishable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Already contacts, self request, or relationship state conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Contact-request rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contact-requests/{requestId}/accept": {
+      "post": {
+        "operationId": "acceptContactRequest",
+        "summary": "Accept an incoming contact request",
+        "description": "Atomically marks the request accepted, creates both directional contact rows, and creates or reuses the direct conversation.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ContactRequestId"}],
+        "responses": {
+          "200": {"description": "Request accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "The request does not belong to the authenticated receiver", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Request not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Request is expired, resolved, or relationship is blocked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contact-requests/{requestId}/reject": {
+      "post": {
+        "operationId": "rejectContactRequest",
+        "summary": "Reject an incoming contact request",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ContactRequestId"}],
+        "responses": {
+          "200": {"description": "Request rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "The request does not belong to the authenticated receiver", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Request not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Request cannot be rejected in its current state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contact-requests/{requestId}": {
+      "delete": {
+        "operationId": "cancelContactRequest",
+        "summary": "Cancel an outgoing pending contact request",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ContactRequestId"}],
+        "responses": {
+          "200": {"description": "Request cancelled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactRequestResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "The request does not belong to the authenticated sender", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Request not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Request cannot be cancelled in its current state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contacts": {
+      "get": {
+        "operationId": "listContacts",
+        "summary": "List contacts and owner-specific metadata",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/PageSize"}],
+        "responses": {
+          "200": {"description": "Paginated contacts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactPageResponse"}}}},
+          "400": {"description": "Pagination is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/contacts/{userId}": {
+      "patch": {
+        "operationId": "updateContactMetadata",
+        "summary": "Update remark, star, or tags for one owned contact",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateContactRequest"}}}},
+        "responses": {
+          "200": {"description": "Contact metadata updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactResponse"}}}},
+          "400": {"description": "Metadata is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Contact not found for this owner", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "deleteContact",
+        "summary": "Delete the friendship while retaining the direct conversation history",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "Friendship deleted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Contact not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/blocks": {
+      "get": {
+        "operationId": "listBlockedUsers",
+        "summary": "List users blocked by the current user",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/Page"}, {"$ref": "#/components/parameters/PageSize"}],
+        "responses": {
+          "200": {"description": "Paginated blocked users", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BlockedUserPageResponse"}}}},
+          "400": {"description": "Pagination is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "blockUser",
+        "summary": "Block a user",
+        "description": "Blocking removes both contact rows and cancels pending contact requests immediately. Message, feed and call authorization must also consult this relationship in their formal modules.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BlockUserRequest"}}}},
+        "responses": {
+          "201": {"description": "User blocked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BlockedUserResponse"}}}},
+          "400": {"description": "User id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target user not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Self-block or other relationship conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/blocks/{userId}": {
+      "delete": {
+        "operationId": "unblockUser",
+        "summary": "Remove one owned block",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "User unblocked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Block not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "operationId": "listConversations",
+        "summary": "List active conversations for the current user",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100}}],
+        "responses": {
+          "200": {"description": "Conversation list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationListResponse"}}}},
+          "400": {"description": "Limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations/direct": {
+      "post": {
+        "operationId": "ensureDirectConversation",
+        "summary": "Get or create the unique direct conversation for one user pair",
+        "description": "The operation is idempotent for the same unordered user pair and applies block/contact/stranger-message policy before creating membership.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectConversationRequest"}}}},
+        "responses": {
+          "200": {"description": "Existing or newly ensured direct conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationResponse"}}}},
+          "400": {"description": "Target user id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Relationship policy blocks this direct conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target user was not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}": {
+      "get": {
+        "operationId": "getConversation",
+        "summary": "Get one conversation visible to the current user",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
+        "responses": {
+          "200": {"description": "Conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationResponse"}}}},
+          "400": {"description": "Conversation id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}/messages": {
+      "get": {
+        "operationId": "listConversationMessages",
+        "summary": "Page backward through conversation history by sequence cursor",
+        "description": "Returns messages in descending sequence order. Pass nextBeforeSequence as beforeSequence for the next older page; page numbers are intentionally not used.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/ConversationId"},
+          {"name": "beforeSequence", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "minimum": 0}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}
+        ],
+        "responses": {
+          "200": {"description": "Message page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessagePageResponse"}}}},
+          "400": {"description": "Cursor or limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "sendConversationMessage",
+        "summary": "Send an idempotent text message",
+        "description": "senderUserId and senderDeviceId are derived from the authenticated access token. Reusing the same clientMessageId on the same device returns the original logical message instead of inserting a duplicate.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SendMessageRequest"}}}},
+        "responses": {
+          "201": {"description": "Message persisted together with its durable outbox event", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}}},
+          "400": {"description": "Message input is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current relationship policy does not permit a new message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "clientMessageId or reply target conflicts with another logical message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}/read": {
+      "post": {
+        "operationId": "markConversationRead",
+        "summary": "Advance the current user's read sequence monotonically",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarkReadRequest"}}}},
+        "responses": {
+          "200": {"description": "Read sequence after monotonic update", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarkReadResponse"}}}},
+          "400": {"description": "Sequence is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Read sequence is ahead of the conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/conversations/{conversationId}/preferences": {
+      "patch": {
+        "operationId": "updateConversationPreferences",
+        "summary": "Update per-user pin and mute preferences",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationPreferencesRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationResponse"}}}},
+          "400": {"description": "Preference update is invalid or empty", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}": {
+      "get": {
+        "operationId": "getMessage",
+        "summary": "Get one visible message",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}}},
+          "400": {"description": "Message id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/recall": {
+      "post": {
+        "operationId": "recallMessage",
+        "summary": "Recall a message sent by the current user without a time limit",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Recalled message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current user is not the sender", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/local": {
+      "delete": {
+        "operationId": "deleteMessageLocally",
+        "summary": "Hide a message only from the current user's history view",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Local deletion recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/sync": {
+      "get": {
+        "operationId": "syncMessagingEvents",
+        "summary": "Recover durable messaging events after a cursor",
+        "description": "This endpoint is authoritative for recovery. WebSocket event_available frames are hints that clients should call this endpoint; clients must not rely on WebSocket delivery alone.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "cursor", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "minimum": 0, "default": 0}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200}}
+        ],
+        "responses": {
+          "200": {"description": "Durable sync page ordered by cursor", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SyncPageResponse"}}}},
+          "400": {"description": "Cursor or limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/system/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "summary": "Get process liveness",
+        "description": "Reports whether the API process is alive. Dependency outages must not make this endpoint fail.",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "The process is alive",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveStatus"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/api/v1/system/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Get dependency readiness",
+        "description": "Returns 503 when a required dependency is unavailable without exposing raw dependency errors.",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "All configured required dependencies are ready",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one configured dependency is unavailable",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyStatus"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/api/v1/system/version": {
+      "get": {
+        "operationId": "getVersion",
+        "summary": "Get API and realtime protocol versions",
+        "tags": ["System"],
+        "responses": {
+          "200": {
+            "description": "Build and protocol version information",
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionStatus"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Page": {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "default": 1}},
+      "PageSize": {"name": "pageSize", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+      "ContactRequestId": {"name": "requestId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "UserId": {"name": "userId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "ConversationId": {"name": "conversationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "MessageId": {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Opaque identifier used to correlate one HTTP request across logs.",
+        "schema": {
+          "type": "string",
+          "pattern": "^req_[A-Za-z0-9]+$"
+        }
+      }
+    },
+    "responses": {
+      "MethodNotAllowed": {
+        "description": "HTTP method is not supported for this resource",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "AuthDeviceInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "platform"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 120},
+          "platform": {"type": "string", "enum": ["ANDROID", "IOS", "WINDOWS", "MACOS", "LINUX", "WEB"]},
+          "appVersion": {"type": "string", "maxLength": 40, "default": ""}
+        }
+      },
+      "EmailCodeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "purpose"],
+        "properties": {
+          "email": {"type": "string", "format": "email", "maxLength": 254},
+          "purpose": {"type": "string", "const": "register"}
+        }
+      },
+      "EmailCodeAccepted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accepted", "retryAfterSeconds"],
+        "properties": {
+          "accepted": {"type": "boolean", "const": true},
+          "retryAfterSeconds": {"type": "integer", "minimum": 1}
+        }
+      },
+      "EmailCodeAcceptedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {
+          "data": {"$ref": "#/components/schemas/EmailCodeAccepted"},
+          "requestId": {"$ref": "#/components/schemas/RequestIdValue"}
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "code", "password", "handle", "displayName", "device"],
+        "properties": {
+          "email": {"type": "string", "format": "email", "maxLength": 254},
+          "code": {"type": "string", "pattern": "^[0-9]{6}$"},
+          "password": {"type": "string", "minLength": 10, "maxLength": 256, "writeOnly": true},
+          "handle": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{2,31}$"},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "inviteCode": {"type": ["string", "null"], "maxLength": 128},
+          "device": {"$ref": "#/components/schemas/AuthDeviceInput"}
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "password", "device"],
+        "properties": {
+          "email": {"type": "string", "format": "email", "maxLength": 254},
+          "password": {"type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true},
+          "device": {"$ref": "#/components/schemas/AuthDeviceInput"}
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "minLength": 40,
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "Required for native clients. Web clients omit it and use the HttpOnly dd_refresh cookie."
+          }
+        }
+      },
+      "AuthUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "handle", "displayName"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "email": {"type": "string", "format": "email"},
+          "handle": {"type": "string"},
+          "displayName": {"type": "string"}
+        }
+      },
+      "AuthDevice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "platform", "appVersion"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "platform": {"type": "string", "enum": ["ANDROID", "IOS", "WINDOWS", "MACOS", "LINUX", "WEB"]},
+          "appVersion": {"type": "string"}
+        }
+      },
+      "AuthTokens": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accessToken", "accessExpiresAt", "refreshExpiresAt"],
+        "properties": {
+          "accessToken": {"type": "string", "minLength": 1},
+          "accessExpiresAt": {"type": "string", "format": "date-time"},
+          "refreshToken": {
+            "type": "string",
+            "minLength": 40,
+            "description": "Returned to native clients only. Web clients receive the refresh token only as an HttpOnly cookie."
+          },
+          "refreshExpiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AuthSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user", "device", "tokens"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/AuthUser"},
+          "device": {"$ref": "#/components/schemas/AuthDevice"},
+          "tokens": {"$ref": "#/components/schemas/AuthTokens"}
+        }
+      },
+      "AuthSessionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {
+          "data": {"$ref": "#/components/schemas/AuthSession"},
+          "requestId": {"$ref": "#/components/schemas/RequestIdValue"}
+        }
+      },
+      "PasswordResetCodeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}}
+      },
+      "PasswordResetRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "code", "newPassword"],
+        "properties": {
+          "email": {"type": "string", "format": "email", "maxLength": 254},
+          "code": {"type": "string", "pattern": "^[0-9]{6}$"},
+          "newPassword": {"type": "string", "minLength": 10, "maxLength": 256, "writeOnly": true}
+        }
+      },
+      "PrivacySettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["allowEmailSearch", "allowStrangerMessages", "showOnlineStatus", "readReceiptsEnabled", "notificationPreviewEnabled"],
+        "properties": {
+          "allowEmailSearch": {"type": "boolean"},
+          "allowStrangerMessages": {"type": "boolean"},
+          "showOnlineStatus": {"type": "boolean"},
+          "readReceiptsEnabled": {"type": "boolean"},
+          "notificationPreviewEnabled": {"type": "boolean"}
+        }
+      },
+      "AccountProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "handle", "displayName", "bio"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "email": {"type": "string", "format": "email"},
+          "handle": {"type": "string"},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "bio": {"type": "string", "maxLength": 500}
+        }
+      },
+      "AccountMe": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["profile", "privacy"],
+        "properties": {
+          "profile": {"$ref": "#/components/schemas/AccountProfile"},
+          "privacy": {"$ref": "#/components/schemas/PrivacySettings"}
+        }
+      },
+      "UpdateMeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["displayName", "bio", "privacy"],
+        "properties": {
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "bio": {"type": "string", "maxLength": 500},
+          "privacy": {"$ref": "#/components/schemas/PrivacySettings"}
+        }
+      },
+      "ManagedDevice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "platform", "appVersion", "createdAt", "lastSeenAt", "current"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "platform": {"type": "string", "enum": ["ANDROID", "IOS", "WINDOWS", "MACOS", "LINUX", "WEB"]},
+          "appVersion": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "lastSeenAt": {"type": "string", "format": "date-time"},
+          "revokedAt": {"type": ["string", "null"], "format": "date-time"},
+          "current": {"type": "boolean"}
+        }
+      },
+      "AccountMeResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/AccountMe"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "DeviceListData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["devices"],
+        "properties": {"devices": {"type": "array", "items": {"$ref": "#/components/schemas/ManagedDevice"}}}
+      },
+      "DeviceListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/DeviceListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "PublicContactUser": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "handle", "displayName", "bio"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "bio": {"type": "string", "maxLength": 500}
+        }
+      },
+      "SearchUserResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user", "relationship"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/PublicContactUser"},
+          "relationship": {"type": "string", "enum": ["SELF", "NONE", "CONTACT", "PENDING_OUTGOING", "PENDING_INCOMING"]}
+        }
+      },
+      "SearchUserResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/SearchUserResult"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "SendContactRequest": {
+        "type": "object", "additionalProperties": false, "required": ["targetHandle"],
+        "properties": {
+          "targetHandle": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{2,31}$"},
+          "message": {"type": "string", "maxLength": 200, "default": ""}
+        }
+      },
+      "ContactRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "sender", "receiver", "message", "status", "createdAt", "expiresAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "sender": {"$ref": "#/components/schemas/PublicContactUser"},
+          "receiver": {"$ref": "#/components/schemas/PublicContactUser"},
+          "message": {"type": "string", "maxLength": 200},
+          "status": {"type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED", "CANCELLED", "EXPIRED"]},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "resolvedAt": {"type": ["string", "null"], "format": "date-time"},
+          "conversationId": {"type": ["string", "null"], "format": "uuid"}
+        }
+      },
+      "ContactRequestResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/ContactRequest"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "ContactRequestPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "page", "pageSize", "totalItems", "totalPages"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/ContactRequest"}},
+          "page": {"type": "integer", "minimum": 1}, "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+          "totalItems": {"type": "integer", "minimum": 0}, "totalPages": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ContactRequestPageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/ContactRequestPage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "Contact": {
+        "type": "object", "additionalProperties": false, "required": ["user", "remark", "isStarred", "tags", "createdAt", "updatedAt"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/PublicContactUser"},
+          "remark": {"type": "string", "maxLength": 80},
+          "isStarred": {"type": "boolean"},
+          "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 40}},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ContactResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Contact"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "ContactPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "page", "pageSize", "totalItems", "totalPages"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/Contact"}},
+          "page": {"type": "integer", "minimum": 1}, "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+          "totalItems": {"type": "integer", "minimum": 0}, "totalPages": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ContactPageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/ContactPage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "UpdateContactRequest": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "remark": {"type": "string", "maxLength": 80},
+          "isStarred": {"type": "boolean"},
+          "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 40}}
+        }
+      },
+      "BlockUserRequest": {
+        "type": "object", "additionalProperties": false, "required": ["userId"],
+        "properties": {"userId": {"type": "string", "format": "uuid"}}
+      },
+      "BlockedUser": {
+        "type": "object", "additionalProperties": false, "required": ["user", "createdAt"],
+        "properties": {"user": {"$ref": "#/components/schemas/PublicContactUser"}, "createdAt": {"type": "string", "format": "date-time"}}
+      },
+      "BlockedUserResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/BlockedUser"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "BlockedUserPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "page", "pageSize", "totalItems", "totalPages"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/BlockedUser"}},
+          "page": {"type": "integer", "minimum": 1}, "pageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+          "totalItems": {"type": "integer", "minimum": 0}, "totalPages": {"type": "integer", "minimum": 0}
+        }
+      },
+      "BlockedUserPageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/BlockedUserPage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "OperationResultData": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "OperationResultResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/OperationResultData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MessagingUserPreview": {
+        "type": "object", "additionalProperties": false, "required": ["id", "handle", "displayName"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "handle": {"type": "string", "minLength": 3, "maxLength": 32},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+        }
+      },
+      "TextMessageContent": {
+        "type": "object", "additionalProperties": false, "required": ["text"],
+        "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 4000}}
+      },
+      "Message": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "conversationId", "sequence", "senderUserId", "senderDeviceId", "clientMessageId", "type", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "conversationId": {"type": "string", "format": "uuid"},
+          "sequence": {"type": "integer", "format": "int64", "minimum": 1},
+          "senderUserId": {"type": "string", "format": "uuid"},
+          "senderDeviceId": {"type": "string", "format": "uuid"},
+          "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
+          "type": {"type": "string", "enum": ["TEXT", "SYSTEM", "ENCRYPTED"]},
+          "content": {"oneOf": [{"$ref": "#/components/schemas/TextMessageContent"}, {"type": "null"}]},
+          "replyToMessageId": {"type": ["string", "null"], "format": "uuid"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "recalledAt": {"type": ["string", "null"], "format": "date-time"}
+        }
+      },
+      "ConversationPreferences": {
+        "type": "object", "additionalProperties": false, "required": ["isPinned"],
+        "properties": {
+          "isPinned": {"type": "boolean"},
+          "mutedUntil": {"type": ["string", "null"], "format": "date-time"}
+        }
+      },
+      "Conversation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "type", "lastSequence", "lastReadSequence", "unreadCount", "preferences", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "type": {"type": "string", "enum": ["DIRECT", "GROUP"]},
+          "peer": {"oneOf": [{"$ref": "#/components/schemas/MessagingUserPreview"}, {"type": "null"}]},
+          "lastSequence": {"type": "integer", "format": "int64", "minimum": 0},
+          "lastReadSequence": {"type": "integer", "format": "int64", "minimum": 0},
+          "peerLastReadSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 0, "description": "Direct-chat peer read cursor when the peer allows read receipts; null when hidden or not applicable."},
+          "unreadCount": {"type": "integer", "format": "int64", "minimum": 0},
+          "lastMessage": {"oneOf": [{"$ref": "#/components/schemas/Message"}, {"type": "null"}]},
+          "preferences": {"$ref": "#/components/schemas/ConversationPreferences"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ConversationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Conversation"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "ConversationListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Conversation"}}}
+      },
+      "ConversationListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/ConversationListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "DirectConversationRequest": {
+        "type": "object", "additionalProperties": false, "required": ["userId"],
+        "properties": {"userId": {"type": "string", "format": "uuid"}}
+      },
+      "SendMessageRequest": {
+        "type": "object", "additionalProperties": false, "required": ["clientMessageId", "type", "content"],
+        "properties": {
+          "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
+          "type": {"type": "string", "const": "TEXT"},
+          "content": {"$ref": "#/components/schemas/TextMessageContent"},
+          "replyToMessageId": {"type": ["string", "null"], "format": "uuid"}
+        }
+      },
+      "MessageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Message"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MessagePage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "hasMore"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/Message"}},
+          "nextBeforeSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 1},
+          "hasMore": {"type": "boolean"}
+        }
+      },
+      "MessagePageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MessagePage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MarkReadRequest": {
+        "type": "object", "additionalProperties": false, "required": ["sequence"],
+        "properties": {"sequence": {"type": "integer", "format": "int64", "minimum": 0}}
+      },
+      "MarkReadResult": {
+        "type": "object", "additionalProperties": false, "required": ["conversationId", "lastReadSequence"],
+        "properties": {
+          "conversationId": {"type": "string", "format": "uuid"},
+          "lastReadSequence": {"type": "integer", "format": "int64", "minimum": 0}
+        }
+      },
+      "MarkReadResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MarkReadResult"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "ConversationPreferencesRequest": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "isPinned": {"type": "boolean"},
+          "mutedUntil": {"type": "string", "format": "date-time"},
+          "clearMute": {"type": "boolean", "default": false}
+        }
+      },
+      "SyncEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["eventId", "cursor", "type", "payload", "occurredAt"],
+        "properties": {
+          "eventId": {"type": "string", "format": "uuid"},
+          "cursor": {"type": "integer", "format": "int64", "minimum": 1},
+          "type": {"type": "string", "enum": ["MESSAGE_CREATED", "MESSAGE_RECALLED", "MESSAGE_LOCAL_DELETED", "CONVERSATION_READ_UPDATED", "CONVERSATION_PREFERENCES_UPDATED"]},
+          "resourceId": {"type": ["string", "null"], "format": "uuid"},
+          "conversationId": {"type": ["string", "null"], "format": "uuid"},
+          "sequence": {"type": ["integer", "null"], "format": "int64", "minimum": 1},
+          "payload": {"type": "object", "additionalProperties": true},
+          "occurredAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "SyncPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "nextCursor", "hasMore"],
+        "properties": {
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/SyncEvent"}},
+          "nextCursor": {"type": "integer", "format": "int64", "minimum": 0},
+          "hasMore": {"type": "boolean"}
+        }
+      },
+      "SyncPageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/SyncPage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "FeatureFlags": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["calls", "registrationMode"],
+        "properties": {
+          "calls": {
+            "type": "boolean",
+            "description": "Whether this instance exposes LiveKit-backed calling."
+          },
+          "registrationMode": {
+            "type": "string",
+            "enum": ["open", "invite", "approval", "closed"],
+            "description": "Registration policy advertised before authentication."
+          }
+        }
+      },
+      "Instance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "apiVersion", "apiBaseUrl", "realtimeUrl", "liveKitUrl", "features"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "apiVersion": {
+            "type": "string",
+            "const": "v1"
+          },
+          "apiBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "realtimeUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "liveKitUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "features": {
+            "$ref": "#/components/schemas/FeatureFlags"
+          }
+        }
+      },
+      "InstanceResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Instance"
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/RequestIdValue"
+          }
+        }
+      },
+      "LiveStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "service", "time"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "service": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ReadyStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "service", "checks", "time"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ready", "not_ready"]
+          },
+          "service": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": ["ok", "failed"]
+            }
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "VersionStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "protocolVersion"],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "protocolVersion": {
+            "type": "string"
+          }
+        }
+      },
+      "RequestIdValue": {
+        "type": "string",
+        "pattern": "^req_[A-Za-z0-9]+$"
+      },
+      "APIError": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["code", "message", "requestId"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/RequestIdValue"
+          },
+          "details": {}
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/APIError"
+          }
+        }
+      }
+    }
+  }
+}

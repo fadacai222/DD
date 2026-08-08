@@ -1,0 +1,40 @@
+name: selfhosted-im-call-poc
+
+services:
+  realtime-api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      args:
+        VERSION: 0.2.0-call-poc
+    environment:
+      IM_PORT: "18473"
+      IM_ALLOWED_ORIGINS: "localhost:*,127.0.0.1:*,10.0.2.2:*"
+      IM_ALLOWED_HTTP_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+      LIVEKIT_URL: "auto"
+      LIVEKIT_PUBLIC_PORT: "7880"
+      LIVEKIT_API_KEY: "devkey"
+      LIVEKIT_API_SECRET: "secret"
+    ports:
+      - "127.0.0.1:18473:18473"
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.13.4
+    environment:
+      LIVEKIT_CONFIG: |
+        turn:
+          enabled: true
+          udp_port: 3478
+          relay_range_start: 30000
+          relay_range_end: 30019
+          allow_restricted_peer_cidrs:
+            - 127.0.0.1/32
+    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "127.0.0.1", "--udp-port", "7882"]
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:7882:7882/udp"
+      - "127.0.0.1:3478:3478/udp"
+      - "127.0.0.1:30000-30019:30000-30019/udp"
+    restart: unless-stopped

@@ -3,7 +3,8 @@ name: selfhosted-im-poc
 services:
   realtime-api:
     build:
-      context: ./server
+      context: .
+      dockerfile: server/Dockerfile
       args:
         VERSION: 0.1.0-poc
     environment:

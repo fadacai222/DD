@@ -1,0 +1,25 @@
+services:
+  realtime-api:
+    environment:
+      IM_ALLOWED_ORIGINS: "localhost:*,127.0.0.1:*,10.0.2.2:*,${IM_LAN_IP}:*"
+      IM_ALLOWED_HTTP_ORIGINS: "http://localhost:*,http://127.0.0.1:*,http://${IM_LAN_IP}:*"
+    ports:
+      - "${IM_LAN_IP}:18473:18473"
+
+  livekit:
+    environment:
+      LIVEKIT_CONFIG: |
+        turn:
+          enabled: true
+          udp_port: 3478
+          relay_range_start: 30000
+          relay_range_end: 30019
+          allow_restricted_peer_cidrs:
+            - ${IM_LAN_IP}/32
+    command: ["--dev", "--bind", "0.0.0.0", "--node-ip", "${IM_LAN_IP}", "--udp-port", "7882"]
+    ports:
+      - "${IM_LAN_IP}:7880:7880"
+      - "${IM_LAN_IP}:7881:7881"
+      - "${IM_LAN_IP}:7882:7882/udp"
+      - "${IM_LAN_IP}:3478:3478/udp"
+      - "${IM_LAN_IP}:30000-30019:30000-30019/udp"

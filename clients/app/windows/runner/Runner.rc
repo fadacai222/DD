@@ -30,13 +30,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "OpenIMX Community\0"
-            VALUE "FileDescription", "OpenIMX Realtime Console\0"
+            VALUE "CompanyName", "DD Community\0"
+            VALUE "FileDescription", "DD Realtime Console\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "im_client\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 OpenIMX Community\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 DD Community\0"
             VALUE "OriginalFilename", "im_client.exe\0"
-            VALUE "ProductName", "OpenIMX Realtime Console\0"
+            VALUE "ProductName", "DD Realtime Console\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

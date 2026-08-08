@@ -88,7 +88,12 @@ DELETE /api/v1/auth/totp
   "password": "strong-password",
   "handle": "liang",
   "displayName": "良",
-  "inviteCode": null
+  "inviteCode": null,
+  "device": {
+    "name": "DD Windows",
+    "platform": "WINDOWS",
+    "appVersion": "0.5.0"
+  }
 }
 ```
 
@@ -97,16 +102,22 @@ DELETE /api/v1/auth/totp
 ```json
 {
   "data": {
-    "accessToken": "short-lived-token",
-    "expiresIn": 900,
-    "refreshToken": "native-client-only",
     "user": {},
-    "device": {}
-  }
+    "device": {},
+    "tokens": {
+      "accessToken": "short-lived-token",
+      "accessExpiresAt": "2026-08-08T02:00:00Z",
+      "refreshToken": "native-client-only",
+      "refreshExpiresAt": "2026-09-07T02:00:00Z"
+    }
+  },
+  "requestId": "req_01..."
 }
 ```
 
-Web 客户端 Refresh Token 不返回 JSON，使用 HttpOnly Cookie。
+Web 客户端 Refresh Token 不返回 JSON，使用 `HttpOnly + SameSite=Lax` Cookie；正式 HTTPS 部署同时启用 `Secure`。浏览器客户端请求使用 credentials，CORS 只对实例白名单 Origin 返回 `Access-Control-Allow-Credentials: true`。
+
+> 2026-08-08 实现状态：`register/email/send-code`、`register`、`login`、`token/refresh`、密码找回、设备管理、`logout-all`、资料/隐私和头像链均已进入正式 `/api/v1` 合同；注册事务、Argon2id、Access Token、Refresh Token 轮换与 Token Family 重放撤销已落地。TOTP / 2FA 仍属于后续 P2。
 
 ## 3.3 Devices
 
@@ -124,24 +135,27 @@ GET    /api/v1/users/{userId}/devices/keys
 ## 3.4 Users
 
 ```text
-GET   /api/v1/me
-PATCH /api/v1/me/profile
-PATCH /api/v1/me/privacy
-GET   /api/v1/users/{userId}
-GET   /api/v1/users/by-handle/{handle}
-POST  /api/v1/me/avatar/upload
-POST  /api/v1/me/export
+GET    /api/v1/me
+PATCH  /api/v1/me
+PUT    /api/v1/me/avatar
+DELETE /api/v1/me/avatar
+GET    /api/v1/avatars/{userId}
+GET    /api/v1/users/by-handle/{handle}
+POST   /api/v1/me/export
 POST  /api/v1/me/deletion-request
 DELETE /api/v1/me/deletion-request
 ```
 
 搜索不提供无上限 `GET /users?q=`，避免账号枚举。模糊搜索需单独权限、限流和最小查询长度。
 
+头像当前阶段采用 `000006_profile_avatars`：原图直接存 PostgreSQL `bytea`，单文件最大 2 MiB，仅允许 JPEG / PNG / WebP，并同时检查 `Content-Type`、文件格式与画布尺寸；最大 2048×2048 且约 4MP，SVG、伪造 MIME 和超大像素图片拒绝。`GET /api/v1/avatars/{userId}` 需要登录并返回私有缓存 ETag。该实现用于在 P5 对象存储/缩略图/EXIF 清理正式管线完成前提供可用头像能力；P5 落地后应迁移存量头像资源，但保持客户端头像读取接口兼容。
+
 ## 3.5 Contacts
 
 ```text
-GET    /api/v1/contacts
-GET    /api/v1/contact-requests?direction=incoming
+GET    /api/v1/users/by-handle/{handle}
+GET    /api/v1/contacts?page=1&pageSize=50
+GET    /api/v1/contact-requests?direction=incoming|outgoing&page=1&pageSize=50
 POST   /api/v1/contact-requests
 POST   /api/v1/contact-requests/{requestId}/accept
 POST   /api/v1/contact-requests/{requestId}/reject
@@ -150,8 +164,19 @@ PATCH  /api/v1/contacts/{userId}
 DELETE /api/v1/contacts/{userId}
 POST   /api/v1/blocks
 DELETE /api/v1/blocks/{userId}
-GET    /api/v1/blocks
+GET    /api/v1/blocks?page=1&pageSize=50
 ```
+
+当前正式实现规则：
+
+- Handle 只做精确搜索；不返回邮箱。
+- 任一方向存在 block 时，Handle 搜索统一按 `404 NOT_FOUND` 处理，避免泄露“被谁拉黑”。
+- 搜索默认每用户 10 分钟最多 60 次；发送新好友申请默认每用户 24 小时最多 30 次。
+- 同方向重复 PENDING 申请幂等返回原记录。
+- 反方向存在 PENDING 时，新申请会原子接受已有申请并建立好友关系。
+- 接受申请时双向 contacts 与 DIRECT conversation 创建/复用在同一事务完成。
+- 删除好友删除双方 contacts，但保留逻辑私聊会话和后续历史消息语义。
+- 拉黑会删除双方 contacts 并取消双方 PENDING 申请。
 
 ## 3.6 Conversations
 
@@ -469,27 +494,54 @@ wss://api.example.com/api/v1/realtime
 - `sender_user_id`
 - `receiver_user_id`
 - `message`
-- `status`
+- `status`：`PENDING/ACCEPTED/REJECTED/CANCELLED/EXPIRED`
 - `created_at`
+- `expires_at`
 - `resolved_at`
 
-唯一约束避免同方向重复待处理申请。
+当前正式约束不是只防“同方向”重复，而是对排序后的用户对建立 PENDING 唯一索引：
+
+```text
+LEAST(sender_user_id, receiver_user_id)
+GREATEST(sender_user_id, receiver_user_id)
+```
+
+这样双方同时互发申请也不会长期留下两条 PENDING。
 
 ### contacts
 
-建议每个方向各一行，便于存备注和标签：
+每个方向各一行，用于保存 owner 私有元数据：
 
 - `owner_user_id`
 - `contact_user_id`
 - `remark`
 - `is_starred`
 - `created_at`
+- `updated_at`
+
+### contact_tags
+
+- `owner_user_id`
+- `contact_user_id`
+- `tag_normalized`
+- `tag_name`
+- `created_at`
+
+当前每联系人最多 20 个标签；标签 NFKC 归一化并按大小写去重。
 
 ### blocks
 
 - `owner_user_id`
 - `blocked_user_id`
 - `created_at`
+
+### relationship_rate_events
+
+- `user_id`
+- `scope`：`HANDLE_SEARCH/CONTACT_REQUEST`
+- `created_at`
+
+用于 P3 当前跨进程可持续的数据库限流；后续如迁移到 Redis 分布式限流，仍保留服务层语义和审计能力。
 
 ## 5.3 会话与消息
 
@@ -751,3 +803,171 @@ wss://api.example.com/api/v1/realtime
 - 已注销用户：按法律和实例策略清理。
 
 E2EE 消息的服务端密文保留策略与普通消息相同，但服务端无法恢复丢失的客户端密钥。
+
+## 9. P4 当前实现快照（2026-08-08）
+
+本节记录已经落地的正式实现，避免后续只看早期草案误判当前接口。
+
+### 9.1 已落地表
+
+Migration `000005_messaging` 已增加：
+
+```text
+messages
+outbox_events
+sync_events
+message_local_deletions
+```
+
+关键约束：
+
+- `messages(conversation_id, sequence)` 唯一，sequence 从会话原子递增得到。
+- `messages(sender_device_id, client_message_id)` 唯一。
+- 同一 `senderDeviceId + clientMessageId` 使用 PostgreSQL advisory transaction lock 串行化竞争窗口，重复请求返回原 message。
+- 同一 DIRECT user pair 使用 advisory transaction lock + `direct_pair_key` 唯一键双保险。
+- Message、conversation `last_sequence/last_message_id` 与 Durable Outbox 在同一事务提交。
+- `sync_events(source_outbox_id, user_id)` 唯一，使 Dispatcher 重放不制造重复 Sync 事件。
+
+### 9.2 正式 Messaging API
+
+当前 OpenAPI 已正式包含：
+
+```text
+GET  /api/v1/conversations
+POST /api/v1/conversations/direct
+GET  /api/v1/conversations/{conversationId}
+GET  /api/v1/conversations/{conversationId}/messages
+POST /api/v1/conversations/{conversationId}/messages
+POST /api/v1/conversations/{conversationId}/read
+PATCH /api/v1/conversations/{conversationId}/preferences
+GET  /api/v1/messages/{messageId}
+POST /api/v1/messages/{messageId}/recall
+DELETE /api/v1/messages/{messageId}/local
+GET  /api/v1/sync?cursor=...
+```
+
+发送接口不接受客户端伪造 `senderUserId / senderDeviceId`；身份只来自 Access Token 对应的 `Principal`。
+
+### 9.3 正式 Realtime 语义
+
+```text
+/ws                 = P0 PoC 兼容入口
+/api/v1/realtime    = P4 正式鉴权入口
+```
+
+P4 hello 必须携带：
+
+```json
+{
+  "type": "hello",
+  "payload": {
+    "clientId": "<device-id>",
+    "accessToken": "<access-token>",
+    "protocolVersion": "1",
+    "lastEventId": 0
+  }
+}
+```
+
+服务端的 `event_available` **只表示“有增量可同步”**。客户端收到后调用 `/api/v1/sync?cursor=`；即使 WebSocket 提示丢失或断线，重连后的 cursor Sync 仍负责补账。
+
+### 9.4 Outbox / Worker
+
+`cmd/worker` 现已正式消费 `outbox_events`：
+
+- `FOR UPDATE SKIP LOCKED` 并发领取。
+- 至少一次处理。
+- `sync_events` 唯一键幂等。
+- 失败指数退避。
+- 单条消费失败通过 SAVEPOINT 回到可提交状态，再记录 attempts / last_error / available_at。
+
+开发环境 `run-auth-dev.ps1` 会同时启动 API 与 Worker；`stop-auth-dev.ps1` 会同时停止二者。
+
+### 9.5 Redis 跨节点实时唤醒
+
+P4 现在已接入 Redis Pub/Sub 跨 API 节点事件总线。设计刻意不在 Redis 保存一份必须重建的 Presence 真相：
+
+```text
+API A 提交消息
+→ 本机 Hub 唤醒本机接收者连接
+→ Redis 发布 userId + event_available
+→ API B/C/... 收到后只唤醒各自本机该 userId 的 Socket
+→ 客户端调用 /api/v1/sync?cursor=...
+```
+
+因此：
+
+- Redis 只做跨节点低延迟提示，不存聊天事实。
+- Redis Pub/Sub 短暂断开期间的提示允许丢失；消息不会丢，因为 Durable Outbox / sync_events 在 PostgreSQL。
+- Redis 连接被 `CLIENT KILL TYPE pubsub` 强杀后，go-redis 自动重连，后续提示恢复投递；已有真 Redis 集成测试。
+- `/api/v1/system/ready` 在配置 `REDIS_URL` 时会包含 Redis readiness。
+
+### 9.6 Flutter P4 交互现状
+
+当前后端/客户端链路已接通：
+
+```text
+会话最后消息 / 未读 / 时间
+按账号+设备持久化草稿
+文字发送
+断网待发送
+单条立即重试 / 取消发送
+回复（离线重试保留 replyToMessageId）
+复制
+撤回事件链
+仅本地删除
+历史 sequence cursor
+当前聊天自动推进 read sequence
+```
+
+2026-08-08 本轮已完成第一批聊天体验补强：
+
+```text
+Web 置顶 / 免打扰：修复 CORS PATCH/DELETE 预检，并在成功响应后本地立即 upsert 会话
+已读 UI：Conversation 新增 peerLastReadSequence；对端关闭 readReceiptsEnabled 时返回 null
+PC/Web 键盘：Enter=发送、Shift+Enter=换行；输入法 composing 阶段不发送
+Unicode Emoji：基础选择器已接入输入区
+撤回：移除 2 分钟硬限制及 RECALL_WINDOW_EXPIRED，自己的消息默认不限时
+客户端：正式 Auth → 主壳，移动四入口、桌面窄导航+会话/聊天双栏、微信式灰底和白/浅绿气泡
+```
+
+仍未完成或仍需真人/协议收口：
+
+```text
+独立“已送达”确认
+Emoji 最近使用
+图片表情 / Sticker
+GIF
+图片消息
+语音条
+完整 SQLite 本地库
+三端微信式 UI 逐页细节与 Telegram 级性能 Profile
+```
+
+因此 API 有字段或后端状态存在，仍不等价于对应产品能力已经完整验收。产品基线见 `docs/12-产品体验与UI功能基线.md`。
+
+### 9.7 P4 专项负载基线
+
+可重复执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\benchmark-p4.ps1
+```
+
+脚本自动启动所需 PostgreSQL / Redis（只停止自己启动的服务），执行 Migration 后验证：
+
+```text
+真实 PostgreSQL >= 100 msg/s
+200 条 /api/v1/realtime 正式鉴权 WebSocket 同时在线并全部 Ping/Pong
+Redis 两节点跨节点 event_available
+强杀 Pub/Sub 连接后自动恢复后续事件投递
+```
+
+性能阈值不作为共享 CI Runner 的硬门禁，避免共享机器负载造成伪失败；功能正确性、Redis reconnect 和消息并发幂等仍有 CI / 集成测试门禁。
+
+### 9.8 当前仍未完成
+
+以下仍属于 P4 收口，不应从本节误判为完成：
+
+- Flutter 完整会话/消息/联系人本地数据库和正式迁移链；当前本地持久化重点仍是 Sync cursor、待发送队列与草稿。
+- Golden 视觉基准与真人 Windows / Android 双端 E2E Checkpoint。

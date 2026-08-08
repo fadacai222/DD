@@ -1,0 +1,109 @@
+name: dd-dev
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: ${DD_POSTGRES_DB:-dd}
+      POSTGRES_USER: ${DD_POSTGRES_USER:-dd}
+      POSTGRES_PASSWORD: ${DD_POSTGRES_PASSWORD:?DD_POSTGRES_PASSWORD is required}
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.8.1-alpine
+    environment:
+      DD_REDIS_PASSWORD: ${DD_REDIS_PASSWORD:?DD_REDIS_PASSWORD is required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${DD_REDIS_PASSWORD}\""]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$${DD_REDIS_PASSWORD} redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${DD_MINIO_ROOT_USER:-ddadmin}
+      MINIO_ROOT_PASSWORD: ${DD_MINIO_ROOT_PASSWORD:?DD_MINIO_ROOT_PASSWORD is required}
+    ports:
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.30.6
+    environment:
+      MP_MAX_MESSAGES: "5000"
+      MP_DATABASE: /data/mailpit.db
+    ports:
+      - "127.0.0.1:11025:1025"
+      - "127.0.0.1:18025:8025"
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:v1.13.4
+    environment:
+      LIVEKIT_KEYS: "${DD_LIVEKIT_API_KEY:?DD_LIVEKIT_API_KEY is required}: ${DD_LIVEKIT_API_SECRET:?DD_LIVEKIT_API_SECRET is required}"
+    command:
+      - --bind
+      - 0.0.0.0
+      - --node-ip
+      - 127.0.0.1
+      - --rtc.tcp_port
+      - "17881"
+      - --udp-port
+      - "17882"
+      - --turn.enabled
+      - --turn.udp_port
+      - "13478"
+    ports:
+      - "127.0.0.1:17880:7880"
+      - "127.0.0.1:17881:17881"
+      - "127.0.0.1:17882:17882/udp"
+      - "127.0.0.1:13478:13478/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  mailpit-data:

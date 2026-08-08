@@ -5,12 +5,15 @@ import "encoding/json"
 const Version = "1"
 
 const (
-	TypeHello       = "hello"
-	TypeHelloAck    = "hello_ack"
-	TypeServerReady = "server_ready"
-	TypePing        = "ping"
-	TypePong        = "pong"
-	TypeError       = "error"
+	TypeHello          = "hello"
+	TypeHelloAck       = "hello_ack"
+	TypeServerReady    = "server_ready"
+	TypePing           = "ping"
+	TypePong           = "pong"
+	TypeError          = "error"
+	TypeEventAvailable = "event_available"
+	TypeCallIncoming   = "call.incoming"
+	TypeCallUpdated    = "call.updated"
 )
 
 type InboundEnvelope struct {
@@ -33,15 +36,21 @@ type APIError struct {
 }
 
 type HelloPayload struct {
-	ClientID    string `json:"clientId"`
-	LastEventID int64  `json:"lastEventId"`
+	ClientID        string `json:"clientId"`
+	LastEventID     int64  `json:"lastEventId"`
+	AccessToken     string `json:"accessToken,omitempty"`
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
 }
 
 type HelloAckPayload struct {
-	ConnectionID   string `json:"connectionId"`
+	ConnectionID    string `json:"connectionId"`
 	ProtocolVersion string `json:"protocolVersion"`
 }
 
 type ServerReadyPayload struct {
 	ServerTime string `json:"serverTime"`
+}
+
+type EventAvailablePayload struct {
+	Reason string `json:"reason"`
 }

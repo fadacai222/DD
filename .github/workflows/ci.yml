@@ -1,0 +1,220 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: dd
+          POSTGRES_USER: dd
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dd -d dd"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:8.8.1-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      mailpit:
+        image: axllent/mailpit:v1.30.6
+        ports:
+          - 11025:1025
+        options: >-
+          --health-cmd "/mailpit readyz"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Go format check
+        working-directory: server
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'Go files require gofmt:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Go test
+        working-directory: server
+        run: go test ./...
+
+      - name: Go vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: Apply database migrations
+        working-directory: server
+        env:
+          DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go run ./cmd/migrate up
+
+      - name: Auth PostgreSQL + Mailpit integration
+        working-directory: server
+        env:
+          DD_AUTH_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/auth/account -run TestAccountLifecycleWithPostgresAndMailpit -count=1 -v
+
+      - name: Contacts PostgreSQL concurrency integration
+        working-directory: server
+        env:
+          DD_CONTACTS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/contacts -run TestRelationshipLifecycleWithPostgres -count=1 -v
+
+      - name: Messaging PostgreSQL reliability integration
+        working-directory: server
+        env:
+          DD_MESSAGING_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/messaging -run TestMessagingLifecycleWithPostgres -count=1 -v
+
+      - name: Realtime Redis cross-node integration
+        working-directory: server
+        env:
+          DD_REALTIME_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+        run: go test ./internal/realtimebus -run TestRedisBusCrossNodeDeliveryAndPubSubReconnect -count=1 -v
+
+      - name: OpenAPI strict lint
+        run: npx -y @redocly/cli@2.45.0 lint server/openapi/openapi.json --extends=recommended-strict
+
+      - name: Validate development Compose
+        env:
+          DD_POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef
+          DD_REDIS_PASSWORD: 0123456789abcdef0123456789abcdef
+          DD_MINIO_ROOT_PASSWORD: 0123456789abcdef0123456789abcdef
+          DD_LIVEKIT_API_KEY: dddev_0123456789abcdef
+          DD_LIVEKIT_API_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        run: docker compose -f infra/dev/compose.yml config --quiet
+
+  e2ee-poc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust targets
+        run: rustup target add wasm32-unknown-unknown aarch64-linux-android x86_64-unknown-linux-gnu
+
+      - name: Rust format
+        working-directory: crypto/e2ee_poc
+        run: cargo fmt --check
+
+      - name: Rust clippy
+        working-directory: crypto/e2ee_poc
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Native E2EE PoC tests
+        working-directory: crypto/e2ee_poc
+        run: cargo test
+
+      - name: WASM compile check
+        working-directory: crypto/e2ee_poc
+        run: cargo check --target wasm32-unknown-unknown --features vodozemac/js
+
+      - name: Android arm64 compile check
+        working-directory: crypto/e2ee_poc
+        run: cargo check --target aarch64-linux-android
+
+      - name: Linux x64 compile check
+        working-directory: crypto/e2ee_poc
+        run: cargo check --target x86_64-unknown-linux-gnu
+
+  admin-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - name: Install admin dependencies
+        working-directory: admin
+        run: npm ci --no-audit --no-fund
+
+      - name: Admin typecheck
+        working-directory: admin
+        run: npm run typecheck
+
+      - name: Admin production build
+        working-directory: admin
+        run: npm run build
+
+  flutter-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Flutter
+        run: |
+          git clone --depth 1 --branch 3.44.9 https://github.com/flutter/flutter.git "$HOME/flutter"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Shared realtime protocol tests
+        working-directory: packages/realtime_protocol
+        run: |
+          dart pub get
+          dart test
+
+      - name: Flutter dependencies
+        working-directory: clients/app
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: clients/app
+        run: flutter analyze
+
+      - name: Flutter tests
+        working-directory: clients/app
+        run: flutter test
+
+      - name: Flutter web release build
+        working-directory: clients/app
+        run: flutter build web --release

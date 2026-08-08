@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,22 +19,66 @@ import (
 )
 
 const (
-	serviceName       = "im-realtime-poc"
-	maxWebSocketBytes = 16 * 1024
-	writeTimeout      = 5 * time.Second
+	serviceName                       = "im-realtime-poc"
+	maxWebSocketBytes                 = 16 * 1024
+	maxAuthenticatedSocketConnections = 16
+	webSocketHelloTimeout             = 10 * time.Second
+	writeTimeout                      = 5 * time.Second
 )
 
+type ReadinessCheck func(context.Context) error
+
+type RealtimeEventBus interface {
+	Publish(ctx context.Context, userID string, envelope protocol.OutboundEnvelope) error
+	Subscribe(ctx context.Context, deliver func(userID string, envelope protocol.OutboundEnvelope)) error
+}
+
 type Config struct {
-	Version        string
-	AllowedOrigins []string
-	Now            func() time.Time
+	Version            string
+	PublicBaseURL      string
+	InstanceName       string
+	RegistrationMode   string
+	AllowedOrigins     []string
+	AllowedHTTPOrigins []string
+	LiveKitURL         string
+	LiveKitPublicPort  int
+	LiveKitAPIKey      string
+	LiveKitAPISecret   string
+	CallTokenTTL       time.Duration
+	CallRingTimeout    time.Duration
+	ReadinessChecks    map[string]ReadinessCheck
+	AuthService        AuthService
+	ContactsService    ContactsService
+	MessagingService   MessagingService
+	RealtimeEventBus   RealtimeEventBus
+	Logger             *slog.Logger
+	Now                func() time.Time
 }
 
 type server struct {
-	version        string
-	allowedOrigins []string
-	now            func() time.Time
-	eventSequence  atomic.Int64
+	version              string
+	publicBaseURL        string
+	instanceName         string
+	registrationMode     string
+	allowedOrigins       []string
+	allowedHTTPOrigins   []string
+	liveKitURL           string
+	liveKitPublicPort    int
+	liveKitAPIKey        string
+	liveKitAPISecret     string
+	callTokenTTL         time.Duration
+	callRingTimeout      time.Duration
+	now                  func() time.Time
+	logger               *slog.Logger
+	readinessChecks      map[string]ReadinessCheck
+	auth                 AuthService
+	contacts             ContactsService
+	messaging            MessagingService
+	realtimeEventBus     RealtimeEventBus
+	realtimePublishQueue chan realtimeBusDelivery
+	eventSequence        atomic.Int64
+	calls                *callStore
+	hub                  *socketHub
 }
 
 func NewHandler(config Config) http.Handler {
@@ -45,22 +92,113 @@ func NewHandler(config Config) http.Handler {
 		now = time.Now
 	}
 
+	callTokenTTL := config.CallTokenTTL
+	if callTokenTTL <= 0 || callTokenTTL > time.Hour {
+		callTokenTTL = 15 * time.Minute
+	}
+
+	callRingTimeout := config.CallRingTimeout
+	if callRingTimeout <= 0 || callRingTimeout > 5*time.Minute {
+		callRingTimeout = 45 * time.Second
+	}
+
+	liveKitPublicPort := config.LiveKitPublicPort
+	if liveKitPublicPort <= 0 || liveKitPublicPort > 65535 {
+		liveKitPublicPort = 7880
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
+
+	instanceName := strings.TrimSpace(config.InstanceName)
+	if instanceName == "" {
+		instanceName = "DD"
+	}
+
 	s := &server{
-		version:        version,
-		allowedOrigins: append([]string(nil), config.AllowedOrigins...),
-		now:            now,
+		version:            version,
+		publicBaseURL:      strings.TrimRight(strings.TrimSpace(config.PublicBaseURL), "/"),
+		instanceName:       instanceName,
+		registrationMode:   normalizeRegistrationMode(config.RegistrationMode),
+		allowedOrigins:     append([]string(nil), config.AllowedOrigins...),
+		allowedHTTPOrigins: append([]string(nil), config.AllowedHTTPOrigins...),
+		liveKitURL:         strings.TrimSpace(config.LiveKitURL),
+		liveKitPublicPort:  liveKitPublicPort,
+		liveKitAPIKey:      strings.TrimSpace(config.LiveKitAPIKey),
+		liveKitAPISecret:   strings.TrimSpace(config.LiveKitAPISecret),
+		callTokenTTL:       callTokenTTL,
+		callRingTimeout:    callRingTimeout,
+		now:                now,
+		logger:             logger,
+		readinessChecks:    copyReadinessChecks(config.ReadinessChecks),
+		auth:               config.AuthService,
+		contacts:           config.ContactsService,
+		messaging:          config.MessagingService,
+		realtimeEventBus:   config.RealtimeEventBus,
+		calls:              newCallStore(),
+		hub:                newSocketHub(),
 	}
 	s.eventSequence.Store(now().UTC().UnixMicro())
+	if s.realtimeEventBus != nil {
+		s.realtimePublishQueue = make(chan realtimeBusDelivery, 4096)
+		go s.publishRealtimeBusHints()
+		go s.consumeRealtimeEventBus()
+	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openimx/client", s.handleWellKnownClient)
+	mux.HandleFunc("/api/v1/instance", s.handleInstance)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/live", s.handleLive)
+	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/version", s.handleVersion)
+	mux.HandleFunc("/api/v1/system/live", s.handleLive)
+	mux.HandleFunc("/api/v1/system/ready", s.handleReady)
+	mux.HandleFunc("/api/v1/system/version", s.handleVersion)
+	mux.HandleFunc("/api/v1/auth/register/email/send-code", s.handleAuthEmailCodes)
+	mux.HandleFunc("/api/v1/auth/register", s.handleAuthRegister)
+	mux.HandleFunc("/api/v1/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("/api/v1/auth/token/refresh", s.handleAuthRefresh)
+	mux.HandleFunc("/api/v1/auth/password/reset/send-code", s.handlePasswordResetCode)
+	mux.HandleFunc("/api/v1/auth/password/reset", s.handlePasswordReset)
+	mux.HandleFunc("/api/v1/auth/logout-all", s.handleLogoutAll)
+	mux.HandleFunc("/api/v1/me", s.handleMe)
+	mux.HandleFunc("/api/v1/me/avatar", s.handleMeAvatar)
+	mux.HandleFunc("/api/v1/devices", s.handleDevices)
+	mux.HandleFunc("/api/v1/devices/", s.handleDeviceByID)
+	mux.HandleFunc("/api/v1/users/by-handle/", s.handleUserByHandle)
+	mux.HandleFunc("/api/v1/avatars/", s.handleUserAvatar)
+	mux.HandleFunc("/api/v1/contact-requests", s.handleContactRequests)
+	mux.HandleFunc("/api/v1/contact-requests/", s.handleContactRequestByID)
+	mux.HandleFunc("/api/v1/contacts", s.handleContacts)
+	mux.HandleFunc("/api/v1/contacts/", s.handleContactByUserID)
+	mux.HandleFunc("/api/v1/blocks", s.handleBlocks)
+	mux.HandleFunc("/api/v1/blocks/", s.handleBlockByUserID)
+	mux.HandleFunc("/api/v1/conversations", s.handleConversations)
+	mux.HandleFunc("/api/v1/conversations/direct", s.handleDirectConversation)
+	mux.HandleFunc("/api/v1/conversations/", s.handleConversationByID)
+	mux.HandleFunc("/api/v1/messages/", s.handleMessageByID)
+	mux.HandleFunc("/api/v1/sync", s.handleSync)
+	mux.HandleFunc("/api/calls/token", s.handleCallToken)
+	mux.HandleFunc("/api/calls/active", s.handleActiveCall)
+	mux.HandleFunc("/api/calls/", s.handleCallByID)
+	mux.HandleFunc("/api/calls", s.handleCalls)
 	mux.HandleFunc("/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/v1/realtime", s.handleAuthenticatedWebSocket)
 
-	return securityHeaders(mux)
+	handler := securityHeaders(corsMiddleware(s.allowedHTTPOrigins, mux))
+	handler = accessLogMiddleware(s.logger, s.version, handler)
+	return requestIDMiddleware(handler)
 }
 
 func (s *server) handleHealth(response http.ResponseWriter, request *http.Request) {
+	// Compatibility alias retained for the existing PoC. New callers should use /live.
+	s.handleLive(response, request)
+}
+
+func (s *server) handleLive(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		methodNotAllowed(response, http.MethodGet)
 		return
@@ -69,6 +207,46 @@ func (s *server) handleHealth(response http.ResponseWriter, request *http.Reques
 	writeJSON(response, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"service": serviceName,
+		"time":    s.now().UTC(),
+	})
+}
+
+func (s *server) handleReady(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+
+	checks := make(map[string]string, len(s.readinessChecks))
+	names := make([]string, 0, len(s.readinessChecks))
+	for name := range s.readinessChecks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	ready := true
+	for _, name := range names {
+		ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		err := s.readinessChecks[name](ctx)
+		cancel()
+		if err != nil {
+			checks[name] = "failed"
+			ready = false
+			continue
+		}
+		checks[name] = "ok"
+	}
+
+	status := http.StatusOK
+	state := "ready"
+	if !ready {
+		status = http.StatusServiceUnavailable
+		state = "not_ready"
+	}
+	writeJSON(response, status, map[string]any{
+		"status":  state,
+		"service": serviceName,
+		"checks":  checks,
 		"time":    s.now().UTC(),
 	})
 }
@@ -86,6 +264,14 @@ func (s *server) handleVersion(response http.ResponseWriter, request *http.Reque
 }
 
 func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Request) {
+	s.handleWebSocketMode(response, request, false)
+}
+
+func (s *server) handleAuthenticatedWebSocket(response http.ResponseWriter, request *http.Request) {
+	s.handleWebSocketMode(response, request, true)
+}
+
+func (s *server) handleWebSocketMode(response http.ResponseWriter, request *http.Request, requireAuthentication bool) {
 	if request.Method != http.MethodGet {
 		methodNotAllowed(response, http.MethodGet)
 		return
@@ -113,7 +299,15 @@ func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Req
 	if err != nil {
 		return
 	}
-	defer connection.CloseNow()
+	registeredIdentity := ""
+	client := &socketClient{connection: connection}
+	defer func() {
+		if registeredIdentity != "" {
+			s.hub.unregister(registeredIdentity, client)
+		}
+		forgetSocketWriteLock(connection)
+		connection.CloseNow()
+	}()
 	connection.SetReadLimit(maxWebSocketBytes)
 
 	ctx := context.Background()
@@ -122,7 +316,16 @@ func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Req
 	hasHello := false
 	for {
 		var incoming protocol.InboundEnvelope
-		if err := wsjson.Read(ctx, connection, &incoming); err != nil {
+		readContext := ctx
+		var cancel context.CancelFunc
+		if requireAuthentication && !hasHello {
+			readContext, cancel = context.WithTimeout(ctx, webSocketHelloTimeout)
+		}
+		err := wsjson.Read(readContext, connection, &incoming)
+		if cancel != nil {
+			cancel()
+		}
+		if err != nil {
 			return
 		}
 
@@ -161,7 +364,7 @@ func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Req
 			}
 
 			var hello protocol.HelloPayload
-			if len(incoming.Payload) == 0 || json.Unmarshal(incoming.Payload, &hello) != nil || strings.TrimSpace(hello.ClientID) == "" {
+			if len(incoming.Payload) == 0 || json.Unmarshal(incoming.Payload, &hello) != nil || !safeCallIdentifier.MatchString(strings.TrimSpace(hello.ClientID)) {
 				_ = writeSocket(ctx, connection, protocol.OutboundEnvelope{
 					Type:      protocol.TypeError,
 					RequestID: incoming.RequestID,
@@ -175,13 +378,43 @@ func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Req
 				return
 			}
 
+			registeredIdentity = strings.TrimSpace(hello.ClientID)
+			if requireAuthentication {
+				if s.auth == nil || strings.TrimSpace(hello.AccessToken) == "" {
+					_ = writeSocket(ctx, connection, protocol.OutboundEnvelope{
+						Type: protocol.TypeError, RequestID: incoming.RequestID, EventID: nextEventID(),
+						Error: &protocol.APIError{Code: "UNAUTHORIZED", Message: "A valid access token is required"},
+					})
+					_ = connection.Close(websocket.StatusPolicyViolation, "authentication required")
+					return
+				}
+				if strings.TrimSpace(hello.ProtocolVersion) != protocol.Version {
+					_ = writeSocket(ctx, connection, protocol.OutboundEnvelope{
+						Type: protocol.TypeError, RequestID: incoming.RequestID, EventID: nextEventID(),
+						Error: &protocol.APIError{Code: "PROTOCOL_VERSION_MISMATCH", Message: "Unsupported realtime protocol version"},
+					})
+					_ = connection.Close(websocket.StatusPolicyViolation, "protocol version mismatch")
+					return
+				}
+				principal, authErr := s.auth.AuthenticateAccessToken(ctx, strings.TrimSpace(hello.AccessToken))
+				if authErr != nil {
+					_ = writeSocket(ctx, connection, protocol.OutboundEnvelope{
+						Type: protocol.TypeError, RequestID: incoming.RequestID, EventID: nextEventID(),
+						Error: &protocol.APIError{Code: "UNAUTHORIZED", Message: "A valid access token is required"},
+					})
+					_ = connection.Close(websocket.StatusPolicyViolation, "authentication failed")
+					return
+				}
+				registeredIdentity = principal.UserID.String()
+			}
+
 			hasHello = true
 			if err := writeSocket(ctx, connection, protocol.OutboundEnvelope{
 				Type:      protocol.TypeHelloAck,
 				RequestID: incoming.RequestID,
 				EventID:   nextEventID(),
 				Payload: protocol.HelloAckPayload{
-					ConnectionID:   connectionID,
+					ConnectionID:    connectionID,
 					ProtocolVersion: protocol.Version,
 				},
 			}); err != nil {
@@ -196,6 +429,18 @@ func (s *server) handleWebSocket(response http.ResponseWriter, request *http.Req
 				},
 			}); err != nil {
 				return
+			}
+			if requireAuthentication {
+				if !s.hub.tryRegister(registeredIdentity, client, maxAuthenticatedSocketConnections) {
+					_ = writeSocket(ctx, connection, protocol.OutboundEnvelope{
+						Type: protocol.TypeError, EventID: nextEventID(),
+						Error: &protocol.APIError{Code: "CONNECTION_LIMIT_REACHED", Message: "Too many realtime connections for this account"},
+					})
+					_ = connection.Close(websocket.StatusPolicyViolation, "connection limit reached")
+					return
+				}
+			} else {
+				s.hub.register(registeredIdentity, client)
 			}
 
 		case protocol.TypePing:
@@ -231,6 +476,10 @@ func (s *server) nextEventID() int64 {
 }
 
 func writeSocket(parent context.Context, connection *websocket.Conn, message protocol.OutboundEnvelope) error {
+	lock := socketWriteLock(connection)
+	lock.Lock()
+	defer lock.Unlock()
+
 	ctx, cancel := context.WithTimeout(parent, writeTimeout)
 	defer cancel()
 	return wsjson.Write(ctx, connection, message)
@@ -244,14 +493,21 @@ func newConnectionID() (string, error) {
 	return hex.EncodeToString(buffer), nil
 }
 
-func methodNotAllowed(response http.ResponseWriter, allowedMethod string) {
-	response.Header().Set("Allow", allowedMethod)
-	writeJSON(response, http.StatusMethodNotAllowed, map[string]any{
-		"error": map[string]string{
-			"code":    "METHOD_NOT_ALLOWED",
-			"message": "Method not allowed",
-		},
-	})
+func copyReadinessChecks(input map[string]ReadinessCheck) map[string]ReadinessCheck {
+	checks := make(map[string]ReadinessCheck, len(input))
+	for name, check := range input {
+		name = strings.TrimSpace(name)
+		if name == "" || check == nil {
+			continue
+		}
+		checks[name] = check
+	}
+	return checks
+}
+
+func methodNotAllowed(response http.ResponseWriter, allowedMethods ...string) {
+	response.Header().Set("Allow", strings.Join(allowedMethods, ", "))
+	writeAPIError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {
