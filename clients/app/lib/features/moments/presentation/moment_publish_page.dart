@@ -9,6 +9,7 @@ import '../../../theme/app_theme.dart';
 import '../../contacts/data/contacts_api_client.dart';
 import '../../contacts/domain/contact_models.dart';
 import '../../messaging/data/media_api_client.dart';
+import '../../messaging/data/messaging_api_client.dart';
 import '../../messaging/data/video_media_probe.dart';
 import '../data/moments_api_client.dart';
 
@@ -553,6 +554,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
       if (token == null || token.isEmpty) rethrow;
       return action(token);
     } on ContactsApiException catch (error) {
+      if (error.statusCode != 401) rethrow;
+      final token = await widget.onUnauthorized();
+      if (token == null || token.isEmpty) rethrow;
+      return action(token);
+    } on MessagingApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       final token = await widget.onUnauthorized();
       if (token == null || token.isEmpty) rethrow;

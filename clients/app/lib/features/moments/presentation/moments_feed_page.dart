@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../messaging/data/media_api_client.dart';
+import '../../messaging/data/messaging_api_client.dart';
 import '../../messaging/presentation/video_viewer_page.dart';
 import '../data/moments_api_client.dart';
 import '../domain/moment_models.dart';
@@ -372,29 +373,44 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   }
 
   Future<MediaObjectInfo> _mediaInfoFor(String mediaId) {
-    return _mediaInfo.putIfAbsent(
-      mediaId,
-      () => _authorized(
+    return _mediaInfo.putIfAbsent(mediaId, () => _loadMediaInfo(mediaId));
+  }
+
+  Future<MediaObjectInfo> _loadMediaInfo(String mediaId) async {
+    try {
+      return await _authorized(
         (token) => _media.getMedia(
           origin: widget.origin,
           accessToken: token,
           mediaId: mediaId,
         ),
-      ),
-    );
+      );
+    } catch (_) {
+      final _ = _mediaInfo.remove(mediaId);
+      rethrow;
+    }
   }
 
   Future<MediaDownloadGrant> _downloadGrant(String mediaId) {
     return _downloadGrants.putIfAbsent(
       mediaId,
-      () => _authorized(
+      () => _loadDownloadGrant(mediaId),
+    );
+  }
+
+  Future<MediaDownloadGrant> _loadDownloadGrant(String mediaId) async {
+    try {
+      return await _authorized(
         (token) => _media.createDownloadUrl(
           origin: widget.origin,
           accessToken: token,
           mediaId: mediaId,
         ),
-      ),
-    );
+      );
+    } catch (_) {
+      final _ = _downloadGrants.remove(mediaId);
+      rethrow;
+    }
   }
 
   Future<void> _refresh() async {
@@ -627,6 +643,11 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     try {
       return await action(widget.accessToken);
     } on MomentsApiException catch (error) {
+      if (error.statusCode != 401) rethrow;
+      final token = await widget.onUnauthorized();
+      if (token == null || token.isEmpty) rethrow;
+      return action(token);
+    } on MessagingApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       final token = await widget.onUnauthorized();
       if (token == null || token.isEmpty) rethrow;
