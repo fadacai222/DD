@@ -22,6 +22,7 @@ class ContactsPage extends StatefulWidget {
     this.refreshRequestToken = 0,
     this.onUnauthorized,
     this.onOpenDirectChat,
+    this.onOpenGroups,
     this.onStartAudioCall,
     this.onStartVideoCall,
   });
@@ -36,6 +37,7 @@ class ContactsPage extends StatefulWidget {
   final int refreshRequestToken;
   final Future<String?> Function()? onUnauthorized;
   final Future<void> Function(String peerId, String peerName)? onOpenDirectChat;
+  final Future<void> Function()? onOpenGroups;
   final Future<void> Function(String peerId, String peerName)? onStartAudioCall;
   final Future<void> Function(String peerId, String peerName)? onStartVideoCall;
 
@@ -279,6 +281,13 @@ class _ContactsPageState extends State<ContactsPage>
     return ListView(
       padding: const EdgeInsets.only(bottom: 16),
       children: [
+        _DirectoryAction(
+          key: const Key('desktop-groups-directory'),
+          icon: Icons.group_rounded,
+          label: '群聊',
+          selected: false,
+          onTap: () => unawaited(widget.onOpenGroups?.call()),
+        ),
         _DirectoryAction(
           icon: Icons.manage_accounts_outlined,
           label: '通讯录管理',
@@ -649,7 +658,7 @@ class _ContactsPageState extends State<ContactsPage>
                 icon: Icons.group_rounded,
                 iconColor: const Color(0xFF07C160),
                 label: '群聊',
-                onTap: () => _showUnavailable('群聊'),
+                onTap: () => unawaited(widget.onOpenGroups?.call()),
               ),
               _mobileDirectoryAction(
                 icon: Icons.sell_rounded,
@@ -858,12 +867,6 @@ class _ContactsPageState extends State<ContactsPage>
         ),
       ),
     );
-  }
-
-  void _showUnavailable(String label) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$label功能正在接入。')));
   }
 
   Future<void> _openMobileContact(ContactItem contact) async {
@@ -1513,6 +1516,7 @@ class _SectionTitle extends StatelessWidget {
 
 class _DirectoryAction extends StatelessWidget {
   const _DirectoryAction({
+    super.key,
     required this.icon,
     required this.label,
     required this.selected,

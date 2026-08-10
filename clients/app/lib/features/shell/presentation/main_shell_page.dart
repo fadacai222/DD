@@ -28,6 +28,7 @@ import '../../contacts/presentation/peer_profile_page.dart';
 import '../../messaging/application/messaging_coordinator.dart';
 import '../../messaging/presentation/conversations_page.dart';
 import '../../messaging/presentation/conversations_page_controller.dart';
+import '../../messaging/presentation/group_chats_page.dart';
 import '../../messaging/presentation/saved_messages_page.dart';
 import '../../messaging/presentation/text_chat_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
@@ -270,6 +271,7 @@ class _MainShellPageState extends State<MainShellPage>
         refreshRequestToken: _contactsRefreshRequestToken,
         onUnauthorized: widget.onRefreshSession,
         onOpenDirectChat: _openDirectChatFromContacts,
+        onOpenGroups: _openGroupDirectory,
         onStartAudioCall: (peerId, peerName) =>
             _startCall(peerId, peerName, CallKind.audio),
         onStartVideoCall: (peerId, peerName) =>
@@ -462,6 +464,31 @@ class _MainShellPageState extends State<MainShellPage>
       if (!mounted || _callRouteOpen) return;
       unawaited(_openCallPage(call.callerName));
     });
+  }
+
+  Future<void> _openGroupDirectory() async {
+    try {
+      await _messagingCoordinator.refreshConversations();
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => GroupChatsPage(
+            conversations: _messagingCoordinator.conversations,
+            onOpenConversation: (conversation) async {
+              if (!mounted) return;
+              Navigator.of(context).pop();
+              setState(() => _index = 0);
+              _conversationsController.openConversation(conversation.id);
+            },
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('群聊列表加载失败：$error')));
+    }
   }
 
   Future<void> _openDirectChatFromContacts(

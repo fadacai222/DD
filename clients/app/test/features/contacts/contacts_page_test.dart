@@ -97,6 +97,69 @@ void main() {
     },
   );
 
+  testWidgets('mobile group directory delegates to the real group list', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    var openGroupsCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContactsPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'access-token',
+            currentUserId: _alice.id,
+            gateway: _FakeContactsGateway(),
+            embedded: true,
+            onOpenGroups: () async => openGroupsCount++,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('群聊'));
+    await tester.pumpAndSettle();
+
+    expect(openGroupsCount, 1);
+    expect(find.text('群聊功能正在接入。'), findsNothing);
+  });
+
+  testWidgets('desktop group directory is a first-class address-book entry', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    var openGroupsCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContactsPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'access-token',
+            currentUserId: _alice.id,
+            gateway: _FakeContactsGateway(),
+            embedded: true,
+            onOpenGroups: () async => openGroupsCount++,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('desktop-groups-directory')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('desktop-groups-directory')));
+    await tester.pumpAndSettle();
+    expect(openGroupsCount, 1);
+  });
+
   testWidgets('desktop contact detail exposes a primary message action', (
     tester,
   ) async {
