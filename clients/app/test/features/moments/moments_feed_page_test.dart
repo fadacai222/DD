@@ -35,10 +35,9 @@ void main() {
     expect(find.text('Bob'), findsWidgets);
     expect(find.byKey(const Key('moment-moment-1')), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('moment-actions-moment-1')));
-    await tester.pumpAndSettle();
-    expect(find.text('赞'), findsOneWidget);
-    await tester.tap(find.text('赞'));
+    expect(find.byKey(const Key('moment-like-moment-1')), findsOneWidget);
+    expect(find.byKey(const Key('moment-comment-moment-1')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('moment-like-moment-1')));
     await tester.pumpAndSettle();
 
     expect(gateway.likeCalls, [true]);
@@ -203,9 +202,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(mediaInfoCalls, 1);
 
-    await tester.tap(find.byKey(const Key('moment-actions-moment-1')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('赞'));
+    await tester.tap(find.byKey(const Key('moment-like-moment-1')));
     await tester.pumpAndSettle();
 
     expect(mediaInfoCalls, 2);
@@ -230,9 +227,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('moment-actions-moment-1')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('评论'));
+    await tester.tap(find.byKey(const Key('moment-comment-moment-1')));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byKey(const Key('moment-comment-input')),

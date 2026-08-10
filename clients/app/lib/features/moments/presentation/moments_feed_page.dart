@@ -262,23 +262,53 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                 const SizedBox(height: 9),
                 Row(
                   children: [
-                    Text(_timeLabel(item.createdAt), style: const TextStyle(fontSize: 11, color: DdColors.textTertiary)),
-                    if (own) ...[
-                      const SizedBox(width: 12),
-                      TextButton(
-                        onPressed: () => unawaited(_confirmDelete(item)),
-                        style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(32, 28)),
-                        child: const Text('删除', style: TextStyle(fontSize: 11, color: Color(0xFF576B95))),
+                    Text(
+                      _timeLabel(item.createdAt),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textTertiary,
                       ),
-                    ],
+                    ),
                     const Spacer(),
                     IconButton(
-                      key: Key('moment-actions-${item.id}'),
+                      key: Key('moment-like-${item.id}'),
                       visualDensity: VisualDensity.compact,
-                      tooltip: '互动',
-                      onPressed: () => unawaited(_showActions(item)),
-                      icon: const Icon(Icons.more_horiz_rounded, size: 21, color: Color(0xFF576B95)),
+                      tooltip: item.likedByMe ? '取消赞' : '赞',
+                      onPressed: () =>
+                          unawaited(_setLike(item, !item.likedByMe)),
+                      icon: Icon(
+                        item.likedByMe
+                            ? Icons.favorite_rounded
+                            : Icons.favorite_border_rounded,
+                        size: 19,
+                        color: item.likedByMe
+                            ? DdColors.danger
+                            : const Color(0xFF576B95),
+                      ),
                     ),
+                    IconButton(
+                      key: Key('moment-comment-${item.id}'),
+                      visualDensity: VisualDensity.compact,
+                      tooltip: '评论',
+                      onPressed: () => unawaited(_comment(item)),
+                      icon: const Icon(
+                        Icons.chat_bubble_outline_rounded,
+                        size: 19,
+                        color: Color(0xFF576B95),
+                      ),
+                    ),
+                    if (own)
+                      IconButton(
+                        key: Key('moment-actions-${item.id}'),
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '更多',
+                        onPressed: () => unawaited(_showActions(item)),
+                        icon: const Icon(
+                          Icons.more_horiz_rounded,
+                          size: 21,
+                          color: Color(0xFF576B95),
+                        ),
+                      ),
                   ],
                 ),
                 if (item.likeUsers.isNotEmpty || item.comments.isNotEmpty) _interactionBox(item),
@@ -495,6 +525,7 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   }
 
   Future<void> _showActions(MomentItem item) async {
+    if (item.author.id != widget.currentUserId) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       useSafeArea: true,
@@ -502,21 +533,15 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: Icon(item.likedByMe ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: item.likedByMe ? DdColors.danger : null),
-            title: Text(item.likedByMe ? '取消赞' : '赞'),
-            onTap: () => Navigator.pop(sheetContext, 'like'),
-          ),
-          ListTile(
-            leading: const Icon(Icons.chat_bubble_outline_rounded),
-            title: const Text('评论'),
-            onTap: () => Navigator.pop(sheetContext, 'comment'),
+            leading: const Icon(Icons.delete_outline_rounded),
+            title: const Text('删除', style: TextStyle(color: DdColors.danger)),
+            onTap: () => Navigator.pop(sheetContext, 'delete'),
           ),
           const SizedBox(height: 8),
         ],
       ),
     );
-    if (action == 'like') await _setLike(item, !item.likedByMe);
-    if (action == 'comment') await _comment(item);
+    if (action == 'delete') await _confirmDelete(item);
   }
 
   Future<void> _setLike(MomentItem item, bool liked) async {
