@@ -1371,9 +1371,7 @@ class _TextChatPageState extends State<TextChatPage>
                       fontSize: 15,
                       height: 1.38,
                       fontWeight: FontWeight.w600,
-                      color: mine
-                          ? const Color(0xFF087443)
-                          : const Color(0xFF1687FF),
+                      color: ddMentionColor(Theme.of(context).brightness),
                     ),
                     onMentionTap: (userId) =>
                         unawaited(_openMentionProfile(userId)),

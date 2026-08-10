@@ -5,6 +5,13 @@ import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:im_client/features/messaging/presentation/mention_rich_text.dart';
 
 void main() {
+  test('mention semantic color stays blue and brightens in dark mode', () {
+    expect(ddMentionColor(Brightness.light), ddMentionLightColor);
+    expect(ddMentionColor(Brightness.dark), ddMentionDarkColor);
+    expect(ddMentionLightColor, const Color(0xFF1677FF));
+    expect(ddMentionDarkColor, const Color(0xFF65B5FF));
+  });
+
   Iterable<TextSpan> flattenTextSpans(TextSpan span) sync* {
     yield span;
     for (final child in span.children ?? const <InlineSpan>[]) {

@@ -3,6 +3,13 @@ import 'package:flutter/material.dart';
 
 import '../domain/messaging_models.dart';
 
+const Color ddMentionLightColor = Color(0xFF1677FF);
+const Color ddMentionDarkColor = Color(0xFF65B5FF);
+
+Color ddMentionColor(Brightness brightness) => brightness == Brightness.dark
+    ? ddMentionDarkColor
+    : ddMentionLightColor;
+
 class MentionRichText extends StatefulWidget {
   const MentionRichText({
     super.key,
