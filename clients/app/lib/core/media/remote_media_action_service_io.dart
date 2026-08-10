@@ -16,6 +16,91 @@ final class RemoteMediaActionService {
   static const MethodChannel _channel = MethodChannel('dd/media_export');
   final TargetPlatform _platform;
 
+  Future<String> openFile({
+    required Uri url,
+    required String mimeType,
+    required String suggestedName,
+  }) async {
+    final fileName = MediaExportService.safeFileName(suggestedName);
+    if (_platform == TargetPlatform.android) {
+      final opened = await _channel.invokeMethod<bool>('openRemoteFile', {
+        'url': url.toString(),
+        'mimeType': mimeType,
+        'fileName': fileName,
+      });
+      if (opened != true) {
+        throw PlatformException(
+          code: 'MEDIA_OPEN_FAILED',
+          message: 'Android 文件打开失败。',
+        );
+      }
+      return '已交给系统应用打开';
+    }
+    final file = await _cacheRemoteFile(url, fileName);
+    if (_platform == TargetPlatform.macOS) {
+      await Process.start('open', [file.path]);
+    } else if (_platform == TargetPlatform.linux) {
+      await Process.start('xdg-open', [file.path]);
+    } else if (_platform == TargetPlatform.windows) {
+      await Process.start(file.path, const [], runInShell: true);
+    } else {
+      throw UnsupportedError('当前平台暂不支持直接打开文件。');
+    }
+    return '已交给系统应用打开';
+  }
+
+  Future<String> saveFile({
+    required Uri url,
+    required String mimeType,
+    required String suggestedName,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    final fileName = MediaExportService.safeFileName(suggestedName);
+    if (_platform == TargetPlatform.android) {
+      final uri = await _channel.invokeMethod<String>('saveRemoteFileToDownloads', {
+        'url': url.toString(),
+        'mimeType': mimeType,
+        'fileName': fileName,
+      });
+      if (uri == null || uri.trim().isEmpty) {
+        throw PlatformException(
+          code: 'MEDIA_EXPORT_FAILED',
+          message: 'Android 未返回文件保存结果。',
+        );
+      }
+      return '文件已保存到下载目录';
+    }
+    final location = await getSaveLocation(suggestedName: fileName);
+    if (location == null) throw const MediaExportCancelled();
+    await _downloadToFile(url, File(location.path), onProgress: onProgress);
+    return '文件已保存';
+  }
+
+  Future<String> shareFile({
+    required Uri url,
+    required String mimeType,
+    required String suggestedName,
+  }) async {
+    final fileName = MediaExportService.safeFileName(suggestedName);
+    if (_platform == TargetPlatform.android) {
+      final shared = await _channel.invokeMethod<bool>('shareRemoteFile', {
+        'url': url.toString(),
+        'mimeType': mimeType,
+        'fileName': fileName,
+      });
+      if (shared != true) {
+        throw PlatformException(
+          code: 'MEDIA_SHARE_FAILED',
+          message: 'Android 文件分享失败。',
+        );
+      }
+      return '已打开系统分享';
+    }
+    final file = await _cacheRemoteFile(url, fileName);
+    await Pasteboard.writeFiles(<String>[file.path]);
+    return '当前桌面端已复制文件，可直接粘贴到支持文件的应用';
+  }
+
   Future<String> saveVideo({
     required Uri url,
     required String mimeType,
@@ -73,6 +158,17 @@ final class RemoteMediaActionService {
     await _downloadToFile(url, file);
     await Pasteboard.writeFiles(<String>[file.path]);
     return '视频已复制';
+  }
+
+  Future<File> _cacheRemoteFile(Uri url, String fileName) async {
+    final root = await getTemporaryDirectory();
+    final directory = Directory(
+      '${root.path}${Platform.pathSeparator}DD${Platform.pathSeparator}shared_files',
+    );
+    if (!await directory.exists()) await directory.create(recursive: true);
+    final file = File('${directory.path}${Platform.pathSeparator}$fileName');
+    await _downloadToFile(url, file);
+    return file;
   }
 
   Future<void> _downloadToFile(

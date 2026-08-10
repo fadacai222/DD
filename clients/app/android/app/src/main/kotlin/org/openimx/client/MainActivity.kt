@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -23,6 +24,9 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "saveImageToGallery" -> saveImageToGallery(call, result)
                     "saveRemoteVideoToGallery" -> saveRemoteVideoToGallery(call, result)
+                    "saveRemoteFileToDownloads" -> saveRemoteFileToDownloads(call, result)
+                    "openRemoteFile" -> openRemoteFile(call, result)
+                    "shareRemoteFile" -> shareRemoteFile(call, result)
                     "copyRemoteFileToClipboard" -> copyRemoteFileToClipboard(call, result)
                     else -> result.notImplemented()
                 }
@@ -134,6 +138,134 @@ class MainActivity : FlutterActivity() {
                         error.message ?: "视频保存失败",
                         null,
                     )
+                }
+            }
+        }.start()
+    }
+
+    private fun saveRemoteFileToDownloads(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            result.error(
+                "MEDIASTORE_UNSUPPORTED",
+                "Android 10 以下版本请使用系统文件选择器保存文件。",
+                null,
+            )
+            return
+        }
+        val rawUrl = call.argument<String>("url")
+        val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+        val fileName = safeFileName(call.argument<String>("fileName") ?: "DD-file.bin")
+        if (rawUrl.isNullOrBlank()) {
+            result.error("INVALID_URL", "文件下载地址为空。", null)
+            return
+        }
+        Thread {
+            try {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                    put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS + "/DD",
+                    )
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    values,
+                ) ?: throw IllegalStateException("无法创建下载文件记录")
+                try {
+                    contentResolver.openOutputStream(uri, "w").use { output ->
+                        requireNotNull(output) { "无法打开下载目录写入流" }
+                        openRemoteStream(rawUrl).use { input ->
+                            input.copyTo(output, DEFAULT_BUFFER_SIZE)
+                        }
+                        output.flush()
+                    }
+                    val completed = ContentValues().apply {
+                        put(MediaStore.Downloads.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, completed, null, null)
+                    runOnUiThread { result.success(uri.toString()) }
+                } catch (error: Throwable) {
+                    contentResolver.delete(uri, null, null)
+                    throw error
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    result.error(
+                        "MEDIA_EXPORT_FAILED",
+                        error.message ?: "文件保存失败",
+                        null,
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun openRemoteFile(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        prepareRemoteFile(call, result, "MEDIA_OPEN_FAILED") { uri, mimeType ->
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (intent.resolveActivity(packageManager) == null) {
+                throw IllegalStateException("没有可打开此文件类型的应用")
+            }
+            startActivity(intent)
+            true
+        }
+    }
+
+    private fun shareRemoteFile(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        prepareRemoteFile(call, result, "MEDIA_SHARE_FAILED") { uri, mimeType ->
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newUri(contentResolver, "DD file", uri)
+            }
+            startActivity(Intent.createChooser(intent, "分享文件"))
+            true
+        }
+    }
+
+    private fun prepareRemoteFile(
+        call: io.flutter.plugin.common.MethodCall,
+        result: MethodChannel.Result,
+        errorCode: String,
+        action: (android.net.Uri, String) -> Boolean,
+    ) {
+        val rawUrl = call.argument<String>("url")
+        val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+        val fileName = safeFileName(call.argument<String>("fileName") ?: "DD-file.bin")
+        if (rawUrl.isNullOrBlank()) {
+            result.error("INVALID_URL", "文件下载地址为空。", null)
+            return
+        }
+        Thread {
+            try {
+                val directory = File(cacheDir, "dd_shared_files").apply { mkdirs() }
+                cleanupOldClipboardFiles(directory)
+                val target = File(directory, fileName)
+                openRemoteStream(rawUrl).use { input ->
+                    target.outputStream().buffered().use { output -> input.copyTo(output) }
+                }
+                val uri = FileProvider.getUriForFile(
+                    this,
+                    "$packageName.fileprovider",
+                    target,
+                )
+                runOnUiThread {
+                    try {
+                        result.success(action(uri, mimeType))
+                    } catch (error: Throwable) {
+                        result.error(errorCode, error.message ?: "文件操作失败", null)
+                    }
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    result.error(errorCode, error.message ?: "文件操作失败", null)
                 }
             }
         }.start()

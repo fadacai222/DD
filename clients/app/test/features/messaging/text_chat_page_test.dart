@@ -1021,6 +1021,12 @@ void main() {
     expect(find.text('guide.pdf'), findsOneWidget);
     expect(find.text('1.0 MiB'), findsOneWidget);
     expect(find.text('5″'), findsOneWidget);
+
+    await tester.tap(find.text('guide.pdf'));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('打开文件'), findsOneWidget);
+    expect(find.text('保存文件'), findsOneWidget);
+    expect(find.text('系统分享'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

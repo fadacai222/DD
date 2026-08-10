@@ -11,6 +11,7 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/media/chat_image_processor.dart';
 import '../../../core/media/chat_voice_recorder.dart';
 import '../../../core/media/image_viewer_page.dart';
+import '../../../core/media/remote_media_action_service.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
@@ -149,6 +150,8 @@ class _TextChatPageState extends State<TextChatPage>
   late final ChatVoicePlayer _voicePlayer;
   final MediaDownloadGrantCache _mediaDownloadGrants =
       MediaDownloadGrantCache();
+  final RemoteMediaActionService _remoteMediaActions =
+      RemoteMediaActionService();
   Timer? _draftSaveTimer;
   bool _imageSending = false;
   int _imageBatchCurrent = 0;
@@ -1495,7 +1498,7 @@ class _TextChatPageState extends State<TextChatPage>
       borderRadius: BorderRadius.circular(DdRadii.control),
       onTap: downloading
           ? () => _fileDownloadCancellations[message.id]?.cancel()
-          : () => unawaited(_saveMediaFile(message)),
+          : () => unawaited(_showFileActions(message)),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 3),
         child: Row(
@@ -1535,54 +1538,182 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Future<void> _showFileActions(ChatMessage message) async {
+    final content = message.content;
+    if (content?.mediaId?.trim().isEmpty != false) return;
+    final action = await showDdActionSheet<String>(
+      context,
+      items: const [
+        DdActionSheetItem<String>(
+          value: 'open',
+          icon: Icons.open_in_new_rounded,
+          label: '打开文件',
+          subtitle: '使用系统中支持此格式的应用打开',
+        ),
+        DdActionSheetItem<String>(
+          value: 'save',
+          icon: Icons.download_rounded,
+          label: '保存文件',
+          subtitle: 'Android 保存到 Downloads/DD',
+        ),
+        DdActionSheetItem<String>(
+          value: 'share',
+          icon: Icons.ios_share_rounded,
+          label: '系统分享',
+          subtitle: '交给系统分享面板发送到其他应用',
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'open':
+        await _openMediaFile(message);
+        break;
+      case 'save':
+        await _saveMediaFile(message);
+        break;
+      case 'share':
+        await _shareMediaFile(message);
+        break;
+    }
+  }
+
+  Future<void> _openMediaFile(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) return;
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'DD-file.bin'
+        : content.fileName!.trim();
+    final mimeType = (content.mimeType ?? '').trim().isEmpty
+        ? 'application/octet-stream'
+        : content.mimeType!.trim();
+    try {
+      final result = await _withFreshFileGrant(
+        mediaId,
+        (url) => _remoteMediaActions.openFile(
+          url: url,
+          mimeType: mimeType,
+          suggestedName: fileName,
+        ),
+      );
+      if (mounted) _showImageError(result);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        _showImageError(
+          error.message ?? '文件打开失败，请检查是否安装了支持此格式的应用。',
+        );
+      }
+    } catch (_) {
+      if (mounted) _showImageError('文件打开失败，请检查是否安装了支持此格式的应用。');
+    }
+  }
+
   Future<void> _saveMediaFile(ChatMessage message) async {
     final content = message.content;
-    final mediaId = content?.mediaId;
-    if (content == null || mediaId == null || mediaId.isEmpty) return;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) return;
     final fileName = (content.fileName ?? '').trim().isEmpty
         ? 'download.bin'
         : content.fileName!.trim();
-    final location = await getSaveLocation(suggestedName: fileName);
-    if (location == null || !mounted) return;
+    final mimeType = (content.mimeType ?? '').trim().isEmpty
+        ? 'application/octet-stream'
+        : content.mimeType!.trim();
     final cancellation = MediaDownloadCancellation();
-    setState(() {
-      _fileDownloadCancellations[message.id] = cancellation;
-      _fileDownloadProgress[message.id] = 0;
-    });
+    final trackProgress =
+        kIsWeb || defaultTargetPlatform != TargetPlatform.android;
+    if (trackProgress) {
+      setState(() {
+        _fileDownloadCancellations[message.id] = cancellation;
+        _fileDownloadProgress[message.id] = 0;
+      });
+    }
     try {
-      final grant = await _downloadGrantFor(mediaId);
-      final bytes = await _mediaApi.downloadMedia(
-        url: grant.url,
-        cancellation: cancellation,
-        onProgress: (received, total) {
-          if (!mounted || total == null || total <= 0) return;
-          final next = (received / total).clamp(0.0, 1.0);
-          if ((next - (_fileDownloadProgress[message.id] ?? 0)).abs() < 0.01 &&
-              next < 1) {
-            return;
-          }
-          setState(() => _fileDownloadProgress[message.id] = next);
-        },
+      final result = await _withFreshFileGrant(
+        mediaId,
+        (url) => _remoteMediaActions.saveFile(
+          url: url,
+          mimeType: mimeType,
+          suggestedName: fileName,
+          onProgress: (received, total) {
+            if (!mounted || cancellation.isCancelled) return;
+            if (total == null || total <= 0) return;
+            final next = (received / total).clamp(0.0, 1.0);
+            if ((next - (_fileDownloadProgress[message.id] ?? 0)).abs() < 0.01 &&
+                next < 1) {
+              return;
+            }
+            setState(() => _fileDownloadProgress[message.id] = next);
+          },
+        ),
       );
       if (cancellation.isCancelled) throw const MediaDownloadCancelled();
-      await XFile.fromData(
-        bytes,
-        mimeType: content.mimeType,
-        name: fileName,
-      ).saveTo(location.path);
-      if (mounted) _showImageError('文件已保存。');
+      if (mounted) _showImageError(result);
     } on MediaDownloadCancelled {
       if (mounted) _showImageError('已取消文件下载。');
+    } on PlatformException catch (error) {
+      if (mounted) {
+        _showImageError(error.message ?? '文件下载失败，请稍后重试。');
+      }
     } catch (_) {
       if (mounted) _showImageError('文件下载失败，请稍后重试。');
     } finally {
-      if (mounted) {
+      if (mounted && trackProgress) {
         setState(() {
           _fileDownloadCancellations.remove(message.id);
           _fileDownloadProgress.remove(message.id);
         });
       }
     }
+  }
+
+  Future<void> _shareMediaFile(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) return;
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'DD-file.bin'
+        : content.fileName!.trim();
+    final mimeType = (content.mimeType ?? '').trim().isEmpty
+        ? 'application/octet-stream'
+        : content.mimeType!.trim();
+    try {
+      final result = await _withFreshFileGrant(
+        mediaId,
+        (url) => _remoteMediaActions.shareFile(
+          url: url,
+          mimeType: mimeType,
+          suggestedName: fileName,
+        ),
+      );
+      if (mounted) _showImageError(result);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        _showImageError(error.message ?? '文件分享失败，请稍后重试。');
+      }
+    } catch (_) {
+      if (mounted) _showImageError('文件分享失败，请稍后重试。');
+    }
+  }
+
+  Future<T> _withFreshFileGrant<T>(
+    String mediaId,
+    Future<T> Function(Uri url) action,
+  ) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final grant = await _downloadGrantFor(mediaId);
+        return await action(grant.url);
+      } catch (error) {
+        lastError = error;
+        if (attempt == 0) {
+          _mediaDownloadGrants.clear(mediaId);
+          continue;
+        }
+      }
+    }
+    throw lastError ?? StateError('文件操作失败。');
   }
 
   String _formatBytes(int bytes) {
