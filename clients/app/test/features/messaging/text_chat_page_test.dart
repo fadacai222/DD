@@ -1,7 +1,9 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:im_client/core/media/camera_capture_service.dart';
 import 'package:im_client/core/security/dd_secure_storage.dart';
 import 'package:im_client/features/contacts/domain/contact_models.dart';
 import 'package:im_client/features/groups/data/groups_api_client.dart';
@@ -56,6 +58,36 @@ void main() {
       findsOneWidget,
     );
     expect(find.descendant(of: sheet, matching: find.text('表情')), findsNothing);
+  });
+
+  testWidgets('capture action uses platform camera adapter and cancel is silent', (
+    tester,
+  ) async {
+    final camera = _FakeCameraCapture();
+    final harness = _Harness(_ChatGateway());
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(),
+          currentUserId: 'user-a',
+          cameraCapture: camera,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+
+    await tester.tap(find.byKey(const Key('chat-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('拍摄'));
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(camera.captureCalls, 1);
+    expect(find.textContaining('拍摄失败'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('friend acceptance system message is centered and readable', (
@@ -1647,6 +1679,22 @@ ConversationItem _conversation({
   createdAt: DateTime.utc(2026, 8, 8),
   updatedAt: DateTime.utc(2026, 8, 8),
 );
+
+final class _FakeCameraCapture implements CameraCaptureGateway {
+  int captureCalls = 0;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<XFile?> capturePhoto() async {
+    captureCalls++;
+    return null;
+  }
+
+  @override
+  Future<void> openAppSettings() async {}
+}
 
 final class _SecureMemoryStore implements SecureKeyValueStore {
   final Map<String, String> values = <String, String>{};

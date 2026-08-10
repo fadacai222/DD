@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/logging/client_log.dart';
+import '../../../core/media/camera_capture_service.dart';
 import '../../../core/media/chat_image_processor.dart';
 import '../../../core/media/chat_voice_recorder.dart';
 import '../../../core/media/image_viewer_page.dart';
@@ -68,6 +69,7 @@ class TextChatPage extends StatefulWidget {
     this.stickerGateway,
     this.groupsGateway,
     this.mediaPreferencesStore,
+    this.cameraCapture,
   });
 
   final MessagingCoordinator coordinator;
@@ -87,6 +89,7 @@ class TextChatPage extends StatefulWidget {
   final StickerGateway? stickerGateway;
   final GroupsGateway? groupsGateway;
   final MediaAutoDownloadStore? mediaPreferencesStore;
+  final CameraCaptureGateway? cameraCapture;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -142,6 +145,7 @@ class _TextChatPageState extends State<TextChatPage>
   late final ScrollController _scrollController;
   late final ChatAppearanceStore _appearanceStore;
   late final MediaApiClient _mediaApi;
+  late final CameraCaptureGateway _cameraCapture;
   late final MediaAutoDownloadStore _mediaPreferencesStore;
   MediaAutoDownloadPreferences _mediaPreferences =
       const MediaAutoDownloadPreferences();
@@ -233,6 +237,7 @@ class _TextChatPageState extends State<TextChatPage>
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
+    _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     _mediaPreferencesStore = widget.mediaPreferencesStore ??
         MediaAutoDownloadStore.shared(widget.currentUserId);
     _mediaPreferences = _mediaPreferencesStore.value;
@@ -3875,8 +3880,11 @@ class _TextChatPageState extends State<TextChatPage>
               _ComposerAction(
                 icon: Icons.photo_camera_outlined,
                 label: '拍摄',
-                enabled: false,
-                onTap: () {},
+                enabled: _cameraCapture.isSupported && !_imageSending,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  unawaited(_captureAndSendPhoto());
+                },
               ),
               _ComposerAction(
                 icon: _fileSending
@@ -3900,6 +3908,36 @@ class _TextChatPageState extends State<TextChatPage>
         ),
       ),
     );
+  }
+
+  Future<void> _captureAndSendPhoto() async {
+    if (_imageSending || !_cameraCapture.isSupported) return;
+    try {
+      final file = await _cameraCapture.capturePhoto();
+      if (file == null || !mounted) return;
+      await _sendImageFiles(<XFile>[file]);
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      if (error.code == 'CAMERA_PERMISSION_DENIED') {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(error.message ?? '相机权限被拒绝。'),
+            action: SnackBarAction(
+              label: '去设置',
+              onPressed: () => unawaited(_cameraCapture.openAppSettings()),
+            ),
+          ),
+        );
+        return;
+      }
+      _showImageError(error.message ?? '拍摄失败，请稍后重试。');
+    } on UnsupportedError catch (error) {
+      if (mounted) _showImageError(error.message ?? '当前平台暂不支持拍摄。');
+    } catch (_) {
+      if (mounted) _showImageError('拍摄失败，请稍后重试。');
+    }
   }
 
   Future<void> _pickAndSendAlbum() async {
