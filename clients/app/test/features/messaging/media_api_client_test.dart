@@ -235,7 +235,36 @@ void main() {
     client.close();
   });
 
-  test('downloadMedia honors cancellation', () async {
+  test('downloadMedia active cancellation cancels storage stream', () async {
+    var streamCancelled = false;
+    final listened = Completer<void>();
+    late final StreamController<List<int>> stream;
+    stream = StreamController<List<int>>(
+      onListen: () => listened.complete(),
+      onCancel: () => streamCancelled = true,
+    );
+    final cancellation = MediaDownloadCancellation();
+    final client = MediaApiClient(
+      httpClient: MockClient.streaming((request, bodyStream) async {
+        return http.StreamedResponse(stream.stream, 200, contentLength: 10);
+      }),
+    );
+
+    final download = client.downloadMedia(
+      url: Uri.parse('https://storage.example.test/file'),
+      cancellation: cancellation,
+    );
+    await listened.future;
+    stream.add(const <int>[1, 2, 3]);
+    cancellation.cancel();
+
+    await expectLater(download, throwsA(isA<MediaDownloadCancelled>()));
+    expect(streamCancelled, isTrue);
+    await stream.close();
+    client.close();
+  });
+
+  test('downloadMedia honors cancellation before request', () async {
     final cancellation = MediaDownloadCancellation()..cancel();
     final client = MediaApiClient(
       httpClient: MockClient((_) async => http.Response('', 200)),

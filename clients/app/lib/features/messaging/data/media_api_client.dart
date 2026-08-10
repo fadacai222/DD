@@ -96,10 +96,29 @@ final class MediaUploadCancelled implements Exception {
 
 final class MediaDownloadCancellation {
   bool _cancelled = false;
+  final Set<void Function()> _abortListeners = <void Function()>{};
 
   bool get isCancelled => _cancelled;
 
-  void cancel() => _cancelled = true;
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    for (final listener in _abortListeners.toList(growable: false)) {
+      listener();
+    }
+    _abortListeners.clear();
+  }
+
+  void addAbortListener(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _abortListeners.add(listener);
+  }
+
+  void removeAbortListener(void Function() listener) =>
+      _abortListeners.remove(listener);
 }
 
 final class MediaDownloadCancelled implements Exception {
@@ -402,13 +421,45 @@ final class MediaApiClient {
     final total = response.contentLength;
     final builder = BytesBuilder(copy: false);
     var received = 0;
-    await for (final chunk in response.stream) {
-      if (cancellation?.isCancelled == true) {
-        throw const MediaDownloadCancelled();
+    final completed = Completer<void>();
+    late final StreamSubscription<List<int>> subscription;
+
+    void abort() {
+      unawaited(subscription.cancel());
+      if (!completed.isCompleted) {
+        completed.completeError(const MediaDownloadCancelled());
       }
-      builder.add(chunk);
-      received += chunk.length;
-      onProgress?.call(received, total);
+    }
+
+    subscription = response.stream.listen(
+      (chunk) {
+        if (cancellation?.isCancelled == true) {
+          abort();
+          return;
+        }
+        builder.add(chunk);
+        received += chunk.length;
+        onProgress?.call(received, total);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!completed.isCompleted) {
+          completed.completeError(error, stackTrace);
+        }
+      },
+      onDone: () {
+        if (!completed.isCompleted) completed.complete();
+      },
+      cancelOnError: true,
+    );
+    cancellation?.addAbortListener(abort);
+    try {
+      await completed.future;
+    } finally {
+      cancellation?.removeAbortListener(abort);
+      await subscription.cancel();
+    }
+    if (cancellation?.isCancelled == true) {
+      throw const MediaDownloadCancelled();
     }
     onProgress?.call(received, total ?? received);
     return builder.takeBytes();
