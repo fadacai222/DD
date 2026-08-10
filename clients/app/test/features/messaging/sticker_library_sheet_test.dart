@@ -33,6 +33,34 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('adding a custom sticker appears immediately without reopening', (
+    tester,
+  ) async {
+    final gateway = _FakeStickerGateway();
+    await _openSheet(
+      tester,
+      gateway,
+      onAddCustomSticker: (_) async {
+        final created = _custom('fresh-custom');
+        gateway.custom.add(created);
+        return created;
+      },
+    );
+
+    await tester.tap(find.byKey(const Key('sticker-tab-custom')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('custom-sticker-fresh-custom')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('sticker-custom-add')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('custom-sticker-fresh-custom')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'import adds a pack tab and remove makes it disappear immediately',
     (tester) async {
@@ -148,7 +176,12 @@ void main() {
   });
 }
 
-Future<void> _openSheet(WidgetTester tester, StickerGateway gateway) async {
+Future<void> _openSheet(
+  WidgetTester tester,
+  StickerGateway gateway, {
+  Future<CustomStickerItem?> Function(StickerGateway gateway)?
+  onAddCustomSticker,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
@@ -164,7 +197,8 @@ Future<void> _openSheet(WidgetTester tester, StickerGateway gateway) async {
                 emoji: const ['😀', '😂'],
                 recentEmoji: const ['😀'],
                 mediaBytesLoader: _mediaBytes,
-                onAddCustomSticker: (_) async => null,
+                onAddCustomSticker:
+                    onAddCustomSticker ?? (_) async => null,
                 gateway: gateway,
               ),
             ),
