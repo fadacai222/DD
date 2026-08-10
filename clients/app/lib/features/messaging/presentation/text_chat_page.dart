@@ -35,6 +35,7 @@ import '../data/messaging_api_client.dart' show MessagingApiException;
 import '../data/sticker_api_client.dart';
 import '../data/video_file_cache.dart';
 import '../data/video_media_probe.dart';
+import '../domain/media_transfer_state.dart';
 import '../domain/messaging_models.dart';
 import '../domain/sticker_models.dart';
 import 'chat_background_settings_page.dart';
@@ -45,6 +46,7 @@ import 'mention_rich_text.dart';
 import 'mention_suggestion_overlay.dart';
 import 'sticker_library_sheet.dart';
 import 'video_viewer_page.dart';
+import 'widgets/media_transfer_progress.dart';
 
 class TextChatPage extends StatefulWidget {
   const TextChatPage({
@@ -156,17 +158,22 @@ class _TextChatPageState extends State<TextChatPage>
   bool _imageSending = false;
   int _imageBatchCurrent = 0;
   int _imageBatchTotal = 0;
-  double _imageUploadProgress = 0;
+  MediaTransferState _imageTransfer = const MediaTransferState.queued();
+  MediaUploadCancellation? _imageUploadCancellation;
   bool _gifSending = false;
   bool _stickerSending = false;
   bool _fileSending = false;
   bool _videoSending = false;
-  double _videoUploadProgress = 0;
+  MediaTransferState _videoTransfer = const MediaTransferState.queued();
   MediaUploadCancellation? _videoUploadCancellation;
   final Map<String, double> _fileDownloadProgress = {};
   final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
-  double _fileUploadProgress = 0;
+  MediaTransferState _fileTransfer = const MediaTransferState.queued();
   MediaUploadCancellation? _fileUploadCancellation;
+  double get _imageUploadProgress => _imageTransfer.progress ?? 0;
+  double get _videoUploadProgress => _videoTransfer.progress ?? 0;
+  double get _fileUploadProgress => _fileTransfer.progress ?? 0;
+
   bool _voiceMode = false;
   bool _voiceRecording = false;
   bool _voiceCancelGesture = false;
@@ -2708,150 +2715,108 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _imageUploadBanner() {
-    final percent = (_imageUploadProgress * 100).clamp(0, 100).round();
     final title = _imageBatchTotal > 1
         ? '正在发送 $_imageBatchCurrent / $_imageBatchTotal 张图片'
         : '正在发送图片';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 7),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: DdColors.ownBubble.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(DdRadii.control),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.image_outlined,
-            size: 18,
-            color: DdColors.greenPressed,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(title, style: const TextStyle(fontSize: 12)),
-                    ),
-                    Text(
-                      '$percent%',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: DdColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 5),
-                LinearProgressIndicator(
-                  value: _imageUploadProgress.clamp(0, 1),
-                  minHeight: 3,
-                  backgroundColor: DdColors.divider,
-                  color: DdColors.greenPressed,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+    return _uploadTransferBanner(
+      key: const Key('image-upload-transfer'),
+      icon: Icons.image_outlined,
+      title: title,
+      state: _imageTransfer,
+      onCancel: _imageUploadCancellation?.cancel,
     );
   }
 
-  Widget _videoUploadBanner() {
-    final percent = (_videoUploadProgress * 100).clamp(0, 100).round();
+  Widget _videoUploadBanner() => _uploadTransferBanner(
+    key: const Key('video-upload-transfer'),
+    icon: Icons.videocam_outlined,
+    title: _videoTransfer.phase == MediaTransferPhase.preparing
+        ? '正在准备视频'
+        : _videoTransfer.phase == MediaTransferPhase.committing
+        ? '正在生成缩略图并发送'
+        : '正在上传视频',
+    state: _videoTransfer,
+    onCancel: _videoUploadCancellation?.cancel,
+  );
+
+  Widget _fileUploadBanner() => _uploadTransferBanner(
+    key: const Key('file-upload-transfer'),
+    icon: Icons.upload_file_rounded,
+    title: _fileTransfer.phase == MediaTransferPhase.committing
+        ? '正在发送文件消息'
+        : '正在上传文件',
+    state: _fileTransfer,
+    onCancel: _fileUploadCancellation?.cancel,
+  );
+
+  Widget _uploadTransferBanner({
+    required Key key,
+    required IconData icon,
+    required String title,
+    required MediaTransferState state,
+    required VoidCallback? onCancel,
+  }) {
+    final progress = state.progress;
+    final detail = progress == null
+        ? _transferPhaseLabel(state.phase)
+        : '${(progress * 100).clamp(0, 100).round()}% · '
+              '${_formatTransferBytes(state.transferredBytes)} / '
+              '${_formatTransferBytes(state.totalBytes ?? 0)}';
     return Container(
+      key: key,
       margin: const EdgeInsets.only(bottom: 7),
-      padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+      padding: const EdgeInsets.fromLTRB(10, 7, 8, 7),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.94),
         borderRadius: BorderRadius.circular(DdRadii.control),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.videocam_outlined,
-            size: 18,
-            color: DdColors.greenPressed,
-          ),
+          Icon(icon, size: 18, color: DdColors.greenPressed),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Text(title, style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 2),
                 Text(
-                  percent < 100 ? '正在上传视频 · $percent%' : '正在生成视频缩略图…',
-                  style: const TextStyle(fontSize: 12),
-                ),
-                const SizedBox(height: 5),
-                LinearProgressIndicator(
-                  value: _videoUploadProgress.clamp(0, 1),
-                  minHeight: 3,
-                  backgroundColor: DdColors.divider,
-                  color: DdColors.greenPressed,
+                  detail,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: DdColors.textSecondary,
+                  ),
                 ),
               ],
             ),
           ),
-          IconButton(
-            key: const Key('cancel-video-upload'),
-            tooltip: '取消视频上传',
-            visualDensity: VisualDensity.compact,
-            onPressed: _videoUploadCancellation?.cancel,
-            icon: const Icon(Icons.close_rounded, size: 18),
+          const SizedBox(width: 8),
+          MediaTransferProgress(
+            state: state,
+            onCancel: onCancel,
           ),
         ],
       ),
     );
   }
 
-  Widget _fileUploadBanner() {
-    final percent = (_fileUploadProgress * 100).clamp(0, 100).round();
-    return Container(
-      margin: const EdgeInsets.only(bottom: 7),
-      padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
-      decoration: BoxDecoration(
-        color: DdColors.ownBubble.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(DdRadii.control),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.upload_file_rounded,
-            size: 18,
-            color: DdColors.greenPressed,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '正在上传文件 · $percent%',
-                  style: const TextStyle(fontSize: 12),
-                ),
-                const SizedBox(height: 5),
-                LinearProgressIndicator(
-                  value: _fileUploadProgress.clamp(0, 1),
-                  minHeight: 3,
-                  backgroundColor: DdColors.divider,
-                  color: DdColors.greenPressed,
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            key: const Key('cancel-file-upload'),
-            tooltip: '取消上传',
-            visualDensity: VisualDensity.compact,
-            onPressed: _fileUploadCancellation?.cancel,
-            icon: const Icon(Icons.close_rounded, size: 18),
-          ),
-        ],
-      ),
-    );
+  String _transferPhaseLabel(MediaTransferPhase phase) => switch (phase) {
+    MediaTransferPhase.queued => '等待中',
+    MediaTransferPhase.preparing => '处理中…',
+    MediaTransferPhase.uploading => '上传中…',
+    MediaTransferPhase.committing => '正在提交…',
+    MediaTransferPhase.done => '已完成',
+    MediaTransferPhase.failed => '失败',
+    MediaTransferPhase.canceled => '已取消',
+  };
+
+  String _formatTransferBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
   bool get _mobileHoldToTalk =>
@@ -3844,11 +3809,15 @@ class _TextChatPageState extends State<TextChatPage>
     }
     final replyToMessageId = _replyingTo?.id;
     if (_replyingTo != null) setState(() => _replyingTo = null);
+    final cancellation = MediaUploadCancellation();
+    _imageUploadCancellation = cancellation;
     setState(() {
       _imageSending = true;
       _imageBatchCurrent = 0;
       _imageBatchTotal = files.length;
-      _imageUploadProgress = 0;
+      _imageTransfer = const MediaTransferState(
+        phase: MediaTransferPhase.preparing,
+      );
     });
     var sentCount = 0;
     try {
@@ -3861,30 +3830,61 @@ class _TextChatPageState extends State<TextChatPage>
           );
           continue;
         }
+        if (cancellation.isCancelled) throw const MediaUploadCancelled();
         if (mounted) {
           setState(() {
             _imageBatchCurrent = index + 1;
-            _imageUploadProgress = 0;
+            _imageTransfer = MediaTransferState(
+              phase: MediaTransferPhase.preparing,
+              totalBytes: sourceLength,
+            );
           });
         }
         final source = await file.readAsBytes();
+        if (cancellation.isCancelled) throw const MediaUploadCancelled();
         final processed = await processChatImage(source);
+        if (cancellation.isCancelled) throw const MediaUploadCancelled();
+        if (mounted) {
+          setState(() {
+            _imageTransfer = MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              totalBytes: processed.bytes.length,
+            );
+          });
+        }
         final grant = await widget.coordinator.withAuthorizedToken(
           (token) => _mediaApi.uploadChatImage(
             origin: widget.coordinator.origin,
             accessToken: token,
             bytes: processed.bytes,
             fileName: '${DateTime.now().microsecondsSinceEpoch}-$index.jpg',
+            cancellation: cancellation,
             onProgress: (sent, total) {
               if (!mounted || total <= 0) return;
               final next = (sent / total).clamp(0.0, 1.0);
               if ((next - _imageUploadProgress).abs() < 0.02 && next < 1) {
                 return;
               }
-              setState(() => _imageUploadProgress = next);
+              setState(() {
+                _imageTransfer = MediaTransferState(
+                  phase: MediaTransferPhase.uploading,
+                  transferredBytes: sent,
+                  totalBytes: total,
+                );
+              });
             },
           ),
         );
+        if (cancellation.isCancelled) throw const MediaUploadCancelled();
+        if (mounted) {
+          setState(() {
+            _imageTransfer = MediaTransferState(
+              phase: MediaTransferPhase.committing,
+              transferredBytes: processed.bytes.length,
+              totalBytes: processed.bytes.length,
+            );
+          });
+        }
         await widget.coordinator.sendImage(
           widget.conversation.id,
           mediaId: grant.mediaId,
@@ -3896,6 +3896,22 @@ class _TextChatPageState extends State<TextChatPage>
         if (mounted) _scrollToBottom();
       }
       if (sentCount == 0 && mounted) _showImageError('没有可发送的图片。');
+      if (mounted) {
+        setState(() {
+          _imageTransfer = _imageTransfer.copyWith(
+            phase: MediaTransferPhase.done,
+          );
+        });
+      }
+    } on MediaUploadCancelled {
+      if (mounted) {
+        setState(() {
+          _imageTransfer = _imageTransfer.copyWith(
+            phase: MediaTransferPhase.canceled,
+          );
+        });
+        _showImageError('已取消图片发送。');
+      }
     } on MessagingApiException catch (error) {
       if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
@@ -3903,12 +3919,15 @@ class _TextChatPageState extends State<TextChatPage>
     } catch (_) {
       if (mounted) _showImageError('图片发送失败，请稍后重试。');
     } finally {
+      if (identical(_imageUploadCancellation, cancellation)) {
+        _imageUploadCancellation = null;
+      }
       if (mounted) {
         setState(() {
           _imageSending = false;
           _imageBatchCurrent = 0;
           _imageBatchTotal = 0;
-          _imageUploadProgress = 0;
+          _imageTransfer = const MediaTransferState.queued();
         });
       }
     }
@@ -4078,11 +4097,22 @@ class _TextChatPageState extends State<TextChatPage>
     _videoUploadCancellation = cancellation;
     setState(() {
       _videoSending = true;
-      _videoUploadProgress = 0;
+      _videoTransfer = MediaTransferState(
+        phase: MediaTransferPhase.preparing,
+        totalBytes: sourceLength,
+      );
     });
     try {
       final metadata = await const VideoMediaProbe().probeFile(file);
       if (cancellation.isCancelled) throw const MediaUploadCancelled();
+      if (mounted) {
+        setState(() {
+          _videoTransfer = MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            totalBytes: sourceLength,
+          );
+        });
+      }
 
       final primary = await widget.coordinator.withAuthorizedToken(
         (token) => _mediaApi.uploadStream(
@@ -4098,12 +4128,26 @@ class _TextChatPageState extends State<TextChatPage>
             if (!mounted || total <= 0) return;
             final next = (sent / total).clamp(0.0, 1.0);
             if ((next - _videoUploadProgress).abs() < 0.01 && next < 1) return;
-            setState(() => _videoUploadProgress = next);
+            setState(() {
+              _videoTransfer = MediaTransferState(
+                phase: MediaTransferPhase.uploading,
+                transferredBytes: sent,
+                totalBytes: total,
+              );
+            });
           },
         ),
       );
       if (cancellation.isCancelled) throw const MediaUploadCancelled();
-      if (mounted) setState(() => _videoUploadProgress = 1);
+      if (mounted) {
+        setState(() {
+          _videoTransfer = MediaTransferState(
+            phase: MediaTransferPhase.committing,
+            transferredBytes: sourceLength,
+            totalBytes: sourceLength,
+          );
+        });
+      }
 
       final poster = await widget.coordinator.withAuthorizedToken(
         (token) => _mediaApi.uploadChatImage(
@@ -4128,7 +4172,14 @@ class _TextChatPageState extends State<TextChatPage>
         sizeBytes: sourceLength,
         replyToMessageId: replyToMessageId,
       );
-      if (mounted) _scrollToBottom();
+      if (mounted) {
+        setState(() {
+          _videoTransfer = _videoTransfer.copyWith(
+            phase: MediaTransferPhase.done,
+          );
+        });
+        _scrollToBottom();
+      }
     } on MediaUploadCancelled {
       if (mounted) _showImageError('已取消视频发送。');
     } on MessagingApiException catch (error) {
@@ -4144,7 +4195,7 @@ class _TextChatPageState extends State<TextChatPage>
       if (mounted) {
         setState(() {
           _videoSending = false;
-          _videoUploadProgress = 0;
+          _videoTransfer = const MediaTransferState.queued();
         });
       }
     }
@@ -4182,7 +4233,10 @@ class _TextChatPageState extends State<TextChatPage>
     _fileUploadCancellation = cancellation;
     setState(() {
       _fileSending = true;
-      _fileUploadProgress = 0;
+      _fileTransfer = MediaTransferState(
+        phase: MediaTransferPhase.uploading,
+        totalBytes: sourceLength,
+      );
     });
     try {
       final mimeType = _fileMimeType(file.name);
@@ -4202,10 +4256,26 @@ class _TextChatPageState extends State<TextChatPage>
             if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1) {
               return;
             }
-            setState(() => _fileUploadProgress = progress.clamp(0, 1));
+            setState(() {
+              _fileTransfer = MediaTransferState(
+                phase: MediaTransferPhase.uploading,
+                transferredBytes: sent,
+                totalBytes: total,
+              );
+            });
           },
         ),
       );
+      if (cancellation.isCancelled) throw const MediaUploadCancelled();
+      if (mounted) {
+        setState(() {
+          _fileTransfer = MediaTransferState(
+            phase: MediaTransferPhase.committing,
+            transferredBytes: sourceLength,
+            totalBytes: sourceLength,
+          );
+        });
+      }
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
       await widget.coordinator.sendMedia(
@@ -4217,7 +4287,14 @@ class _TextChatPageState extends State<TextChatPage>
         sizeBytes: sourceLength,
         replyToMessageId: replyToMessageId,
       );
-      if (mounted) _scrollToBottom();
+      if (mounted) {
+        setState(() {
+          _fileTransfer = _fileTransfer.copyWith(
+            phase: MediaTransferPhase.done,
+          );
+        });
+        _scrollToBottom();
+      }
     } on MediaUploadCancelled {
       if (mounted) _showImageError('已取消文件上传。');
     } on MessagingApiException catch (error) {
@@ -4233,7 +4310,7 @@ class _TextChatPageState extends State<TextChatPage>
       if (mounted) {
         setState(() {
           _fileSending = false;
-          _fileUploadProgress = 0;
+          _fileTransfer = const MediaTransferState.queued();
         });
       }
     }
