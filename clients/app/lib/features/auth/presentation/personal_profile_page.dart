@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/dd_profile_edit_field.dart';
 import '../../../theme/app_theme.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
@@ -305,8 +306,8 @@ class _PersonalProfilePageState extends State<PersonalProfilePage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(field.title),
-        content: TextField(
-          key: const Key('profile-edit-field'),
+        content: DdProfileEditField(
+          fieldKey: const Key('profile-edit-field'),
           controller: controller,
           autofocus: true,
           maxLength: field == _ProfileField.bio ? 500 : null,
@@ -314,7 +315,7 @@ class _PersonalProfilePageState extends State<PersonalProfilePage> {
           maxLines: field == _ProfileField.bio ? 5 : 1,
           autocorrect: field != _ProfileField.ddid,
           enableSuggestions: field != _ProfileField.ddid,
-          decoration: InputDecoration(hintText: field.hint),
+          hint: field.hint,
           onSubmitted: (_) =>
               Navigator.pop(dialogContext, controller.text.trim()),
         ),
@@ -443,14 +444,14 @@ class _PersonalProfilePageState extends State<PersonalProfilePage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextField(
-                    key: const Key('profile-email-field'),
+                  DdProfileEditField(
+                    fieldKey: const Key('profile-email-field'),
                     controller: emailController,
                     enabled: !busy,
                     autofocus: true,
                     keyboardType: TextInputType.emailAddress,
                     autocorrect: false,
-                    decoration: const InputDecoration(labelText: '新邮箱'),
+                    label: '新邮箱',
                   ),
                   const SizedBox(height: 10),
                   SizedBox(
@@ -463,16 +464,14 @@ class _PersonalProfilePageState extends State<PersonalProfilePage> {
                   ),
                   if (codeSent) ...[
                     const SizedBox(height: 10),
-                    TextField(
-                      key: const Key('profile-email-code-field'),
+                    DdProfileEditField(
+                      fieldKey: const Key('profile-email-code-field'),
                       controller: codeController,
                       enabled: !busy,
                       keyboardType: TextInputType.number,
                       maxLength: 6,
-                      decoration: const InputDecoration(
-                        labelText: '验证码',
-                        counterText: '',
-                      ),
+                      label: '验证码',
+                      counterText: '',
                     ),
                   ],
                   if (localError != null) ...[

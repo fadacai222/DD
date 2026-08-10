@@ -62,6 +62,42 @@ void main() {
     },
   );
 
+  testWidgets('contact remark and tags use lightweight underline fields', (
+    tester,
+  ) async {
+    final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PeerProfilePage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          userId: _bob.id,
+          handle: _bob.handle,
+          displayName: _bob.displayName,
+          contact: gateway.contact,
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('peer-profile-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('备注与标签'));
+    await tester.pumpAndSettle();
+
+    final remark = tester.widget<TextField>(
+      find.byKey(const Key('peer-profile-edit-remark')),
+    );
+    final tags = tester.widget<TextField>(
+      find.byKey(const Key('peer-profile-edit-tags')),
+    );
+    expect(remark.decoration?.border, isA<UnderlineInputBorder>());
+    expect(tags.decoration?.border, isA<UnderlineInputBorder>());
+    expect(remark.decoration?.border, isNot(isA<OutlineInputBorder>()));
+    expect(tags.decoration?.border, isNot(isA<OutlineInputBorder>()));
+  });
+
   testWidgets('contact profile exposes a first-class moments entry', (
     tester,
   ) async {

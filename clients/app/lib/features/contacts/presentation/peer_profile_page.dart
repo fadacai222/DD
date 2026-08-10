@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../core/logging/client_log.dart';
+import '../../../core/widgets/dd_profile_edit_field.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../data/contacts_api_client.dart';
@@ -1081,19 +1082,17 @@ class _ContactEditDialogState extends State<_ContactEditDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-              key: const Key('peer-profile-edit-remark'),
+            DdProfileEditField(
+              fieldKey: const Key('peer-profile-edit-remark'),
               controller: _remark,
               maxLength: 64,
-              decoration: const InputDecoration(labelText: '备注'),
+              label: '备注',
             ),
-            TextField(
-              key: const Key('peer-profile-edit-tags'),
+            DdProfileEditField(
+              fieldKey: const Key('peer-profile-edit-tags'),
               controller: _tags,
-              decoration: const InputDecoration(
-                labelText: '标签',
-                hintText: '多个标签用逗号分隔',
-              ),
+              label: '标签',
+              hint: '多个标签用逗号分隔',
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
