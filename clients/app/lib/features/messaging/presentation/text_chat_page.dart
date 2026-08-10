@@ -3533,6 +3533,9 @@ class _TextChatPageState extends State<TextChatPage>
         recentEmoji: widget.coordinator.recentEmoji,
         mediaBytesLoader: _mediaBytesFor,
         onAddCustomSticker: _pickAndCreateCustomSticker,
+        initialTabKey: widget.coordinator.stickerPanelTabKey,
+        onTabChanged: (tabKey) =>
+            unawaited(widget.coordinator.rememberStickerPanelTab(tabKey)),
         gateway: widget.stickerGateway,
       ),
     );

@@ -9,6 +9,7 @@ final class MessagingLocalState {
     required this.pending,
     this.drafts = const {},
     this.recentEmoji = const [],
+    this.stickerPanelTabKey = 'emoji',
     this.heardVoiceMessageIds = const [],
   });
 
@@ -16,6 +17,7 @@ final class MessagingLocalState {
   final List<PendingTextMessage> pending;
   final Map<String, String> drafts;
   final List<String> recentEmoji;
+  final String stickerPanelTabKey;
   final List<String> heardVoiceMessageIds;
 }
 
@@ -26,6 +28,7 @@ abstract interface class MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required String stickerPanelTabKey,
     required List<String> heardVoiceMessageIds,
   });
   Future<void> clear();
@@ -39,7 +42,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
   }) : _storage = storage ?? DdSecureStorage.shared,
        _key = 'dd.messaging.v1.$userId.$deviceId';
 
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
   final SecureKeyValueStore _storage;
   final String _key;
 
@@ -88,6 +91,11 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
           if (recentEmoji.length == 12) break;
         }
       }
+      final rawStickerPanelTabKey = decoded['stickerPanelTabKey'];
+      final stickerPanelTabKey = rawStickerPanelTabKey is String &&
+              rawStickerPanelTabKey.trim().isNotEmpty
+          ? rawStickerPanelTabKey.trim()
+          : 'emoji';
       final heardVoiceMessageIds = <String>[];
       final rawHeardVoiceMessageIds = decoded['heardVoiceMessageIds'];
       if (rawHeardVoiceMessageIds is List) {
@@ -104,6 +112,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
         pending: pending,
         drafts: drafts,
         recentEmoji: List.unmodifiable(recentEmoji),
+        stickerPanelTabKey: stickerPanelTabKey,
         heardVoiceMessageIds: List.unmodifiable(heardVoiceMessageIds),
       );
     } catch (_) {
@@ -118,6 +127,7 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required String stickerPanelTabKey,
     required List<String> heardVoiceMessageIds,
   }) {
     return _storage.write(
@@ -128,6 +138,9 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
         'pending': pending.map((item) => item.toJson()).toList(growable: false),
         'drafts': drafts,
         'recentEmoji': recentEmoji.take(12).toList(growable: false),
+        'stickerPanelTabKey': stickerPanelTabKey.trim().isEmpty
+            ? 'emoji'
+            : stickerPanelTabKey.trim(),
         'heardVoiceMessageIds': heardVoiceMessageIds
             .take(500)
             .toList(growable: false),

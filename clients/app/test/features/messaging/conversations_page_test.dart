@@ -817,6 +817,7 @@ final class _ConversationStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required String stickerPanelTabKey,
     required List<String> heardVoiceMessageIds,
   }) async {}
 

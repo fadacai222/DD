@@ -56,6 +56,7 @@ final class MessagingCoordinator extends ChangeNotifier {
   List<PendingTextMessage> _pending = const [];
   Map<String, String> _drafts = const {};
   List<String> _recentEmoji = const [];
+  String _stickerPanelTabKey = 'emoji';
   List<String> _heardVoiceMessageIds = const [];
   StreamSubscription<RealtimeEvent>? _eventSubscription;
   StreamSubscription<RealtimeConnectionState>? _stateSubscription;
@@ -150,6 +151,7 @@ final class MessagingCoordinator extends ChangeNotifier {
   bool canLoadOlder(String conversationId) => _hasMore[conversationId] == true;
   String draftFor(String conversationId) => _drafts[conversationId] ?? '';
   List<String> get recentEmoji => List.unmodifiable(_recentEmoji);
+  String get stickerPanelTabKey => _stickerPanelTabKey;
   bool isVoiceHeard(String messageId) =>
       _heardVoiceMessageIds.contains(messageId);
 
@@ -169,6 +171,19 @@ final class MessagingCoordinator extends ChangeNotifier {
       ..._recentEmoji.where((item) => item != emoji),
     ];
     _recentEmoji = List.unmodifiable(next.take(12));
+    await _persistLocalState();
+    _notify();
+  }
+
+  Future<void> rememberStickerPanelTab(String tabKey) async {
+    final normalized = tabKey.trim();
+    if (normalized.isEmpty || normalized == _stickerPanelTabKey) return;
+    if (normalized != 'emoji' &&
+        normalized != 'custom' &&
+        !normalized.startsWith('pack:')) {
+      return;
+    }
+    _stickerPanelTabKey = normalized;
     await _persistLocalState();
     _notify();
   }
@@ -208,6 +223,9 @@ final class MessagingCoordinator extends ChangeNotifier {
       _pending = local.pending;
       _drafts = Map.unmodifiable(local.drafts);
       _recentEmoji = List.unmodifiable(local.recentEmoji);
+      _stickerPanelTabKey = local.stickerPanelTabKey.trim().isEmpty
+          ? 'emoji'
+          : local.stickerPanelTabKey.trim();
       _heardVoiceMessageIds = List.unmodifiable(local.heardVoiceMessageIds);
       _eventSubscription = _realtime.events.listen((event) {
         if (event.type == 'event_available') {
@@ -1018,6 +1036,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     pending: _pending,
     drafts: _drafts,
     recentEmoji: _recentEmoji,
+    stickerPanelTabKey: _stickerPanelTabKey,
     heardVoiceMessageIds: _heardVoiceMessageIds,
   );
 

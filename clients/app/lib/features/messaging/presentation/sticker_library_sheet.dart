@@ -18,6 +18,8 @@ class StickerLibrarySheet extends StatefulWidget {
     required this.recentEmoji,
     required this.mediaBytesLoader,
     required this.onAddCustomSticker,
+    this.initialTabKey = 'emoji',
+    this.onTabChanged,
     this.gateway,
   });
 
@@ -28,6 +30,8 @@ class StickerLibrarySheet extends StatefulWidget {
   final Future<Uint8List> Function(String mediaId) mediaBytesLoader;
   final Future<CustomStickerItem?> Function(StickerGateway gateway)
   onAddCustomSticker;
+  final String initialTabKey;
+  final ValueChanged<String>? onTabChanged;
   final StickerGateway? gateway;
 
   @override
@@ -40,6 +44,7 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
   List<CustomStickerItem> _custom = const [];
   List<StickerPackItemGroup> _packs = const [];
   int _selectedTab = 0;
+  bool _restoredInitialTab = false;
   bool _loading = true;
   bool _busy = false;
   Object? _error;
@@ -81,7 +86,12 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
       setState(() {
         _custom = custom;
         _packs = packs;
-        _selectedTab = _selectedTab.clamp(0, _packs.length + 1);
+        if (!_restoredInitialTab) {
+          _selectedTab = _tabIndexForKey(widget.initialTabKey, packs);
+          _restoredInitialTab = true;
+        } else {
+          _selectedTab = _selectedTab.clamp(0, _packs.length + 1);
+        }
         _loading = false;
       });
     } catch (error, stackTrace) {
@@ -200,7 +210,7 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         child: InkWell(
           key: key,
           borderRadius: BorderRadius.circular(DdRadii.pill),
-          onTap: () => setState(() => _selectedTab = index),
+          onTap: () => _selectTab(index),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             width: 44,
@@ -223,6 +233,32 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         ),
       ),
     );
+  }
+
+  int _tabIndexForKey(String rawKey, List<StickerPackItemGroup> packs) {
+    final key = rawKey.trim();
+    if (key == 'custom') return 1;
+    if (key.startsWith('pack:')) {
+      final packId = key.substring('pack:'.length);
+      final index = packs.indexWhere((pack) => pack.id == packId);
+      return index < 0 ? 1 : index + 2;
+    }
+    return 0;
+  }
+
+  String _tabKeyForIndex(int index) {
+    if (index == 1) return 'custom';
+    final packIndex = index - 2;
+    if (packIndex >= 0 && packIndex < _packs.length) {
+      return 'pack:${_packs[packIndex].id}';
+    }
+    return 'emoji';
+  }
+
+  void _selectTab(int index) {
+    if (index == _selectedTab) return;
+    setState(() => _selectedTab = index);
+    widget.onTabChanged?.call(_tabKeyForIndex(index));
   }
 
   Widget _packTabIcon(StickerPackItemGroup pack) {
@@ -497,10 +533,12 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
           if (item.id != pack.id) item,
         pack,
       ]..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+      final selectedIndex = next.indexWhere((item) => item.id == pack.id) + 2;
       setState(() {
         _packs = next;
-        _selectedTab = next.indexWhere((item) => item.id == pack.id) + 2;
+        _selectedTab = selectedIndex;
       });
+      widget.onTabChanged?.call('pack:${pack.id}');
       if (pack.unsupportedStickerCount > 0) {
         _showError(
           '已添加 ${pack.supportedStickerCount} 个静态贴纸；${pack.unsupportedStickerCount} 个动态/视频贴纸当前暂不支持。',
@@ -551,6 +589,7 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
             .toList(growable: false);
         _selectedTab = 1;
       });
+      widget.onTabChanged?.call('custom');
     } catch (error) {
       if (mounted) _showError(error);
     } finally {

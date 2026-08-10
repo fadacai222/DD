@@ -244,6 +244,36 @@ void main() {
     expect(store.state.recentEmoji, coordinator.recentEmoji);
   });
 
+  test('sticker panel tab preference is persisted and restored', () async {
+    final store = _MemoryMessagingStore();
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-test-sticker-tab',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-test-sticker-tab',
+      gateway: _FakeMessagingGateway(),
+      localStore: store,
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.initialize();
+    expect(coordinator.stickerPanelTabKey, 'emoji');
+
+    await coordinator.rememberStickerPanelTab('pack:animals');
+
+    expect(coordinator.stickerPanelTabKey, 'pack:animals');
+    expect(store.state.stickerPanelTabKey, 'pack:animals');
+  });
+
   test(
     'offline retry reuses the same clientMessageId and clears durable queue',
     () async {
@@ -676,6 +706,7 @@ final class _MemoryMessagingStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required String stickerPanelTabKey,
     required List<String> heardVoiceMessageIds,
   }) async {
     state = MessagingLocalState(
@@ -683,6 +714,7 @@ final class _MemoryMessagingStore implements MessagingLocalStore {
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
       recentEmoji: List<String>.from(recentEmoji),
+      stickerPanelTabKey: stickerPanelTabKey,
       heardVoiceMessageIds: List<String>.from(heardVoiceMessageIds),
     );
   }

@@ -1664,6 +1664,7 @@ final class _ChatStore implements MessagingLocalStore {
     required List<PendingTextMessage> pending,
     required Map<String, String> drafts,
     required List<String> recentEmoji,
+    required String stickerPanelTabKey,
     required List<String> heardVoiceMessageIds,
   }) async {
     state = MessagingLocalState(
@@ -1671,6 +1672,7 @@ final class _ChatStore implements MessagingLocalStore {
       pending: List<PendingTextMessage>.from(pending),
       drafts: Map<String, String>.from(drafts),
       recentEmoji: List<String>.from(recentEmoji),
+      stickerPanelTabKey: stickerPanelTabKey,
       heardVoiceMessageIds: List<String>.from(heardVoiceMessageIds),
     );
   }

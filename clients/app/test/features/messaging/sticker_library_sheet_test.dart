@@ -33,6 +33,43 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('sheet restores semantic tab and reports tab changes', (
+    tester,
+  ) async {
+    final gateway = _FakeStickerGateway(
+      packs: [_pack('pack-1', 'Animals')],
+    );
+    final changedTabs = <String>[];
+    await _openSheet(
+      tester,
+      gateway,
+      initialTabKey: 'pack:pack-1',
+      onTabChanged: changedTabs.add,
+    );
+
+    expect(find.text('Animals'), findsOneWidget);
+    expect(find.byKey(const Key('pack-sticker-item-pack-1')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('sticker-tab-custom')));
+    await tester.pumpAndSettle();
+    expect(changedTabs, ['custom']);
+    expect(find.byKey(const Key('sticker-custom-grid')), findsOneWidget);
+  });
+
+  testWidgets('missing remembered pack falls back to custom stickers', (
+    tester,
+  ) async {
+    final gateway = _FakeStickerGateway(custom: [_custom('custom-1')]);
+    await _openSheet(
+      tester,
+      gateway,
+      initialTabKey: 'pack:removed-pack',
+    );
+
+    expect(find.byKey(const Key('sticker-custom-grid')), findsOneWidget);
+    expect(find.byKey(const Key('custom-sticker-custom-1')), findsOneWidget);
+  });
+
   testWidgets('adding a custom sticker appears immediately without reopening', (
     tester,
   ) async {
@@ -181,6 +218,8 @@ Future<void> _openSheet(
   StickerGateway gateway, {
   Future<CustomStickerItem?> Function(StickerGateway gateway)?
   onAddCustomSticker,
+  String initialTabKey = 'emoji',
+  ValueChanged<String>? onTabChanged,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -199,6 +238,8 @@ Future<void> _openSheet(
                 mediaBytesLoader: _mediaBytes,
                 onAddCustomSticker:
                     onAddCustomSticker ?? (_) async => null,
+                initialTabKey: initialTabKey,
+                onTabChanged: onTabChanged,
                 gateway: gateway,
               ),
             ),
