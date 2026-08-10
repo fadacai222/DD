@@ -111,7 +111,7 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 	return moment, recipients, nil
 }
 
-func (service *Service) ListFeed(ctx context.Context, principal account.Principal, before *uuid.UUID, limit int) ([]Moment, error) {
+func (service *Service) ListFeed(ctx context.Context, principal account.Principal, before, authorID *uuid.UUID, limit int) ([]Moment, error) {
 	if limit <= 0 {
 		limit = defaultFeedLimit
 	}
@@ -122,6 +122,10 @@ func (service *Service) ListFeed(ctx context.Context, principal account.Principa
 	if before != nil && *before != uuid.Nil {
 		beforeID = *before
 	}
+	var filteredAuthorID any
+	if authorID != nil && *authorID != uuid.Nil {
+		filteredAuthorID = *authorID
+	}
 	rows, err := service.pool.Query(ctx, `
 		SELECT m.id
 		FROM moments m
@@ -129,10 +133,11 @@ func (service *Service) ListFeed(ctx context.Context, principal account.Principa
 		  AND ($2::uuid IS NULL OR (m.created_at,m.id) < (
 		    SELECT cursor.created_at,cursor.id FROM moments cursor WHERE cursor.id=$2::uuid
 		  ))
+		  AND ($3::uuid IS NULL OR m.author_user_id=$3::uuid)
 		  AND `+momentVisibilitySQL("m", "$1")+`
 		ORDER BY m.created_at DESC,m.id DESC
-		LIMIT $3
-	`, principal.UserID, beforeID, limit)
+		LIMIT $4
+	`, principal.UserID, beforeID, filteredAuthorID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list moment feed: %w", err)
 	}

@@ -24,12 +24,14 @@ void main() {
       origin: Uri.parse('http://127.0.0.1:18473'),
       accessToken: 'token',
       before: '018f0000-0000-7000-8000-000000000999',
+      authorId: '018f0000-0000-7000-8000-000000000002',
       limit: 20,
     );
 
     expect(captured.url.path, '/api/v1/moments');
     expect(captured.url.queryParameters['limit'], '20');
     expect(captured.url.queryParameters['before'], '018f0000-0000-7000-8000-000000000999');
+    expect(captured.url.queryParameters['authorId'], '018f0000-0000-7000-8000-000000000002');
     expect(captured.headers['authorization'], 'Bearer token');
     expect(items.single.text, 'hello moments');
     expect(items.single.likeUsers.single.displayName, 'Bob');

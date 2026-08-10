@@ -525,6 +525,24 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
+  Future<void> _openPeerMoments(String userId, String displayName) async {
+    final normalized = userId.trim();
+    if (normalized.isEmpty || !mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentsFeedPage(
+          origin: widget.origin,
+          accessToken: widget.session.tokens.accessToken,
+          currentUserId: widget.session.user.id,
+          currentUserDisplayName: widget.session.user.displayName,
+          authorId: normalized,
+          authorDisplayName: displayName,
+          onUnauthorized: widget.onRefreshSession,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openMyQr() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -602,6 +620,12 @@ class _MainShellPageState extends State<MainShellPage>
             userId: result.user.id,
             handle: result.user.handle,
             displayName: result.user.displayName,
+            onOpenMoments: result.relationship == 'CONTACT'
+                ? () => _openPeerMoments(
+                    result.user.id,
+                    result.user.displayName,
+                  )
+                : null,
             onMessage: result.user.id == widget.session.user.id
                 ? null
                 : () => _openDirectChatFromContacts(

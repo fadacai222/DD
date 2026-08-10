@@ -18,6 +18,7 @@ type fakeMomentsService struct {
 	lastMomentID uuid.UUID
 	lastLiked    *bool
 	lastComment  moments.CommentInput
+	lastAuthorID *uuid.UUID
 	recipients   []uuid.UUID
 	item         moments.Moment
 	err          error
@@ -27,7 +28,8 @@ func (f *fakeMomentsService) Create(_ context.Context, _ account.Principal, inpu
 	f.createdInput = input
 	return f.item, f.recipients, f.err
 }
-func (f *fakeMomentsService) ListFeed(_ context.Context, _ account.Principal, _ *uuid.UUID, _ int) ([]moments.Moment, error) {
+func (f *fakeMomentsService) ListFeed(_ context.Context, _ account.Principal, _ *uuid.UUID, authorID *uuid.UUID, _ int) ([]moments.Moment, error) {
+	f.lastAuthorID = authorID
 	return []moments.Moment{f.item}, f.err
 }
 func (f *fakeMomentsService) Get(_ context.Context, _ account.Principal, momentID uuid.UUID) (moments.Moment, error) {
@@ -92,6 +94,32 @@ func TestMomentsCreateAndLikeUseAuthenticatedSurface(t *testing.T) {
 	handler.ServeHTTP(unlikeResponse, unlike)
 	if unlikeResponse.Code != http.StatusOK || fake.lastLiked == nil || *fake.lastLiked {
 		t.Fatalf("unlike status=%d liked=%v body=%s", unlikeResponse.Code, fake.lastLiked, unlikeResponse.Body.String())
+	}
+}
+
+func TestMomentsFeedAcceptsOptionalAuthorFilter(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	authorID := uuid.New()
+	fake := &fakeMomentsService{}
+	handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, MomentsService: fake})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/moments?authorId="+authorID.String()+"&limit=12", nil)
+	request.Header.Set("Authorization", "Bearer access")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fake.lastAuthorID == nil || *fake.lastAuthorID != authorID {
+		t.Fatalf("author filter=%v want=%s", fake.lastAuthorID, authorID)
+	}
+
+	invalid := httptest.NewRequest(http.MethodGet, "/api/v1/moments?authorId=not-a-uuid", nil)
+	invalid.Header.Set("Authorization", "Bearer access")
+	invalidResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidResponse, invalid)
+	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), `"code":"INVALID_MOMENT_REQUEST"`) {
+		t.Fatalf("invalid author status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
 	}
 }
 

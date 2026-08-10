@@ -19,6 +19,7 @@ class PeerProfilePage extends StatefulWidget {
     this.onMessage,
     this.onAudioCall,
     this.onVideoCall,
+    this.onOpenMoments,
     this.contact,
     this.gateway,
   });
@@ -31,6 +32,7 @@ class PeerProfilePage extends StatefulWidget {
   final Future<void> Function()? onMessage;
   final Future<void> Function()? onAudioCall;
   final Future<void> Function()? onVideoCall;
+  final Future<void> Function()? onOpenMoments;
   final ContactItem? contact;
   final ContactsGateway? gateway;
 
@@ -665,6 +667,47 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                 ],
               ),
             ),
+            if (_isContact && widget.onOpenMoments != null) ...[
+              const SizedBox(height: 8),
+              Material(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(DdRadii.surface),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  key: const Key('peer-profile-moments'),
+                  onTap: _managementBusy
+                      ? null
+                      : () => unawaited(widget.onOpenMoments!()),
+                  child: const SizedBox(
+                    height: 56,
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.photo_library_outlined,
+                            size: 21,
+                            color: Color(0xFF576B95),
+                          ),
+                          SizedBox(width: 13),
+                          Expanded(
+                            child: Text(
+                              '朋友圈',
+                              style: TextStyle(fontSize: 15),
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            size: 20,
+                            color: DdColors.textTertiary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
             if (_canCommunicate &&
                 (widget.onMessage != null ||
                     widget.onAudioCall != null ||

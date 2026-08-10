@@ -21,6 +21,8 @@ class MomentsFeedPage extends StatefulWidget {
     required this.currentUserDisplayName,
     required this.onUnauthorized,
     this.currentUserAvatarRevision = 0,
+    this.authorId,
+    this.authorDisplayName,
     this.gateway,
     this.mediaApi,
   });
@@ -30,6 +32,8 @@ class MomentsFeedPage extends StatefulWidget {
   final String currentUserId;
   final String currentUserDisplayName;
   final int currentUserAvatarRevision;
+  final String? authorId;
+  final String? authorDisplayName;
   final Future<String?> Function() onUnauthorized;
   final MomentsGateway? gateway;
   final MediaApiClient? mediaApi;
@@ -51,6 +55,8 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   bool _loadingMore = false;
   bool _hasMore = true;
   String? _error;
+
+  bool get _isPersonalFeed => widget.authorId?.trim().isNotEmpty == true;
 
   @override
   void initState() {
@@ -77,23 +83,30 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        title: const Text('朋友圈', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(
+          _isPersonalFeed
+              ? '${widget.authorDisplayName?.trim().isNotEmpty == true ? widget.authorDisplayName!.trim() : '对方'}的朋友圈'
+              : '朋友圈',
+          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
         centerTitle: true,
-        actions: [
-          IconButton(
-            key: const Key('moments-privacy'),
-            tooltip: '朋友圈权限',
-            onPressed: () => unawaited(_openPrivacy()),
-            icon: const Icon(Icons.tune_rounded),
-          ),
-          IconButton(
-            key: const Key('moments-publish'),
-            tooltip: '发表',
-            onPressed: () => unawaited(_openPublish()),
-            icon: const Icon(Icons.camera_alt_outlined),
-          ),
-          const SizedBox(width: 4),
-        ],
+        actions: _isPersonalFeed
+            ? const []
+            : [
+                IconButton(
+                  key: const Key('moments-privacy'),
+                  tooltip: '朋友圈权限',
+                  onPressed: () => unawaited(_openPrivacy()),
+                  icon: const Icon(Icons.tune_rounded),
+                ),
+                IconButton(
+                  key: const Key('moments-publish'),
+                  tooltip: '发表',
+                  onPressed: () => unawaited(_openPublish()),
+                  icon: const Icon(Icons.camera_alt_outlined),
+                ),
+                const SizedBox(width: 4),
+              ],
       ),
       body: RefreshIndicator(
         onRefresh: _refresh,
@@ -101,7 +114,9 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           controller: _scroll,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverToBoxAdapter(child: _cover()),
+            SliverToBoxAdapter(
+              child: _isPersonalFeed ? _personalHeader() : _cover(),
+            ),
             if (_error != null)
               SliverToBoxAdapter(
                 child: Padding(
@@ -137,13 +152,18 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                     children: [
                       const Icon(Icons.photo_library_outlined, size: 48, color: DdColors.textTertiary),
                       const SizedBox(height: 10),
-                      const Text('朋友圈还是空的', style: TextStyle(color: DdColors.textSecondary)),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () => unawaited(_openPublish()),
-                        icon: const Icon(Icons.camera_alt_outlined),
-                        label: const Text('发表第一条'),
+                      Text(
+                        _isPersonalFeed ? '暂无可见内容' : '朋友圈还是空的',
+                        style: const TextStyle(color: DdColors.textSecondary),
                       ),
+                      if (!_isPersonalFeed) ...[
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: () => unawaited(_openPublish()),
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          label: const Text('发表第一条'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -164,6 +184,58 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                           style: const TextStyle(fontSize: 11, color: DdColors.textTertiary),
                         ),
                 ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _personalHeader() {
+    final authorId = widget.authorId?.trim() ?? '';
+    final displayName = widget.authorDisplayName?.trim().isNotEmpty == true
+        ? widget.authorDisplayName!.trim()
+        : '对方';
+    return Material(
+      key: const Key('moments-personal-header'),
+      color: Theme.of(context).colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+        child: Row(
+          children: [
+            ClipOval(
+              child: ProfileAvatar(
+                origin: widget.origin,
+                accessToken: widget.accessToken,
+                userId: authorId,
+                displayName: displayName,
+                size: 56,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    '仅显示当前对你可见的动态',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: DdColors.textSecondary,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -452,7 +524,12 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     }
     try {
       final items = await _authorized(
-        (token) => _gateway.listFeed(origin: widget.origin, accessToken: token, limit: 30),
+        (token) => _gateway.listFeed(
+          origin: widget.origin,
+          accessToken: token,
+          authorId: widget.authorId,
+          limit: 30,
+        ),
       );
       if (!mounted) return;
       setState(() {
@@ -477,6 +554,7 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           origin: widget.origin,
           accessToken: token,
           before: _items.last.id,
+          authorId: widget.authorId,
           limit: 30,
         ),
       );

@@ -11,6 +11,35 @@ import 'package:im_client/features/moments/presentation/moments_feed_page.dart';
 import 'package:im_client/theme/app_theme.dart';
 
 void main() {
+  testWidgets('personal feed scopes requests to one author and hides own actions', (
+    tester,
+  ) async {
+    final gateway = _FakeMomentsGateway();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: MomentsFeedPage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          currentUserId: 'user-a',
+          currentUserDisplayName: 'Alice',
+          authorId: 'user-b',
+          authorDisplayName: 'Bob',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(gateway.listAuthorIds, ['user-b']);
+    expect(find.text('Bob的朋友圈'), findsOneWidget);
+    expect(find.byKey(const Key('moments-publish')), findsNothing);
+    expect(find.byKey(const Key('moments-privacy')), findsNothing);
+    expect(find.byKey(const Key('moments-personal-header')), findsOneWidget);
+    expect(find.text('测试朋友圈正文'), findsOneWidget);
+  });
+
   testWidgets('feed renders moment and toggles like through server gateway', (
     tester,
   ) async {
@@ -249,14 +278,19 @@ final class _FakeMomentsGateway implements MomentsGateway {
   MomentItem item;
   final List<bool> likeCalls = [];
   final List<String> comments = [];
+  final List<String?> listAuthorIds = [];
 
   @override
   Future<List<MomentItem>> listFeed({
     required Uri origin,
     required String accessToken,
     String? before,
+    String? authorId,
     int limit = 30,
-  }) async => [item];
+  }) async {
+    listAuthorIds.add(authorId);
+    return [item];
+  }
 
   @override
   Future<MomentItem> setLike({

@@ -158,6 +158,7 @@ final class _PublishGateway implements MomentsGateway {
     required Uri origin,
     required String accessToken,
     String? before,
+    String? authorId,
     int limit = 30,
   }) async => const [];
 

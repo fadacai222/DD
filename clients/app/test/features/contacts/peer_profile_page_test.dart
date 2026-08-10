@@ -62,6 +62,36 @@ void main() {
     },
   );
 
+  testWidgets('contact profile exposes a first-class moments entry', (
+    tester,
+  ) async {
+    final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
+    var momentsOpens = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PeerProfilePage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          userId: _bob.id,
+          handle: _bob.handle,
+          displayName: _bob.displayName,
+          contact: gateway.contact,
+          gateway: gateway,
+          onOpenMoments: () async => momentsOpens++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final entry = find.byKey(const Key('peer-profile-moments'));
+    expect(entry, findsOneWidget);
+    await tester.scrollUntilVisible(entry, 120);
+    await tester.pumpAndSettle();
+    await tester.tap(entry);
+    await tester.pumpAndSettle();
+    expect(momentsOpens, 1);
+  });
+
   testWidgets('non-contact can chat and add contact without approval', (
     tester,
   ) async {

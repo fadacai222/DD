@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
+import '../../moments/presentation/moments_feed_page.dart';
 import '../data/contacts_api_client.dart';
 import '../domain/contact_models.dart';
 import 'contact_tags_page.dart';
@@ -881,6 +882,21 @@ class _ContactsPageState extends State<ContactsPage>
               ? contact.user.displayName
               : contact.remark,
           contact: contact,
+          onOpenMoments: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => MomentsFeedPage(
+                origin: widget.origin,
+                accessToken: widget.accessToken,
+                currentUserId: widget.currentUserId,
+                currentUserDisplayName: '',
+                authorId: contact.user.id,
+                authorDisplayName: contact.remark.isEmpty
+                    ? contact.user.displayName
+                    : contact.remark,
+                onUnauthorized: widget.onUnauthorized ?? () async => null,
+              ),
+            ),
+          ),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () async {

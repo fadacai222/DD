@@ -47,6 +47,23 @@ func TestOpenAPIIncludesMessageEditingAndVideoContracts(t *testing.T) {
 	if _, ok := telegramImport["post"]; !ok {
 		t.Fatal("OpenAPI must expose server-relayed Telegram sticker import")
 	}
+	momentsPath := mustMap(t, paths["/api/v1/moments"], "moments path")
+	momentsGet := mustMap(t, momentsPath["get"], "moments get")
+	momentParameters, ok := momentsGet["parameters"].([]any)
+	if !ok {
+		t.Fatal("OpenAPI moments GET parameters are missing")
+	}
+	hasAuthorFilter := false
+	for _, rawParameter := range momentParameters {
+		parameter, ok := rawParameter.(map[string]any)
+		if ok && parameter["name"] == "authorId" {
+			hasAuthorFilter = true
+			break
+		}
+	}
+	if !hasAuthorFilter {
+		t.Fatal("OpenAPI moments GET must expose authorId filter")
+	}
 
 	components := mustMap(t, spec["components"], "components")
 	schemas := mustMap(t, components["schemas"], "components.schemas")

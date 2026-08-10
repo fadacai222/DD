@@ -202,9 +202,18 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("clear media privacy: %v", err)
 	}
 
-	feed, err := service.ListFeed(ctx, principals[bob], nil, 20)
+	feed, err := service.ListFeed(ctx, principals[bob], nil, nil, 20)
 	if err != nil || len(feed) < 3 {
 		t.Fatalf("bob feed count=%d err=%v", len(feed), err)
+	}
+	aliceFeed, err := service.ListFeed(ctx, principals[bob], nil, &alice, 20)
+	if err != nil || len(aliceFeed) < 3 {
+		t.Fatalf("bob filtered alice feed count=%d err=%v", len(aliceFeed), err)
+	}
+	for _, item := range aliceFeed {
+		if item.Author.ID != alice.String() {
+			t.Fatalf("filtered feed leaked author=%s want=%s", item.Author.ID, alice)
+		}
 	}
 
 	if _, err := pool.Exec(ctx, `DELETE FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob); err != nil {
@@ -212,6 +221,10 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 	}
 	if _, err := service.Get(ctx, principals[bob], allID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("removed contact old moment err=%v want ErrNotFound", err)
+	}
+	removedContactFeed, err := service.ListFeed(ctx, principals[bob], nil, &alice, 20)
+	if err != nil || len(removedContactFeed) != 0 {
+		t.Fatalf("removed contact filtered feed count=%d err=%v want empty", len(removedContactFeed), err)
 	}
 	if _, _, err := service.SetLike(ctx, principals[bob], allID, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("removed contact interaction err=%v want ErrNotFound", err)

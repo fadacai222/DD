@@ -21,6 +21,7 @@ import '../../contacts/presentation/peer_profile_page.dart';
 import '../../groups/data/groups_api_client.dart';
 import '../../groups/domain/group_models.dart';
 import '../../groups/presentation/group_details_page.dart';
+import '../../moments/presentation/moments_feed_page.dart';
 import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
@@ -2215,6 +2216,10 @@ class _TextChatPageState extends State<TextChatPage>
           userId: member.user.id,
           handle: member.user.handle,
           displayName: member.user.displayName,
+          onOpenMoments: () => _openPeerMoments(
+            member.user.id,
+            member.user.displayName,
+          ),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () => widget.onOpenDirectChat!(member.user.id),
@@ -3251,6 +3256,25 @@ class _TextChatPageState extends State<TextChatPage>
     if (_composerFocusNode.hasFocus) _composerFocusNode.unfocus();
   }
 
+  Future<void> _openPeerMoments(String userId, String displayName) async {
+    final normalized = userId.trim();
+    if (normalized.isEmpty || !mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentsFeedPage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          currentUserId: widget.currentUserId,
+          currentUserDisplayName: widget.currentUserDisplayName,
+          authorId: normalized,
+          authorDisplayName: displayName,
+          onUnauthorized:
+              widget.coordinator.onUnauthorized ?? () async => null,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openMentionProfile(String userId) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
@@ -3263,6 +3287,7 @@ class _TextChatPageState extends State<TextChatPage>
           userId: normalized,
           handle: '',
           displayName: '用户',
+          onOpenMoments: () => _openPeerMoments(normalized, '用户'),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () async {
@@ -3289,6 +3314,7 @@ class _TextChatPageState extends State<TextChatPage>
           userId: peer.id,
           handle: peer.handle,
           displayName: peer.displayName,
+          onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
           onMessage: () async {
             if (mounted) Navigator.of(context).pop();
           },

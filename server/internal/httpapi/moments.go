@@ -14,7 +14,7 @@ import (
 
 type MomentsService interface {
 	Create(ctx context.Context, principal account.Principal, input moments.CreateInput) (moments.Moment, []uuid.UUID, error)
-	ListFeed(ctx context.Context, principal account.Principal, before *uuid.UUID, limit int) ([]moments.Moment, error)
+	ListFeed(ctx context.Context, principal account.Principal, before, authorID *uuid.UUID, limit int) ([]moments.Moment, error)
 	Get(ctx context.Context, principal account.Principal, momentID uuid.UUID) (moments.Moment, error)
 	Delete(ctx context.Context, principal account.Principal, momentID uuid.UUID) ([]uuid.UUID, error)
 	SetLike(ctx context.Context, principal account.Principal, momentID uuid.UUID, liked bool) (moments.Moment, []uuid.UUID, error)
@@ -53,7 +53,16 @@ func (s *server) handleMoments(response http.ResponseWriter, request *http.Reque
 			}
 			before = &parsed
 		}
-		items, err := s.moments.ListFeed(request.Context(), principal, before, limit)
+		var authorID *uuid.UUID
+		if raw := strings.TrimSpace(request.URL.Query().Get("authorId")); raw != "" {
+			parsed, err := uuid.Parse(raw)
+			if err != nil {
+				writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", "authorId must be a UUID")
+				return
+			}
+			authorID = &parsed
+		}
+		items, err := s.moments.ListFeed(request.Context(), principal, before, authorID, limit)
 		if err != nil {
 			s.writeMomentsError(response, request, err)
 			return

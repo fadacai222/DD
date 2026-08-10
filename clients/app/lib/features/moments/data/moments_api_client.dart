@@ -11,6 +11,7 @@ abstract interface class MomentsGateway {
     required Uri origin,
     required String accessToken,
     String? before,
+    String? authorId,
     int limit = 30,
   });
 
@@ -86,10 +87,14 @@ final class MomentsApiClient implements MomentsGateway {
     required Uri origin,
     required String accessToken,
     String? before,
+    String? authorId,
     int limit = 30,
   }) async {
     final query = <String, String>{'limit': '$limit'};
     if (before != null && before.trim().isNotEmpty) query['before'] = before.trim();
+    if (authorId != null && authorId.trim().isNotEmpty) {
+      query['authorId'] = authorId.trim();
+    }
     final endpoint = normalizeAuthOrigin(origin)
         .resolve('/api/v1/moments')
         .replace(queryParameters: query);

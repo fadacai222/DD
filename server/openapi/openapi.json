@@ -842,11 +842,12 @@
         "security": [{"bearerAuth": []}],
         "parameters": [
           {"name": "before", "in": "query", "required": false, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "authorId", "in": "query", "required": false, "description": "Restrict the feed to one author while preserving all normal visibility and privacy rules.", "schema": {"type": "string", "format": "uuid"}},
           {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 30}}
         ],
         "responses": {
           "200": {"description": "Visible Moments ordered newest first", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentListResponse"}}}},
-          "400": {"description": "Pagination is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "400": {"description": "Pagination or author filter is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       },
