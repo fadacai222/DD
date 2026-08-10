@@ -254,6 +254,7 @@ class _MainShellPageState extends State<MainShellPage>
         onStartCall: _startCall,
         onOpenContacts: () => _selectMainSection(1),
         onOpenAddFriend: _openAddFriend,
+        onOpenScanner: _openQrScanner,
         embedded: true,
       ),
       ContactsPage(

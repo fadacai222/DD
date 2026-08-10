@@ -30,6 +30,7 @@ class ConversationsPage extends StatefulWidget {
     this.onStartCall,
     this.onOpenContacts,
     this.onOpenAddFriend,
+    this.onOpenScanner,
     this.coordinator,
     this.navigationController,
     this.hostVisible = true,
@@ -46,6 +47,7 @@ class ConversationsPage extends StatefulWidget {
   onStartCall;
   final VoidCallback? onOpenContacts;
   final VoidCallback? onOpenAddFriend;
+  final VoidCallback? onOpenScanner;
   final MessagingCoordinator? coordinator;
   final ConversationsPageController? navigationController;
   final bool hostVisible;
@@ -401,7 +403,6 @@ class _ConversationsPageState extends State<ConversationsPage> {
         ),
         PopupMenuItem<String>(
           value: 'scan',
-          enabled: false,
           child: _CreateMenuRow(
             icon: Icons.qr_code_scanner_rounded,
             label: '扫一扫',
@@ -439,9 +440,9 @@ class _ConversationsPageState extends State<ConversationsPage> {
       (widget.onOpenAddFriend ?? widget.onOpenContacts)?.call();
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('扫一扫功能正在接入。')));
+    if (value == 'scan') {
+      widget.onOpenScanner?.call();
+    }
   }
 
   Future<void> _openCreateGroup() async {

@@ -144,6 +144,60 @@ void main() {
     },
   );
 
+  testWidgets('create menu scan action delegates to the formal scanner entry', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = _ConversationGateway();
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-a',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-a',
+      gateway: gateway,
+      localStore: _ConversationStore(),
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+    await coordinator.refreshConversations();
+    var scannerOpenCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: ConversationsPage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          currentUserId: 'user-a',
+          deviceId: 'device-a',
+          coordinator: coordinator,
+          onOpenScanner: () => scannerOpenCount++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('messaging-create-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('扫一扫'));
+    await tester.pumpAndSettle();
+
+    expect(scannerOpenCount, 1);
+    expect(find.text('扫一扫功能正在接入。'), findsNothing);
+  });
+
   testWidgets('mobile search launcher opens secondary search page', (
     tester,
   ) async {
