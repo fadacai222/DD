@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import '../../../core/media/media_cache_manager.dart';
 import 'media_cache_backend_stub.dart'
     if (dart.library.io) 'media_cache_backend_io.dart';
 
@@ -38,6 +39,7 @@ final class MediaLocalCache {
 
   Future<Uint8List> resolve(
     String mediaId, {
+    MediaCacheKind kind = MediaCacheKind.image,
     required Future<Uint8List> Function() loader,
   }) {
     final id = mediaId.trim();
@@ -47,7 +49,7 @@ final class MediaLocalCache {
     final current = _inflight[id];
     if (current != null) return current;
 
-    final request = _resolve(id, loader).whenComplete(() {
+    final request = _resolve(id, kind, loader).whenComplete(() {
       final _ = _inflight.remove(id);
     });
     _inflight[id] = request;
@@ -59,14 +61,21 @@ final class MediaLocalCache {
     if (id.isEmpty) return;
     _memory.remove(id);
     final _ = _inflight.remove(id);
-    await _store.delete(_cacheKey(id));
+    for (final kind in const <MediaCacheKind>[
+      MediaCacheKind.image,
+      MediaCacheKind.voice,
+      MediaCacheKind.stickerGif,
+    ]) {
+      await _store.delete(_cacheKey(id, kind));
+    }
   }
 
   Future<Uint8List> _resolve(
     String mediaId,
+    MediaCacheKind kind,
     Future<Uint8List> Function() loader,
   ) async {
-    final key = _cacheKey(mediaId);
+    final key = _cacheKey(mediaId, kind);
     final cached = await _store.read(key);
     if (cached != null && cached.isNotEmpty) {
       _remember(mediaId, cached);
@@ -94,6 +103,6 @@ final class MediaLocalCache {
     _memory[mediaId] = bytes;
   }
 
-  String _cacheKey(String mediaId) =>
-      sha256.convert('$_namespace:$mediaId'.codeUnits).toString();
+  String _cacheKey(String mediaId, MediaCacheKind kind) =>
+      '${kind.name}-${sha256.convert('$_namespace:$mediaId'.codeUnits)}';
 }

@@ -9,6 +9,7 @@ import '../../../core/theme/app_theme_mode_store.dart';
 import '../../../theme/app_theme.dart';
 import '../../messaging/data/chat_appearance_store.dart';
 import '../../messaging/presentation/chat_background_settings_page.dart';
+import '../../messaging/presentation/media_storage_settings_page.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
@@ -156,6 +157,8 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         _themeModeRow(),
         const Divider(height: 1),
         _chatBackgroundRow(),
+        const Divider(height: 1),
+        _mediaStorageRow(),
         const SizedBox(height: 18),
         _sectionTitle('隐私'),
         _privacySettings(),
@@ -199,6 +202,8 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         _themeModeRow(),
         const Divider(height: 1),
         _chatBackgroundRow(),
+        const Divider(height: 1),
+        _mediaStorageRow(),
         const Divider(height: 1),
         _privacySettings(),
       ],
@@ -307,6 +312,37 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         builder: (_) => ChatBackgroundSettingsPage(
           store: ChatAppearanceStore.shared(widget.session.user.id),
         ),
+      ),
+    );
+  }
+
+  Widget _mediaStorageRow() => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      key: const Key('settings-media-storage'),
+      borderRadius: BorderRadius.circular(DdRadii.surface),
+      onTap: _openMediaStorage,
+      child: const _SettingLine(
+        title: '媒体与缓存',
+        subtitle: '自动下载、缓存大小与清理',
+        leading: Icon(
+          Icons.storage_rounded,
+          size: 20,
+          color: DdColors.textSecondary,
+        ),
+        trailing: Icon(
+          Icons.chevron_right_rounded,
+          size: 19,
+          color: DdColors.textTertiary,
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _openMediaStorage() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MediaStorageSettingsPage(userId: widget.session.user.id),
       ),
     );
   }

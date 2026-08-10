@@ -11,6 +11,7 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/media/chat_image_processor.dart';
 import '../../../core/media/chat_voice_recorder.dart';
 import '../../../core/media/image_viewer_page.dart';
+import '../../../core/media/media_cache_manager.dart';
 import '../../../core/media/remote_media_action_service.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
@@ -28,6 +29,7 @@ import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
 import '../data/media_api_client.dart';
+import '../data/media_auto_download_store.dart';
 import '../data/media_download_grant_cache.dart';
 import '../data/media_download_resolver.dart';
 import '../data/media_local_cache.dart';
@@ -65,6 +67,7 @@ class TextChatPage extends StatefulWidget {
     this.initialMessageId,
     this.stickerGateway,
     this.groupsGateway,
+    this.mediaPreferencesStore,
   });
 
   final MessagingCoordinator coordinator;
@@ -83,6 +86,7 @@ class TextChatPage extends StatefulWidget {
   final String? initialMessageId;
   final StickerGateway? stickerGateway;
   final GroupsGateway? groupsGateway;
+  final MediaAutoDownloadStore? mediaPreferencesStore;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -138,6 +142,12 @@ class _TextChatPageState extends State<TextChatPage>
   late final ScrollController _scrollController;
   late final ChatAppearanceStore _appearanceStore;
   late final MediaApiClient _mediaApi;
+  late final MediaAutoDownloadStore _mediaPreferencesStore;
+  MediaAutoDownloadPreferences _mediaPreferences =
+      const MediaAutoDownloadPreferences();
+  final Set<String> _manualMediaLoads = <String>{};
+  final Set<String> _autoVideoCacheStarted = <String>{};
+  final Set<String> _autoFileCacheStarted = <String>{};
   late final ContactsApiClient _contactsApi;
   late final GroupsGateway _groupsApi;
   late final bool _ownsGroupsApi;
@@ -223,6 +233,11 @@ class _TextChatPageState extends State<TextChatPage>
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
+    _mediaPreferencesStore = widget.mediaPreferencesStore ??
+        MediaAutoDownloadStore.shared(widget.currentUserId);
+    _mediaPreferences = _mediaPreferencesStore.value;
+    _mediaPreferencesStore.addListener(_onMediaPreferencesChanged);
+    unawaited(_loadMediaPreferences());
     _contactsApi = ContactsApiClient();
     _ownsGroupsApi = widget.groupsGateway == null;
     _groupsApi = widget.groupsGateway ?? GroupsApiClient();
@@ -299,6 +314,20 @@ class _TextChatPageState extends State<TextChatPage>
     _updateReadVisibility();
   }
 
+  Future<void> _loadMediaPreferences() async {
+    try {
+      await _mediaPreferencesStore.load();
+      if (mounted) _onMediaPreferencesChanged();
+    } catch (_) {
+      // Auto-download preferences are optional; safe defaults remain active.
+    }
+  }
+
+  void _onMediaPreferencesChanged() {
+    if (!mounted) return;
+    setState(() => _mediaPreferences = _mediaPreferencesStore.value);
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -323,6 +352,7 @@ class _TextChatPageState extends State<TextChatPage>
     _composerFocusNode.dispose();
     _composer.dispose();
     _scrollController.dispose();
+    _mediaPreferencesStore.removeListener(_onMediaPreferencesChanged);
     _mediaApi.close();
     _contactsApi.close();
     if (_ownsGroupsApi) _groupsApi.close();
@@ -1496,6 +1526,12 @@ class _TextChatPageState extends State<TextChatPage>
 
   Widget _fileBubble(ChatMessage message, bool mine) {
     final content = message.content!;
+    if (_mediaPreferences.files && !_autoFileCacheStarted.contains(message.id)) {
+      _autoFileCacheStarted.add(message.id);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_ensureAutoFileCached(message));
+      });
+    }
     final name = (content.fileName ?? '').trim().isEmpty
         ? '文件'
         : content.fileName!.trim();
@@ -1843,7 +1879,10 @@ class _TextChatPageState extends State<TextChatPage>
         }
         return;
       }
-      final bytes = await _mediaBytesFor(mediaId);
+      final bytes = await _mediaBytesFor(
+        mediaId,
+        kind: MediaCacheKind.voice,
+      );
       await _voicePlayer.stop();
       if (mounted) {
         setState(() {
@@ -1888,13 +1927,25 @@ class _TextChatPageState extends State<TextChatPage>
     final content = message.content!;
     final mediaId = content.mediaId!;
     final size = _chatImageDisplaySize(content.width!, content.height!);
+    final kind = message.type == 'IMAGE'
+        ? MediaCacheKind.image
+        : MediaCacheKind.stickerGif;
+    final autoLoad = message.type == 'IMAGE'
+        ? _mediaPreferences.images
+        : _mediaPreferences.gifAndStickers;
+    final allowed = autoLoad || _manualMediaLoads.contains(mediaId);
     return ClipRRect(
       borderRadius: BorderRadius.circular(DdRadii.media),
       child: SizedBox(
         width: size.width,
         height: size.height,
-        child: FutureBuilder<Uint8List>(
-          future: _mediaBytesFor(mediaId),
+        child: !allowed
+            ? _manualVisualDownloadSurface(
+                mediaId,
+                label: message.type == 'IMAGE' ? '点击下载图片' : '点击下载表情',
+              )
+            : FutureBuilder<Uint8List>(
+          future: _mediaBytesFor(mediaId, kind: kind),
           builder: (context, snapshot) {
             if (snapshot.hasData) {
               final bytes = snapshot.data!;
@@ -1924,13 +1975,23 @@ class _TextChatPageState extends State<TextChatPage>
     final posterMediaId = content.posterMediaId!;
     final size = _chatImageDisplaySize(content.width!, content.height!);
     final duration = Duration(milliseconds: content.durationMs!);
+    if (_mediaPreferences.videos &&
+        !_autoVideoCacheStarted.contains(message.id)) {
+      _autoVideoCacheStarted.add(message.id);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_ensureAutoVideoCached(message));
+      });
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(DdRadii.media),
       child: SizedBox(
         width: size.width,
         height: size.height,
         child: FutureBuilder<Uint8List>(
-          future: _mediaBytesFor(posterMediaId),
+          future: _mediaBytesFor(
+            posterMediaId,
+            kind: MediaCacheKind.image,
+          ),
           builder: (context, snapshot) {
             if (!snapshot.hasData) {
               if (snapshot.hasError) return _imageLoadFailure(posterMediaId);
@@ -2068,6 +2129,65 @@ class _TextChatPageState extends State<TextChatPage>
     }
   }
 
+  Future<void> _ensureAutoVideoCached(ChatMessage message) async {
+    if (!_mediaPreferences.videos) return;
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) return;
+    try {
+      final expectedSizeBytes = content.sizeBytes ?? 0;
+      if (await _videoFileCache.cachedUri(
+            mediaId,
+            expectedSizeBytes: expectedSizeBytes,
+          ) !=
+          null) {
+        return;
+      }
+      await _cacheVideoInBackground(
+        mediaId,
+        expectedSizeBytes: expectedSizeBytes,
+        onProgress: (_, _) {},
+      );
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'Auto video cache failed: media=$mediaId',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
+    }
+  }
+
+  Future<void> _ensureAutoFileCached(ChatMessage message) async {
+    if (!_mediaPreferences.files) return;
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) return;
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'DD-file.bin'
+        : content.fileName!.trim();
+    try {
+      await _withFreshFileGrant(
+        mediaId,
+        (url) => _remoteMediaActions.cacheFile(
+          url: url,
+          suggestedName: fileName,
+          transferKey: mediaId,
+          expectedBytes: content.sizeBytes,
+        ),
+      );
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'Auto file cache failed: media=$mediaId',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
+    }
+  }
+
   Future<void> _cacheVideoInBackground(
     String mediaId, {
     required int expectedSizeBytes,
@@ -2167,8 +2287,34 @@ class _TextChatPageState extends State<TextChatPage>
     ),
   );
 
-  Future<Uint8List> _mediaBytesFor(String mediaId) => _mediaCache.resolve(
+  Widget _manualVisualDownloadSurface(String mediaId, {required String label}) =>
+      Material(
+        color: const Color(0xFFE9E9E9),
+        child: InkWell(
+          key: Key('manual-media-$mediaId'),
+          onTap: () => setState(() => _manualMediaLoads.add(mediaId)),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.download_rounded,
+                  color: DdColors.textSecondary,
+                ),
+                const SizedBox(height: 5),
+                Text(label, style: const TextStyle(fontSize: 11)),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  Future<Uint8List> _mediaBytesFor(
+    String mediaId, {
+    MediaCacheKind kind = MediaCacheKind.image,
+  }) => _mediaCache.resolve(
     mediaId,
+    kind: kind,
     loader: () => downloadMediaWithGrantRefresh(
       mediaId: mediaId,
       grants: _mediaDownloadGrants,

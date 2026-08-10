@@ -6,6 +6,23 @@ import '../../features/messaging/data/media_api_client.dart';
 import 'media_export_service.dart';
 
 final class RemoteMediaActionService {
+  Future<String> cacheFile({
+    required Uri url,
+    required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    if (cancellation?.isCancelled == true) throw const MediaDownloadCancelled();
+    final response = await http.get(url);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('媒体下载失败（HTTP ${response.statusCode}）');
+    }
+    onProgress?.call(response.bodyBytes.length, response.bodyBytes.length);
+    return url.toString();
+  }
+
   Future<String> openFile({
     required Uri url,
     required String mimeType,

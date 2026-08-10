@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../../core/media/media_cache_lease_registry.dart';
 import '../../../core/media/media_export_service.dart';
 import '../../../core/media/remote_media_action_service.dart';
 
@@ -42,6 +43,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
   double _cacheProgress = 0;
   bool _caching = false;
   String? _error;
+  MediaCacheLease? _playbackLease;
 
   RemoteMediaActionService get _actions =>
       widget.remoteActions ?? RemoteMediaActionService();
@@ -51,6 +53,11 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
+    if (widget.url.scheme == 'file') {
+      _playbackLease = MediaCacheLeaseRegistry.shared.acquire(
+        widget.url.toFilePath(),
+      );
+    }
     unawaited(_open());
     unawaited(_warmCache());
   }
@@ -100,6 +107,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
 
   @override
   void dispose() {
+    _playbackLease?.release();
     unawaited(_player.dispose());
     super.dispose();
   }

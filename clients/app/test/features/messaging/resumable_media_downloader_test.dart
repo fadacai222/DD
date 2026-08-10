@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:im_client/core/media/media_cache_lease_registry.dart';
 import 'package:im_client/features/messaging/data/media_api_client.dart';
 import 'package:im_client/features/messaging/data/resumable_media_downloader.dart';
 
@@ -97,6 +99,37 @@ void main() {
 
     expect(await part.exists(), isFalse);
     expect(await target.exists(), isFalse);
+  });
+
+  test('active download leases final and partial cache paths', () async {
+    final target = File('${directory.path}${Platform.pathSeparator}active.bin');
+    final controller = StreamController<List<int>>();
+    final downloader = ResumableMediaDownloader(
+      clientFactory: () => MockClient.streaming((request, body) async {
+        return http.StreamedResponse(
+          controller.stream,
+          HttpStatus.ok,
+          contentLength: 4,
+        );
+      }),
+    );
+
+    final future = downloader.download(
+      resolveUrl: () async => Uri.parse('https://storage.invalid/active.bin'),
+      destinationPath: target.path,
+      expectedBytes: 4,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(MediaCacheLeaseRegistry.shared.isLeased(target.path), isTrue);
+    expect(MediaCacheLeaseRegistry.shared.isLeased('${target.path}.part'), isTrue);
+
+    controller.add(<int>[1, 2, 3, 4]);
+    await controller.close();
+    await future;
+
+    expect(MediaCacheLeaseRegistry.shared.isLeased(target.path), isFalse);
+    expect(MediaCacheLeaseRegistry.shared.isLeased('${target.path}.part'), isFalse);
   });
 
   test('network failure keeps partial data for a later retry', () async {

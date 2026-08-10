@@ -3,7 +3,9 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
-const int _maxCacheBytes = 512 * 1024 * 1024;
+import '../../../core/media/media_cache_lease_registry.dart';
+import '../../../core/media/media_cache_manager_backend_io.dart'
+    show pruneManagedMediaCache;
 
 Future<Directory> _cacheDirectory() async {
   final base = await getApplicationSupportDirectory();
@@ -42,17 +44,21 @@ Future<void> writeMediaCacheFile(String cacheKey, Uint8List bytes) async {
   if (bytes.isEmpty) return;
   final file = await _cacheFile(cacheKey);
   final temp = File('${file.path}.tmp');
-  await temp.writeAsBytes(bytes, flush: true);
-  if (await file.exists()) {
-    try {
-      await file.delete();
-    } on FileSystemException {
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      if (await file.exists()) await file.delete();
-    }
-  }
-  await temp.rename(file.path);
-  await _pruneMediaCache();
+  await MediaCacheLeaseRegistry.shared.withLease(file.path, () async {
+    await MediaCacheLeaseRegistry.shared.withLease(temp.path, () async {
+      await temp.writeAsBytes(bytes, flush: true);
+      if (await file.exists()) {
+        try {
+          await file.delete();
+        } on FileSystemException {
+          await Future<void>.delayed(const Duration(milliseconds: 60));
+          if (await file.exists()) await file.delete();
+        }
+      }
+      await temp.rename(file.path);
+    });
+  });
+  await pruneManagedMediaCache();
 }
 
 Future<void> deleteMediaCacheFile(String cacheKey) async {
@@ -65,25 +71,3 @@ Future<void> deleteMediaCacheFile(String cacheKey) async {
   }
 }
 
-Future<void> _pruneMediaCache() async {
-  final directory = await _cacheDirectory();
-  final entries = <({File file, int size, DateTime modified})>[];
-  var total = 0;
-  await for (final entity in directory.list(followLinks: false)) {
-    if (entity is! File || !entity.path.endsWith('.bin')) continue;
-    try {
-      final stat = await entity.stat();
-      total += stat.size;
-      entries.add((file: entity, size: stat.size, modified: stat.modified));
-    } catch (_) {}
-  }
-  if (total <= _maxCacheBytes) return;
-  entries.sort((a, b) => a.modified.compareTo(b.modified));
-  for (final entry in entries) {
-    if (total <= _maxCacheBytes) break;
-    try {
-      await entry.file.delete();
-      total -= entry.size;
-    } catch (_) {}
-  }
-}

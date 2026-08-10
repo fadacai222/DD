@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/media/media_cache_manager.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../application/messaging_coordinator.dart';
@@ -166,7 +167,12 @@ class _SavedMessagesPageState extends State<SavedMessagesPage> {
         width: displayWidth,
         height: displayHeight,
         child: FutureBuilder<Uint8List>(
-          future: _mediaBytesFor(mediaId),
+          future: _mediaBytesFor(
+            mediaId,
+            kind: message.type == 'IMAGE'
+                ? MediaCacheKind.image
+                : MediaCacheKind.stickerGif,
+          ),
           builder: (context, snapshot) {
             if (snapshot.hasData) {
               final bytes = snapshot.data!;
@@ -221,8 +227,12 @@ class _SavedMessagesPageState extends State<SavedMessagesPage> {
     ),
   );
 
-  Future<Uint8List> _mediaBytesFor(String mediaId) => _mediaCache.resolve(
+  Future<Uint8List> _mediaBytesFor(
+    String mediaId, {
+    MediaCacheKind kind = MediaCacheKind.image,
+  }) => _mediaCache.resolve(
     mediaId,
+    kind: kind,
     loader: () async {
       final grant = await _mediaDownloadGrants.resolve(
         mediaId,

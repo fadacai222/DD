@@ -3,7 +3,10 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-const int _maximumVideoCacheBytes = 4 * 1024 * 1024 * 1024;
+import '../../../core/media/media_cache_lease_registry.dart';
+import '../../../core/media/media_cache_manager_backend_io.dart'
+    show pruneManagedMediaCache;
+
 const Duration _maximumVideoCacheAge = Duration(days: 30);
 
 Future<Directory> _videoCacheDirectory() async {
@@ -47,6 +50,28 @@ Future<Uri?> readCachedVideoUri(
 }
 
 Future<({Uri? uri, int? statusCode})> cacheVideoFromUrl(
+  String cacheKey,
+  Uri url, {
+  required int expectedSizeBytes,
+  void Function(int receivedBytes, int? totalBytes)? onProgress,
+}) async {
+  final file = await _videoCacheFile(cacheKey);
+  final temp = File('${file.path}.part');
+  return MediaCacheLeaseRegistry.shared.withLease(
+    file.path,
+    () => MediaCacheLeaseRegistry.shared.withLease(
+      temp.path,
+      () => _cacheVideoFromUrlUnleased(
+        cacheKey,
+        url,
+        expectedSizeBytes: expectedSizeBytes,
+        onProgress: onProgress,
+      ),
+    ),
+  );
+}
+
+Future<({Uri? uri, int? statusCode})> _cacheVideoFromUrlUnleased(
   String cacheKey,
   Uri url, {
   required int expectedSizeBytes,
@@ -97,7 +122,7 @@ Future<({Uri? uri, int? statusCode})> cacheVideoFromUrl(
     try {
       await file.setLastModified(DateTime.now());
     } catch (_) {}
-    await _pruneVideoCache();
+    await pruneManagedMediaCache();
     return (uri: file.uri, statusCode: null);
   } catch (_) {
     try {
@@ -123,30 +148,3 @@ Future<void> deleteCachedVideo(String cacheKey) async {
   }
 }
 
-Future<void> _pruneVideoCache() async {
-  final directory = await _videoCacheDirectory();
-  final now = DateTime.now();
-  final entries = <({File file, int size, DateTime modified})>[];
-  var total = 0;
-  await for (final entity in directory.list(followLinks: false)) {
-    if (entity is! File || !entity.path.endsWith('.video')) continue;
-    try {
-      final stat = await entity.stat();
-      if (now.difference(stat.modified) > _maximumVideoCacheAge) {
-        await entity.delete();
-        continue;
-      }
-      total += stat.size;
-      entries.add((file: entity, size: stat.size, modified: stat.modified));
-    } catch (_) {}
-  }
-  if (total <= _maximumVideoCacheBytes) return;
-  entries.sort((left, right) => left.modified.compareTo(right.modified));
-  for (final entry in entries) {
-    if (total <= _maximumVideoCacheBytes) break;
-    try {
-      await entry.file.delete();
-      total -= entry.size;
-    } catch (_) {}
-  }
-}

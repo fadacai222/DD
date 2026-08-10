@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../features/messaging/data/media_api_client.dart';
 import '../../features/messaging/data/resumable_media_downloader.dart';
+import 'media_cache_manager_backend_io.dart' show pruneManagedMediaCache;
 import 'media_export_service.dart';
 
 final class RemoteMediaActionService {
@@ -21,6 +22,25 @@ final class RemoteMediaActionService {
   static const MethodChannel _channel = MethodChannel('dd/media_export');
   final TargetPlatform _platform;
   final ResumableMediaDownloader _downloader;
+
+  Future<String> cacheFile({
+    required Uri url,
+    required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    final file = await _downloadTransferFile(
+      url: url,
+      transferKey: transferKey,
+      fileName: MediaExportService.safeFileName(suggestedName),
+      expectedBytes: expectedBytes,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
+    return file.path;
+  }
 
   Future<String> openFile({
     required Uri url,
@@ -227,6 +247,7 @@ final class RemoteMediaActionService {
       cancellation: cancellation,
       onProgress: onProgress,
     );
+    await pruneManagedMediaCache();
     return File(result.path);
   }
 

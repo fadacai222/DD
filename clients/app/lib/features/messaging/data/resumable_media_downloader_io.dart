@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../../../core/media/media_cache_lease_registry.dart';
 import 'media_api_client.dart';
 
 final class ResumableDownloadResult {
@@ -24,6 +25,30 @@ final class ResumableMediaDownloader {
   final http.Client Function() _clientFactory;
 
   Future<ResumableDownloadResult> download({
+    required Future<Uri> Function() resolveUrl,
+    required String destinationPath,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
+    int maximumAttempts = 3,
+  }) {
+    return MediaCacheLeaseRegistry.shared.withLease(
+      destinationPath,
+      () => MediaCacheLeaseRegistry.shared.withLease(
+        '$destinationPath.part',
+        () => _downloadUnleased(
+          resolveUrl: resolveUrl,
+          destinationPath: destinationPath,
+          expectedBytes: expectedBytes,
+          cancellation: cancellation,
+          onProgress: onProgress,
+          maximumAttempts: maximumAttempts,
+        ),
+      ),
+    );
+  }
+
+  Future<ResumableDownloadResult> _downloadUnleased({
     required Future<Uri> Function() resolveUrl,
     required String destinationPath,
     int? expectedBytes,

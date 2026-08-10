@@ -2,10 +2,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:im_client/core/security/dd_secure_storage.dart';
 import 'package:im_client/features/contacts/domain/contact_models.dart';
 import 'package:im_client/features/groups/data/groups_api_client.dart';
 import 'package:im_client/features/groups/domain/group_models.dart';
 import 'package:im_client/features/messaging/application/messaging_coordinator.dart';
+import 'package:im_client/features/messaging/data/media_auto_download_store.dart';
 import 'package:im_client/features/messaging/data/messaging_api_client.dart';
 import 'package:im_client/features/messaging/data/messaging_local_store.dart';
 import 'package:im_client/features/messaging/data/sticker_api_client.dart';
@@ -1506,6 +1508,60 @@ void main() {
     }
   });
 
+  testWidgets('disabled image auto-download waits for explicit user tap', (
+    tester,
+  ) async {
+    final mediaStore = MediaAutoDownloadStore(
+      userId: 'user-a',
+      storage: _SecureMemoryStore(),
+    );
+    await mediaStore.save(
+      const MediaAutoDownloadPreferences(images: false),
+    );
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'manual-image-1',
+          conversationId: 'conversation-1',
+          sequence: 1,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'client-manual-image-1',
+          type: 'IMAGE',
+          content: const TextMessageContent(
+            mediaId: '00000000-0000-0000-0000-000000000301',
+            width: 800,
+            height: 600,
+          ),
+          createdAt: DateTime.utc(2026, 8, 11),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(lastReadSequence: 1),
+          currentUserId: 'user-a',
+          mediaPreferencesStore: mediaStore,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+
+    expect(find.text('点击下载图片'), findsOneWidget);
+    expect(
+      find.byKey(
+        const Key('manual-media-00000000-0000-0000-0000-000000000301'),
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('group chat shows group title, sender nickname and hides 1v1 call actions', (
     tester,
   ) async {
@@ -1591,6 +1647,19 @@ ConversationItem _conversation({
   createdAt: DateTime.utc(2026, 8, 8),
   updatedAt: DateTime.utc(2026, 8, 8),
 );
+
+final class _SecureMemoryStore implements SecureKeyValueStore {
+  final Map<String, String> values = <String, String>{};
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+}
 
 final class _ChatGroupsGateway implements GroupsGateway {
   @override
