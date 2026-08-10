@@ -31,6 +31,7 @@ import '../../messaging/presentation/conversations_page_controller.dart';
 import '../../messaging/presentation/group_chats_page.dart';
 import '../../messaging/presentation/saved_messages_page.dart';
 import '../../messaging/presentation/text_chat_page.dart';
+import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
 import '../../qrcode/presentation/my_qr_page.dart';
 import '../../qrcode/presentation/qr_scanner_page.dart';
@@ -543,6 +544,25 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
+  Future<void> _openPeerMomentPrivacy(
+    String userId,
+    String displayName,
+  ) async {
+    final normalized = userId.trim();
+    if (normalized.isEmpty || !mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentContactPrivacyPage(
+          origin: widget.origin,
+          accessToken: widget.session.tokens.accessToken,
+          targetUserId: normalized,
+          targetDisplayName: displayName,
+          onUnauthorized: widget.onRefreshSession,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openMyQr() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -622,6 +642,12 @@ class _MainShellPageState extends State<MainShellPage>
             displayName: result.user.displayName,
             onOpenMoments: result.relationship == 'CONTACT'
                 ? () => _openPeerMoments(
+                    result.user.id,
+                    result.user.displayName,
+                  )
+                : null,
+            onOpenMomentPrivacy: result.relationship == 'CONTACT'
+                ? () => _openPeerMomentPrivacy(
                     result.user.id,
                     result.user.displayName,
                   )

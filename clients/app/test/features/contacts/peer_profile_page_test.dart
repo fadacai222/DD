@@ -92,6 +92,35 @@ void main() {
     expect(momentsOpens, 1);
   });
 
+  testWidgets('contact profile exposes moments privacy entry', (
+    tester,
+  ) async {
+    final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
+    var privacyOpens = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PeerProfilePage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          userId: _bob.id,
+          handle: _bob.handle,
+          displayName: _bob.displayName,
+          contact: gateway.contact,
+          gateway: gateway,
+          onOpenMomentPrivacy: () async => privacyOpens++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final entry = find.byKey(const Key('peer-profile-moment-privacy'));
+    expect(entry, findsOneWidget);
+    await tester.scrollUntilVisible(entry, 120);
+    await tester.pumpAndSettle();
+    await tester.tap(entry);
+    expect(privacyOpens, 1);
+  });
+
   testWidgets('non-contact can chat and add contact without approval', (
     tester,
   ) async {

@@ -21,6 +21,7 @@ import '../../contacts/presentation/peer_profile_page.dart';
 import '../../groups/data/groups_api_client.dart';
 import '../../groups/domain/group_models.dart';
 import '../../groups/presentation/group_details_page.dart';
+import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
 import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
@@ -2220,6 +2221,10 @@ class _TextChatPageState extends State<TextChatPage>
             member.user.id,
             member.user.displayName,
           ),
+          onOpenMomentPrivacy: () => _openPeerMomentPrivacy(
+            member.user.id,
+            member.user.displayName,
+          ),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () => widget.onOpenDirectChat!(member.user.id),
@@ -3275,6 +3280,26 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Future<void> _openPeerMomentPrivacy(
+    String userId,
+    String displayName,
+  ) async {
+    final normalized = userId.trim();
+    if (normalized.isEmpty || !mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentContactPrivacyPage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          targetUserId: normalized,
+          targetDisplayName: displayName,
+          onUnauthorized:
+              widget.coordinator.onUnauthorized ?? () async => null,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openMentionProfile(String userId) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
@@ -3288,6 +3313,7 @@ class _TextChatPageState extends State<TextChatPage>
           handle: '',
           displayName: '用户',
           onOpenMoments: () => _openPeerMoments(normalized, '用户'),
+          onOpenMomentPrivacy: () => _openPeerMomentPrivacy(normalized, '用户'),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () async {
@@ -3315,6 +3341,8 @@ class _TextChatPageState extends State<TextChatPage>
           handle: peer.handle,
           displayName: peer.displayName,
           onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+          onOpenMomentPrivacy: () =>
+              _openPeerMomentPrivacy(peer.id, peer.displayName),
           onMessage: () async {
             if (mounted) Navigator.of(context).pop();
           },
@@ -3417,6 +3445,12 @@ class _TextChatPageState extends State<TextChatPage>
           coordinator: widget.coordinator,
           conversation: conversation,
           onOpenProfile: () => _openPeerProfile(conversation),
+          onOpenMomentPrivacy: conversation.peer == null
+              ? null
+              : () => _openPeerMomentPrivacy(
+                  conversation.peer!.id,
+                  conversation.peer!.displayName,
+                ),
           onChangeBackground: () => Navigator.of(context).push<void>(
             MaterialPageRoute<void>(
               builder: (_) => ChatBackgroundSettingsPage(

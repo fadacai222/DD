@@ -60,6 +60,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('朋友圈'), findsOneWidget);
+    expect(find.byKey(const Key('moments-privacy')), findsNothing);
     expect(find.text('测试朋友圈正文'), findsOneWidget);
     expect(find.text('Bob'), findsWidgets);
     expect(find.byKey(const Key('moment-moment-1')), findsOneWidget);

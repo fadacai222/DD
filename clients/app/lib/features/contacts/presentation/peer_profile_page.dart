@@ -20,6 +20,7 @@ class PeerProfilePage extends StatefulWidget {
     this.onAudioCall,
     this.onVideoCall,
     this.onOpenMoments,
+    this.onOpenMomentPrivacy,
     this.contact,
     this.gateway,
   });
@@ -33,6 +34,7 @@ class PeerProfilePage extends StatefulWidget {
   final Future<void> Function()? onAudioCall;
   final Future<void> Function()? onVideoCall;
   final Future<void> Function()? onOpenMoments;
+  final Future<void> Function()? onOpenMomentPrivacy;
   final ContactItem? contact;
   final ContactsGateway? gateway;
 
@@ -694,6 +696,61 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                             child: Text(
                               '朋友圈',
                               style: TextStyle(fontSize: 15),
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            size: 20,
+                            color: DdColors.textTertiary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            if (_isContact && widget.onOpenMomentPrivacy != null) ...[
+              const SizedBox(height: 8),
+              Material(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(DdRadii.surface),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  key: const Key('peer-profile-moment-privacy'),
+                  onTap: _managementBusy
+                      ? null
+                      : () => unawaited(widget.onOpenMomentPrivacy!()),
+                  child: const SizedBox(
+                    height: 56,
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.visibility_outlined,
+                            size: 21,
+                            color: Color(0xFF576B95),
+                          ),
+                          SizedBox(width: 13),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '朋友圈权限',
+                                  style: TextStyle(fontSize: 15),
+                                ),
+                                SizedBox(height: 2),
+                                Text(
+                                  '不看他的朋友圈 / 不让他看我的朋友圈',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: DdColors.textSecondary,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           Icon(

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
+import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
 import '../data/contacts_api_client.dart';
 import '../domain/contact_models.dart';
@@ -891,6 +892,19 @@ class _ContactsPageState extends State<ContactsPage>
                 currentUserDisplayName: '',
                 authorId: contact.user.id,
                 authorDisplayName: contact.remark.isEmpty
+                    ? contact.user.displayName
+                    : contact.remark,
+                onUnauthorized: widget.onUnauthorized ?? () async => null,
+              ),
+            ),
+          ),
+          onOpenMomentPrivacy: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => MomentContactPrivacyPage(
+                origin: widget.origin,
+                accessToken: widget.accessToken,
+                targetUserId: contact.user.id,
+                targetDisplayName: contact.remark.isEmpty
                     ? contact.user.displayName
                     : contact.remark,
                 onUnauthorized: widget.onUnauthorized ?? () async => null,

@@ -21,12 +21,14 @@ class ChatDetailsPage extends StatefulWidget {
     required this.coordinator,
     required this.conversation,
     required this.onOpenProfile,
+    this.onOpenMomentPrivacy,
     this.onChangeBackground,
   });
 
   final MessagingCoordinator coordinator;
   final ConversationItem conversation;
   final Future<void> Function() onOpenProfile;
+  final Future<void> Function()? onOpenMomentPrivacy;
   final Future<void> Function()? onChangeBackground;
 
   @override
@@ -130,6 +132,14 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
                 label: '聊天图片、视频与文件',
                 onTap: _busy ? null : _openMedia,
               ),
+              if (peer != null && widget.onOpenMomentPrivacy != null)
+                _actionRow(
+                  key: const Key('chat-details-moment-privacy'),
+                  icon: Icons.visibility_outlined,
+                  label: '朋友圈权限',
+                  subtitle: '不看他的朋友圈 / 不让他看我的朋友圈',
+                  onTap: _busy ? null : widget.onOpenMomentPrivacy,
+                ),
               if (widget.onChangeBackground != null)
                 _actionRow(
                   key: const Key('chat-details-background'),
@@ -203,6 +213,7 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
     Key? key,
     required IconData icon,
     required String label,
+    String? subtitle,
     required VoidCallback? onTap,
     bool destructive = false,
   }) {
@@ -213,6 +224,15 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
         key: key,
         leading: Icon(icon, color: color ?? DdColors.textSecondary),
         title: Text(label, style: TextStyle(color: color)),
+        subtitle: subtitle == null
+            ? null
+            : Text(
+                subtitle,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: DdColors.textSecondary,
+                ),
+              ),
         trailing: const Icon(
           Icons.chevron_right_rounded,
           size: 20,

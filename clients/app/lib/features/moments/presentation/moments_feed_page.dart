@@ -9,7 +9,6 @@ import '../../messaging/data/messaging_api_client.dart';
 import '../../messaging/presentation/video_viewer_page.dart';
 import '../data/moments_api_client.dart';
 import '../domain/moment_models.dart';
-import 'moment_privacy_page.dart';
 import 'moment_publish_page.dart';
 
 class MomentsFeedPage extends StatefulWidget {
@@ -93,12 +92,6 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
         actions: _isPersonalFeed
             ? const []
             : [
-                IconButton(
-                  key: const Key('moments-privacy'),
-                  tooltip: '朋友圈权限',
-                  onPressed: () => unawaited(_openPrivacy()),
-                  icon: const Icon(Icons.tune_rounded),
-                ),
                 IconButton(
                   key: const Key('moments-publish'),
                   tooltip: '发表',
@@ -587,19 +580,6 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
       ),
     );
     if (changed == true) await _refresh();
-  }
-
-  Future<void> _openPrivacy() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => MomentPrivacyPage(
-          origin: widget.origin,
-          accessToken: widget.accessToken,
-          onUnauthorized: widget.onUnauthorized,
-        ),
-      ),
-    );
-    await _refresh();
   }
 
   Future<void> _showActions(MomentItem item) async {

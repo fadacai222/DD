@@ -579,6 +579,11 @@ void main() {
     expect(find.text('Bob'), findsWidgets);
     expect(find.text('查找聊天记录'), findsOneWidget);
     expect(find.text('聊天图片、视频与文件'), findsOneWidget);
+    expect(
+      find.byKey(const Key('chat-details-moment-privacy')),
+      findsOneWidget,
+    );
+    expect(find.text('不看他的朋友圈 / 不让他看我的朋友圈'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('chat-details-media')));
     await tester.pumpAndSettle();
