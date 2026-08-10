@@ -276,6 +276,7 @@ abstract final class AppTheme {
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
+        insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         backgroundColor: dark
             ? const Color(0xFF333333)
             : const Color(0xFF333333),
