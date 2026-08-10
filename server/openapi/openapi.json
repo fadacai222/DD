@@ -2760,11 +2760,12 @@
         "properties": {"data": {"$ref": "#/components/schemas/GroupJoinRequestListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
       "MessagingGroupPreview": {
-        "type": "object", "additionalProperties": false, "required": ["id", "name", "memberCount"],
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "memberCount", "avatarMembers"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "name": {"type": "string", "minLength": 1, "maxLength": 80},
-          "memberCount": {"type": "integer", "minimum": 0, "maximum": 500}
+          "memberCount": {"type": "integer", "minimum": 0, "maximum": 500},
+          "avatarMembers": {"type": "array", "maxItems": 4, "items": {"$ref": "#/components/schemas/MessagingUserPreview"}}
         }
       },
       "MessagingUserPreview": {

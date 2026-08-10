@@ -17,6 +17,7 @@ import 'conversations_page_controller.dart';
 import 'messaging_search_page.dart';
 import 'saved_messages_page.dart';
 import 'text_chat_page.dart';
+import 'widgets/group_avatar_mosaic.dart';
 
 class ConversationsPage extends StatefulWidget {
   const ConversationsPage({
@@ -777,7 +778,12 @@ class _ConversationsPageState extends State<ConversationsPage> {
             child: Row(
               children: [
                 conversation.type == 'GROUP'
-                    ? _groupAvatar(title)
+                    ? GroupAvatarMosaic(
+                        origin: widget.origin,
+                        accessToken: widget.accessToken,
+                        groupName: title,
+                        members: conversation.group?.avatarMembers ?? const [],
+                      )
                     : _avatar(peer?.id ?? '', title),
                 const SizedBox(width: 10),
                 Expanded(
@@ -915,27 +921,6 @@ class _ConversationsPageState extends State<ConversationsPage> {
     }
     if (conversation.type == 'SELF') return '我的收藏';
     return conversation.peer?.displayName ?? '会话';
-  }
-
-  Widget _groupAvatar(String title) {
-    final letter = title.trim().isEmpty ? '群' : title.trim().characters.first;
-    return Container(
-      width: 46,
-      height: 46,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: const Color(0xFF5D8FB8),
-        borderRadius: BorderRadius.circular(13),
-      ),
-      child: Text(
-        letter,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 19,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
   }
 
   Widget _avatar(String userId, String title) {

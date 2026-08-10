@@ -4,14 +4,19 @@ import 'package:flutter/material.dart';
 
 import '../../../theme/app_theme.dart';
 import '../domain/messaging_models.dart';
+import 'widgets/group_avatar_mosaic.dart';
 
 class GroupChatsPage extends StatefulWidget {
   const GroupChatsPage({
     super.key,
+    required this.origin,
+    required this.accessToken,
     required this.conversations,
     required this.onOpenConversation,
   });
 
+  final Uri origin;
+  final String accessToken;
   final List<ConversationItem> conversations;
   final Future<void> Function(ConversationItem conversation) onOpenConversation;
 
@@ -121,19 +126,12 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                                 ),
                                 child: Row(
                                   children: [
-                                    Container(
-                                      width: 40,
-                                      height: 40,
-                                      alignment: Alignment.center,
-                                      decoration: const BoxDecoration(
-                                        color: Color(0xFF07C160),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.group_rounded,
-                                        size: 23,
-                                        color: Colors.white,
-                                      ),
+                                    GroupAvatarMosaic(
+                                      origin: widget.origin,
+                                      accessToken: widget.accessToken,
+                                      groupName: group.name,
+                                      members: group.avatarMembers,
+                                      size: 40,
                                     ),
                                     const SizedBox(width: 12),
                                     Expanded(

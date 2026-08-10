@@ -22,6 +22,7 @@ final class MessagingGroupPreview {
     required this.id,
     required this.name,
     required this.memberCount,
+    this.avatarMembers = const [],
   });
 
   factory MessagingGroupPreview.fromJson(Map<String, dynamic> json) =>
@@ -29,11 +30,22 @@ final class MessagingGroupPreview {
         id: _requiredString(json, 'id'),
         name: _requiredString(json, 'name'),
         memberCount: _requiredInt(json, 'memberCount'),
+        avatarMembers: _decodeGroupAvatarMembers(json['avatarMembers']),
       );
 
   final String id;
   final String name;
   final int memberCount;
+  final List<MessagingUserPreview> avatarMembers;
+}
+
+List<MessagingUserPreview> _decodeGroupAvatarMembers(Object? raw) {
+  if (raw is! List) return const [];
+  return raw
+      .whereType<Map<String, dynamic>>()
+      .map(MessagingUserPreview.fromJson)
+      .take(4)
+      .toList(growable: false);
 }
 
 final class MessageEntity {

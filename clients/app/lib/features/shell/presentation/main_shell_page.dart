@@ -474,6 +474,8 @@ class _MainShellPageState extends State<MainShellPage>
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           builder: (_) => GroupChatsPage(
+            origin: widget.origin,
+            accessToken: widget.session.tokens.accessToken,
             conversations: _messagingCoordinator.conversations,
             onOpenConversation: (conversation) async {
               if (!mounted) return;

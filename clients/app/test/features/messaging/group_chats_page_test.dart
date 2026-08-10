@@ -11,6 +11,8 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: GroupChatsPage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
           conversations: [
             _groupConversation('group-a', '研发群', 8),
             _groupConversation('group-b', '夜班群', 5),

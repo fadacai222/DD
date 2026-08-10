@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -78,6 +79,29 @@ func TestNormalizeEditMessageInput(t *testing.T) {
 				t.Fatalf("normalized=%#v input=%#v", got, tt.input)
 			}
 		})
+	}
+}
+
+func TestGroupPreviewJSONAlwaysCarriesAvatarMembers(t *testing.T) {
+	payload, err := json.Marshal(GroupPreview{
+		ID:          "group-1",
+		Name:        "研发群",
+		MemberCount: 2,
+		AvatarMembers: []UserPreview{
+			{ID: "u1", Handle: "alice", DisplayName: "Alice"},
+			{ID: "u2", Handle: "bob", DisplayName: "Bob"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	members, ok := decoded["avatarMembers"].([]any)
+	if !ok || len(members) != 2 {
+		t.Fatalf("avatarMembers=%#v", decoded["avatarMembers"])
 	}
 }
 

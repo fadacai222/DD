@@ -581,15 +581,41 @@ func (service *Service) loadSelfPreview(ctx context.Context, userID uuid.UUID) (
 
 func (service *Service) loadGroupPreview(ctx context.Context, conversationID uuid.UUID) (GroupPreview, error) {
 	var group GroupPreview
+	var avatarMembersJSON string
 	if err := service.pool.QueryRow(ctx, `
 		SELECT g.conversation_id::text,g.name,
-		       (SELECT count(*) FROM conversation_members m WHERE m.conversation_id=g.conversation_id AND m.status='ACTIVE')
+		       (SELECT count(*) FROM conversation_members m WHERE m.conversation_id=g.conversation_id AND m.status='ACTIVE'),
+		       COALESCE((
+		         SELECT jsonb_agg(
+		           jsonb_build_object(
+		             'id', u.id::text,
+		             'handle', u.handle_normalized,
+		             'displayName', u.display_name
+		           ) ORDER BY sample.joined_at,sample.user_id
+		         )::text
+		         FROM (
+		           SELECT m.user_id,m.joined_at
+		           FROM conversation_members m
+		           WHERE m.conversation_id=g.conversation_id AND m.status='ACTIVE'
+		           ORDER BY m.joined_at ASC,m.user_id ASC
+		           LIMIT 4
+		         ) sample
+		         JOIN users u ON u.id=sample.user_id AND u.status='ACTIVE'
+		       ), '[]')
 		FROM groups g
 		WHERE g.conversation_id=$1 AND g.status='ACTIVE'
-	`, conversationID).Scan(&group.ID, &group.Name, &group.MemberCount); errors.Is(err, pgx.ErrNoRows) {
+	`, conversationID).Scan(
+		&group.ID,
+		&group.Name,
+		&group.MemberCount,
+		&avatarMembersJSON,
+	); errors.Is(err, pgx.ErrNoRows) {
 		return GroupPreview{}, ErrNotFound
 	} else if err != nil {
 		return GroupPreview{}, fmt.Errorf("load group preview: %w", err)
+	}
+	if err := json.Unmarshal([]byte(avatarMembersJSON), &group.AvatarMembers); err != nil {
+		return GroupPreview{}, fmt.Errorf("decode group avatar members: %w", err)
 	}
 	return group, nil
 }

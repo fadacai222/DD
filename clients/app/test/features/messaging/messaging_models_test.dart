@@ -91,7 +91,18 @@ void main() {
     final conversation = ConversationItem.fromJson({
       'id': 'group-1',
       'type': 'GROUP',
-      'group': {'id': 'group-1', 'name': '研发群', 'memberCount': 12},
+      'group': {
+        'id': 'group-1',
+        'name': '研发群',
+        'memberCount': 12,
+        'avatarMembers': [
+          {'id': 'u1', 'handle': 'alice', 'displayName': 'Alice'},
+          {'id': 'u2', 'handle': 'bob', 'displayName': 'Bob'},
+          {'id': 'u3', 'handle': 'carol', 'displayName': 'Carol'},
+          {'id': 'u4', 'handle': 'dave', 'displayName': 'Dave'},
+          {'id': 'u5', 'handle': 'eve', 'displayName': 'Eve'},
+        ],
+      },
       'lastSequence': 9,
       'lastReadSequence': 7,
       'unreadCount': 2,
@@ -105,6 +116,9 @@ void main() {
     expect(conversation.peer, isNull);
     expect(conversation.group?.name, '研发群');
     expect(conversation.group?.memberCount, 12);
+    expect(conversation.group?.avatarMembers.length, 4);
+    expect(conversation.group?.avatarMembers.first.displayName, 'Alice');
+    expect(conversation.group?.avatarMembers.last.displayName, 'Dave');
     expect(conversation.canWrite, isTrue);
   });
 
