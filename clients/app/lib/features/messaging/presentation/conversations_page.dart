@@ -604,19 +604,20 @@ class _ConversationsPageState extends State<ConversationsPage> {
             child: Row(
               children: [
                 Container(
-                width: 46,
-                height: 46,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF4E9BEA),
-                  borderRadius: BorderRadius.circular(DdRadii.control),
+                  key: const Key('saved-messages-avatar'),
+                  width: 46,
+                  height: 46,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF4E9BEA),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.bookmark_rounded,
+                    size: 25,
+                    color: Colors.white,
+                  ),
                 ),
-                alignment: Alignment.center,
-                child: const Icon(
-                  Icons.bookmark_rounded,
-                  size: 25,
-                  color: Colors.white,
-                ),
-              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(

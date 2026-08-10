@@ -125,6 +125,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const Key('saved-messages-pin')), findsOneWidget);
+      final savedAvatar = tester.widget<Container>(
+        find.byKey(const Key('saved-messages-avatar')),
+      );
+      final savedAvatarDecoration = savedAvatar.decoration! as BoxDecoration;
+      expect(savedAvatarDecoration.shape, BoxShape.circle);
       final titleCenter = tester.getCenter(
         find.byKey(const Key('messaging-mobile-title')),
       );
