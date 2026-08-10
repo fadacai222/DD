@@ -17,6 +17,7 @@ class PersonalProfilePage extends StatefulWidget {
     required this.onChangeAvatar,
     required this.onRemoveAvatar,
     required this.onProfileChanged,
+    this.onOpenMyQr,
   });
 
   final AuthGateway gateway;
@@ -27,6 +28,7 @@ class PersonalProfilePage extends StatefulWidget {
   final Future<void> Function() onChangeAvatar;
   final Future<void> Function() onRemoveAvatar;
   final Future<void> Function(AccountMe me) onProfileChanged;
+  final Future<void> Function()? onOpenMyQr;
 
   @override
   State<PersonalProfilePage> createState() => _PersonalProfilePageState();
@@ -123,9 +125,13 @@ class _PersonalProfilePageState extends State<PersonalProfilePage> {
                 ),
                 const SizedBox(height: 10),
                 _profileLine(
+                  key: const Key('profile-my-qr'),
                   label: '二维码',
                   value: '我的二维码',
                   trailingIcon: Icons.qr_code_2_rounded,
+                  onTap: widget.onOpenMyQr == null
+                      ? null
+                      : () => widget.onOpenMyQr!(),
                 ),
                 _profileLine(
                   key: const Key('profile-edit-bio'),

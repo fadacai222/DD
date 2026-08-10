@@ -71,6 +71,32 @@ void main() {
     expect(find.text('new bio'), findsOneWidget);
   });
 
+  testWidgets('my QR row delegates to the formal QR entry', (tester) async {
+    final gateway = _ProfileGateway();
+    var openQrCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PersonalProfilePage(
+          gateway: gateway,
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          session: _session(),
+          avatarRevision: 0,
+          onViewAvatar: () async {},
+          onChangeAvatar: () async {},
+          onRemoveAvatar: () async {},
+          onProfileChanged: (_) async {},
+          onOpenMyQr: () async => openQrCalls++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile-my-qr')));
+    await tester.pumpAndSettle();
+
+    expect(openQrCalls, 1);
+  });
+
   testWidgets('email change requires a verification code', (tester) async {
     final gateway = _ProfileGateway();
     await tester.pumpWidget(
