@@ -1343,30 +1343,6 @@ class _TextChatPageState extends State<TextChatPage>
                   _replyReference(message.replyToMessageId!, mine),
                   const SizedBox(height: 6),
                 ],
-                if (widget.savedMessagesMode &&
-                    message.forwardedFromMessageId != null &&
-                    !recalled) ...[
-                  const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.bookmark_rounded,
-                        size: 13,
-                        color: DdColors.greenPressed,
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        '收藏自原消息',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: DdColors.greenPressed,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                ],
                 if (callSummary != null)
                   _callSummaryBubble(callSummary)
                 else if (imageVisual)

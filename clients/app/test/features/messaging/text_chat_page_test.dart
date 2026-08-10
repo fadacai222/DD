@@ -1200,7 +1200,7 @@ void main() {
       expect(find.byKey(const Key('chat-composer')), findsOneWidget);
       expect(find.byKey(const Key('chat-audio-call-mobile')), findsNothing);
       expect(find.byKey(const Key('chat-video-call-mobile')), findsNothing);
-      expect(find.text('收藏自原消息'), findsOneWidget);
+      expect(find.text('收藏自原消息'), findsNothing);
 
       await tester.longPress(find.byKey(const Key('message-saved-forward-1')));
       await tester.pumpAndSettle();
