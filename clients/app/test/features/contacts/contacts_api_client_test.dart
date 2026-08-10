@@ -42,6 +42,57 @@ void main() {
     expect(result.relationship, 'NONE');
   });
 
+  test(
+    'mention suggestions encode bounded query and conversation context',
+    () async {
+      late http.Request captured;
+      final client = ContactsApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return http.Response(
+            jsonEncode({
+              'data': {
+                'items': [
+                  {
+                    'user': {
+                      'id': '018f0000-0000-7000-8000-000000000111',
+                      'handle': 'alice',
+                      'displayName': 'Alice',
+                      'bio': '',
+                    },
+                    'relationship': 'CONTACT',
+                  },
+                ],
+              },
+              'requestId': 'req_mentions',
+            }),
+            200,
+          );
+        }),
+      );
+      addTearDown(client.close);
+
+      final result = await client.suggestMentions(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'access-token',
+        query: ' Al ',
+        conversationId: '018f0000-0000-7000-8000-000000000112',
+        limit: 8,
+      );
+
+      expect(captured.url.path, '/api/v1/users/mention-suggestions');
+      expect(captured.url.queryParameters['q'], 'Al');
+      expect(captured.url.queryParameters['limit'], '8');
+      expect(
+        captured.url.queryParameters['conversationId'],
+        '018f0000-0000-7000-8000-000000000112',
+      );
+      expect(captured.headers['authorization'], 'Bearer access-token');
+      expect(result.single.user.id, '018f0000-0000-7000-8000-000000000111');
+      expect(result.single.relationship, 'CONTACT');
+    },
+  );
+
   test('send request accepts mutual auto-accept response', () async {
     late http.Request captured;
     final client = ContactsApiClient(

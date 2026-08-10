@@ -13,9 +13,13 @@ final class RealtimeCallSignalingClient implements CallSignalingClient {
   RealtimeCallSignalingClient({
     required Uri apiBaseUri,
     required String participantIdentity,
+    String? accessToken,
   }) : _client = RealtimeClient(
          baseUri: apiBaseUri,
          clientId: participantIdentity,
+         webSocketPath: '/api/v1/realtime',
+         accessToken: accessToken,
+         protocolVersion: '1',
        );
 
   final RealtimeClient _client;
@@ -31,6 +35,9 @@ final class RealtimeCallSignalingClient implements CallSignalingClient {
 
   @override
   Future<void> connect() => _client.connect();
+
+  Future<void> updateAccessToken(String accessToken) =>
+      _client.updateAccessToken(accessToken);
 
   @override
   Future<void> dispose() => _client.dispose();

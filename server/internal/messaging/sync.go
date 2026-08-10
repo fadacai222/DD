@@ -193,7 +193,7 @@ func (service *Service) deferOutbox(ctx context.Context, tx pgx.Tx, event outbox
 
 func nullableResourceID(event outboxEvent) *uuid.UUID {
 	switch event.AggregateType {
-	case "MESSAGE":
+	case "MESSAGE", "RELATIONSHIP", "GROUP":
 		value := event.AggregateID
 		return &value
 	default:

@@ -12,10 +12,21 @@ abstract interface class MessagingGateway {
     required String accessToken,
   });
 
+  Future<ConversationItem> getConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  });
+
   Future<ConversationItem> ensureDirectConversation({
     required Uri origin,
     required String accessToken,
     required String userId,
+  });
+
+  Future<ConversationItem> ensureSavedConversation({
+    required Uri origin,
+    required String accessToken,
   });
 
   Future<MessagePage> listMessages({
@@ -53,6 +64,7 @@ abstract interface class MessagingGateway {
     required String clientMessageId,
     required String type,
     required String mediaId,
+    String? posterMediaId,
     int? width,
     int? height,
     int? durationMs,
@@ -66,6 +78,13 @@ abstract interface class MessagingGateway {
     bool? isPinned,
     DateTime? mutedUntil,
     bool clearMute = false,
+    bool? isArchived,
+  });
+
+  Future<void> hideConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
   });
 
   Future<int> markRead({
@@ -73,6 +92,14 @@ abstract interface class MessagingGateway {
     required String accessToken,
     required String conversationId,
     required int sequence,
+  });
+
+  Future<ChatMessage> editMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String text,
+    required int expectedEditVersion,
   });
 
   Future<ChatMessage> recallMessage({
@@ -85,6 +112,56 @@ abstract interface class MessagingGateway {
     required Uri origin,
     required String accessToken,
     required String messageId,
+  });
+
+  Future<List<SavedMessageItem>> listSavedMessages({
+    required Uri origin,
+    required String accessToken,
+  });
+
+  Future<void> saveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  });
+
+  Future<void> unsaveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  });
+
+  Future<List<PinnedMessageItem>> listPinnedMessages({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  });
+
+  Future<void> pinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  });
+
+  Future<void> unpinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  });
+
+  Future<ChatMessage> forwardMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String targetConversationId,
+    required String clientMessageId,
+  });
+
+  Future<List<MessageSearchHit>> searchMessages({
+    required Uri origin,
+    required String accessToken,
+    required String query,
+    String? conversationId,
   });
 
   Future<SyncPage> sync({
@@ -144,6 +221,20 @@ final class MessagingApiClient implements MessagingGateway {
   }
 
   @override
+  Future<ConversationItem> getConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/conversations/$conversationId',
+      accessToken,
+    );
+    return ConversationItem.fromJson(_decodeData(response, const {200}));
+  }
+
+  @override
   Future<ConversationItem> ensureDirectConversation({
     required Uri origin,
     required String accessToken,
@@ -155,6 +246,20 @@ final class MessagingApiClient implements MessagingGateway {
       accessToken,
       method: 'POST',
       body: {'userId': userId},
+    );
+    return ConversationItem.fromJson(_decodeData(response, const {200}));
+  }
+
+  @override
+  Future<ConversationItem> ensureSavedConversation({
+    required Uri origin,
+    required String accessToken,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/saved-messages/conversation',
+      accessToken,
+      method: 'PUT',
     );
     return ConversationItem.fromJson(_decodeData(response, const {200}));
   }
@@ -239,13 +344,20 @@ final class MessagingApiClient implements MessagingGateway {
     required String clientMessageId,
     required String type,
     required String mediaId,
+    String? posterMediaId,
     int? width,
     int? height,
     int? durationMs,
     String? replyToMessageId,
   }) async {
     final normalizedType = type.toUpperCase();
-    if (!const {'GIF', 'STICKER', 'FILE', 'VOICE'}.contains(normalizedType)) {
+    if (!const {
+      'GIF',
+      'STICKER',
+      'FILE',
+      'VOICE',
+      'VIDEO',
+    }.contains(normalizedType)) {
       throw const FormatException('Unsupported media message type');
     }
     final response = await _authorized(
@@ -258,6 +370,7 @@ final class MessagingApiClient implements MessagingGateway {
         'type': normalizedType,
         'content': {
           'mediaId': mediaId,
+          'posterMediaId': ?posterMediaId,
           'width': ?width,
           'height': ?height,
           'durationMs': ?durationMs,
@@ -276,8 +389,12 @@ final class MessagingApiClient implements MessagingGateway {
     bool? isPinned,
     DateTime? mutedUntil,
     bool clearMute = false,
+    bool? isArchived,
   }) async {
-    if (isPinned == null && mutedUntil == null && !clearMute) {
+    if (isPinned == null &&
+        mutedUntil == null &&
+        !clearMute &&
+        isArchived == null) {
       throw const FormatException(
         'At least one conversation preference is required',
       );
@@ -291,9 +408,27 @@ final class MessagingApiClient implements MessagingGateway {
         'isPinned': ?isPinned,
         'mutedUntil': ?mutedUntil?.toUtc().toIso8601String(),
         if (clearMute) 'clearMute': true,
+        'isArchived': ?isArchived,
       },
     );
     return ConversationItem.fromJson(_decodeData(response, const {200}));
+  }
+
+  @override
+  Future<void> hideConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/conversations/$conversationId',
+      accessToken,
+      method: 'DELETE',
+    );
+    if (response.statusCode != 204) {
+      _decodeData(response, const {204});
+    }
   }
 
   @override
@@ -316,6 +451,24 @@ final class MessagingApiClient implements MessagingGateway {
       throw const FormatException('Read sequence is malformed');
     }
     return value;
+  }
+
+  @override
+  Future<ChatMessage> editMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String text,
+    required int expectedEditVersion,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId',
+      accessToken,
+      method: 'PATCH',
+      body: {'text': text, 'expectedEditVersion': expectedEditVersion},
+    );
+    return ChatMessage.fromJson(_decodeData(response, const {200}));
   }
 
   @override
@@ -347,6 +500,158 @@ final class MessagingApiClient implements MessagingGateway {
       method: 'DELETE',
     );
     _decodeData(response, const {200});
+  }
+
+  @override
+  Future<List<SavedMessageItem>> listSavedMessages({
+    required Uri origin,
+    required String accessToken,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/saved-messages?limit=100',
+      accessToken,
+    );
+    final data = _decodeData(response, const {200});
+    final items = data['items'];
+    if (items is! List) {
+      throw const FormatException('Saved message list is malformed');
+    }
+    return items
+        .map((item) => SavedMessageItem.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> saveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId/save',
+      accessToken,
+      method: 'PUT',
+    );
+    _decodeData(response, const {200});
+  }
+
+  @override
+  Future<void> unsaveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId/save',
+      accessToken,
+      method: 'DELETE',
+    );
+    _decodeData(response, const {200});
+  }
+
+  @override
+  Future<List<PinnedMessageItem>> listPinnedMessages({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/conversations/$conversationId/pinned-messages?limit=100',
+      accessToken,
+    );
+    final data = _decodeData(response, const {200});
+    final items = data['items'];
+    if (items is! List) {
+      throw const FormatException('Pinned message list is malformed');
+    }
+    return items
+        .map((item) => PinnedMessageItem.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> pinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId/pin',
+      accessToken,
+      method: 'PUT',
+    );
+    _decodeData(response, const {200});
+  }
+
+  @override
+  Future<void> unpinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId/pin',
+      accessToken,
+      method: 'DELETE',
+    );
+    _decodeData(response, const {200});
+  }
+
+  @override
+  Future<ChatMessage> forwardMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String targetConversationId,
+    required String clientMessageId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/$messageId/forward',
+      accessToken,
+      method: 'POST',
+      body: {
+        'targetConversationId': targetConversationId,
+        'clientMessageId': clientMessageId,
+      },
+    );
+    return ChatMessage.fromJson(_decodeData(response, const {201}));
+  }
+
+  @override
+  Future<List<MessageSearchHit>> searchMessages({
+    required Uri origin,
+    required String accessToken,
+    required String query,
+    String? conversationId,
+  }) async {
+    final encoded = Uri(
+      queryParameters: {
+        'q': query,
+        'limit': '100',
+        if (conversationId != null && conversationId.isNotEmpty)
+          'conversationId': conversationId,
+      },
+    ).query;
+    final response = await _authorized(
+      origin,
+      '/api/v1/messages/search?$encoded',
+      accessToken,
+    );
+    final data = _decodeData(response, const {200});
+    final items = data['items'];
+    if (items is! List) {
+      throw const FormatException('Message search result is malformed');
+    }
+    return items
+        .map((item) => MessageSearchHit.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false);
   }
 
   @override
@@ -436,6 +741,9 @@ final class MessagingApiClient implements MessagingGateway {
 }
 
 Map<String, dynamic> _decodeObject(String source) {
+  if (source.trim().isEmpty) {
+    throw const FormatException('消息服务返回了空响应。');
+  }
   final decoded = jsonDecode(source);
   if (decoded is! Map<String, dynamic>) {
     throw const FormatException('API response must be a JSON object');

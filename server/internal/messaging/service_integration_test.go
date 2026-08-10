@@ -147,6 +147,36 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("second send=%#v err=%v", second, err)
 	}
 
+	// T10: text edits are owner-only, versioned and idempotent for repeated bodies.
+	if _, err := service.EditMessage(ctx, bobPrincipal, uuid.MustParse(firstMessageID), EditMessageInput{Text: "hijacked", ExpectedEditVersion: 0}); !errors.Is(err, ErrEditForbidden) {
+		t.Fatalf("other user edit error=%v", err)
+	}
+	now = now.Add(time.Second)
+	edited, err := service.EditMessage(ctx, alicePrincipal, uuid.MustParse(firstMessageID), EditMessageInput{Text: "replacement body", ExpectedEditVersion: 0})
+	if err != nil || edited.Message.Content == nil || edited.Message.Content.Text != "replacement body" || edited.Message.EditVersion != 1 || edited.Message.EditedAt == nil {
+		t.Fatalf("edit result=%#v err=%v", edited, err)
+	}
+	idempotentEdit, err := service.EditMessage(ctx, alicePrincipal, uuid.MustParse(firstMessageID), EditMessageInput{Text: "replacement body", ExpectedEditVersion: 0})
+	if err != nil || idempotentEdit.Message.EditVersion != 1 {
+		t.Fatalf("idempotent edit=%#v err=%v", idempotentEdit, err)
+	}
+	if _, err := service.EditMessage(ctx, alicePrincipal, uuid.MustParse(firstMessageID), EditMessageInput{Text: "stale overwrite", ExpectedEditVersion: 0}); !errors.Is(err, ErrEditConflict) {
+		t.Fatalf("stale edit error=%v", err)
+	}
+	oldHits, err := service.SearchMessages(ctx, alicePrincipal, "hello bob", &conversationUUID, 20)
+	if err != nil {
+		t.Fatalf("search old edited body: %v", err)
+	}
+	for _, hit := range oldHits {
+		if hit.Message.ID == firstMessageID {
+			t.Fatalf("old edited text still searchable: %#v", oldHits)
+		}
+	}
+	newHits, err := service.SearchMessages(ctx, alicePrincipal, "replacement body", &conversationUUID, 20)
+	if err != nil || len(newHits) != 1 || newHits[0].Message.ID != firstMessageID {
+		t.Fatalf("search new edited body=%#v err=%v", newHits, err)
+	}
+
 	history, err := service.ListMessages(ctx, alicePrincipal, conversationUUID, 0, 1)
 	if err != nil || len(history.Items) != 1 || history.Items[0].Sequence != 2 || !history.HasMore || history.NextBeforeSequence == nil {
 		t.Fatalf("history page 1=%#v err=%v", history, err)
@@ -183,20 +213,109 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 	}
 
 	processed, err := service.DispatchOutbox(ctx, 100)
-	if err != nil || processed < 3 {
+	if err != nil || processed < 2 {
 		t.Fatalf("dispatch processed=%d err=%v", processed, err)
 	}
 	aliceSync, err := service.Sync(ctx, alicePrincipal, 0, 100)
-	if err != nil || len(aliceSync.Items) < 3 || aliceSync.NextCursor == 0 {
+	if err != nil || len(aliceSync.Items) < 2 || aliceSync.NextCursor == 0 {
 		t.Fatalf("alice sync=%#v err=%v", aliceSync, err)
 	}
 	bobSync, err := service.Sync(ctx, bobPrincipal, 0, 100)
 	if err != nil || len(bobSync.Items) < 2 {
 		t.Fatalf("bob sync=%#v err=%v", bobSync, err)
 	}
+	for label, page := range map[string]SyncPage{"alice": aliceSync, "bob": bobSync} {
+		foundEdited := false
+		for _, event := range page.Items {
+			if event.Type != "MESSAGE_EDITED" {
+				continue
+			}
+			foundEdited = event.ResourceID != nil && *event.ResourceID == firstMessageID && event.Sequence != nil && *event.Sequence == 1
+			if foundEdited {
+				break
+			}
+		}
+		if !foundEdited {
+			t.Fatalf("%s sync missing MESSAGE_EDITED for %s: %#v", label, firstMessageID, page.Items)
+		}
+	}
 	repeatSync, err := service.Sync(ctx, alicePrincipal, aliceSync.NextCursor, 100)
 	if err != nil || len(repeatSync.Items) != 0 || repeatSync.NextCursor != aliceSync.NextCursor {
 		t.Fatalf("repeat sync=%#v err=%v", repeatSync, err)
+	}
+
+	// Local delete hides only the current user's conversation through the
+	// current last_sequence. History stays readable, the peer is unaffected,
+	// and either a new message or explicit reopen makes the conversation visible.
+	hideConversation, err := service.EnsureDirectConversation(ctx, evePrincipal, alice)
+	if err != nil {
+		t.Fatalf("create hide test conversation: %v", err)
+	}
+	hideConversationID := uuid.MustParse(hideConversation.ID)
+	if _, err := service.SendMessage(ctx, evePrincipal, hideConversationID, SendMessageInput{
+		ClientMessageID: "hide-seq-1",
+		Type:            "TEXT",
+		Content:         &TextContent{Text: "first"},
+	}); err != nil {
+		t.Fatalf("send hide sequence 1: %v", err)
+	}
+	if err := service.HideConversation(ctx, alicePrincipal, hideConversationID); err != nil {
+		t.Fatalf("hide conversation: %v", err)
+	}
+	aliceConversations, err := service.ListConversations(ctx, alicePrincipal, 100)
+	if err != nil {
+		t.Fatalf("list alice after hide: %v", err)
+	}
+	for _, item := range aliceConversations {
+		if item.ID == hideConversation.ID {
+			t.Fatalf("hidden conversation still visible to alice: %#v", item)
+		}
+	}
+	if hiddenHistory, err := service.ListMessages(ctx, alicePrincipal, hideConversationID, 0, 10); err != nil || len(hiddenHistory.Items) != 1 {
+		t.Fatalf("hidden history should remain readable=%#v err=%v", hiddenHistory, err)
+	}
+	eveConversations, err := service.ListConversations(ctx, evePrincipal, 100)
+	if err != nil {
+		t.Fatalf("list eve after alice hide: %v", err)
+	}
+	peerStillSees := false
+	for _, item := range eveConversations {
+		if item.ID == hideConversation.ID {
+			peerStillSees = true
+		}
+	}
+	if !peerStillSees {
+		t.Fatal("alice local hide unexpectedly hid conversation from eve")
+	}
+	if _, err := service.SendMessage(ctx, evePrincipal, hideConversationID, SendMessageInput{
+		ClientMessageID: "hide-seq-2",
+		Type:            "TEXT",
+		Content:         &TextContent{Text: "wake"},
+	}); err != nil {
+		t.Fatalf("send hide wake sequence: %v", err)
+	}
+	aliceConversations, err = service.ListConversations(ctx, alicePrincipal, 100)
+	if err != nil {
+		t.Fatalf("list alice after wake: %v", err)
+	}
+	woke := false
+	for _, item := range aliceConversations {
+		if item.ID == hideConversation.ID {
+			woke = true
+		}
+	}
+	if !woke {
+		t.Fatal("new message did not wake hidden conversation")
+	}
+	if err := service.HideConversation(ctx, alicePrincipal, hideConversationID); err != nil {
+		t.Fatalf("hide conversation second time: %v", err)
+	}
+	if _, err := service.EnsureDirectConversation(ctx, alicePrincipal, eve); err != nil {
+		t.Fatalf("explicit reopen hidden conversation: %v", err)
+	}
+	var hiddenThrough *int64
+	if err := pool.QueryRow(ctx, `SELECT hidden_through_sequence FROM conversation_members WHERE conversation_id=$1 AND user_id=$2`, hideConversationID, alice).Scan(&hiddenThrough); err != nil || hiddenThrough != nil {
+		t.Fatalf("explicit reopen should clear hidden cursor hidden=%v err=%v", hiddenThrough, err)
 	}
 
 	// P3/P4 cross-module rule: block forbids new writes but keeps old history readable.
@@ -227,16 +346,16 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("bob history should retain locally deleted message=%#v err=%v", bobHistory, err)
 	}
 
-	// Stranger direct chats are denied by default and allowed only by recipient privacy.
-	if _, err := service.EnsureDirectConversation(ctx, evePrincipal, alice); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("stranger conversation default error=%v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE user_privacy_settings SET allow_stranger_messages=true WHERE user_id=$1`, alice); err != nil {
-		t.Fatalf("enable stranger messages: %v", err)
-	}
+	// Telegram-style direct messaging: knowing an active user's DDID is enough
+	// to start and write a direct conversation. Contact approval and the legacy
+	// allow_stranger_messages privacy bit must not gate chat delivery; blocking
+	// remains the only relationship-level hard stop.
 	strangerConversation, err := service.EnsureDirectConversation(ctx, evePrincipal, alice)
 	if err != nil {
-		t.Fatalf("allowed stranger conversation: %v", err)
+		t.Fatalf("open stranger conversation: %v", err)
+	}
+	if !strangerConversation.CanWrite {
+		t.Fatalf("stranger conversation should be writable without approval: %#v", strangerConversation)
 	}
 	strangerConversationID := uuid.MustParse(strangerConversation.ID)
 	oldMessage, err := service.SendMessage(ctx, evePrincipal, strangerConversationID, SendMessageInput{

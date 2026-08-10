@@ -10,12 +10,14 @@ final class AvatarCropSelection {
     required this.top,
     required this.width,
     required this.height,
+    this.quarterTurns = 0,
   });
 
   final double left;
   final double top;
   final double width;
   final double height;
+  final int quarterTurns;
 }
 
 final class AvatarCropPreview {
@@ -105,6 +107,10 @@ Uint8List _compressAvatarToJpeg(_AvatarProcessRequest request) {
 
   final crop = request.crop;
   if (crop != null) {
+    final quarterTurns = crop.quarterTurns % 4;
+    if (quarterTurns != 0) {
+      image = img.copyRotate(image, angle: quarterTurns * 90);
+    }
     final normalizedWidth = crop.width.clamp(0.02, 1.0);
     final normalizedHeight = crop.height.clamp(0.02, 1.0);
     final normalizedLeft = crop.left.clamp(0.0, 1.0 - normalizedWidth);

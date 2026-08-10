@@ -7,164 +7,179 @@ import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
 void main() {
-  test('image message is retained in durable queue until delivery succeeds', () async {
-    final store = _MemoryMessagingStore();
-    final gateway = _FakeMessagingGateway()..failNextSend = true;
-    final realtime = RealtimeClient(
-      baseUri: Uri.parse('http://127.0.0.1:19999'),
-      clientId: 'device-test-image',
-      channelFactory: (_) => throw StateError('not used'),
-    );
-    final coordinator = MessagingCoordinator(
-      origin: Uri.parse('http://127.0.0.1:18473'),
-      accessToken: 'token',
-      currentUserId: 'user-a',
-      deviceId: 'device-test-image',
-      gateway: gateway,
-      localStore: store,
-      realtimeClient: realtime,
-    );
-    addTearDown(() async {
-      coordinator.dispose();
-      await realtime.dispose();
-    });
+  test(
+    'image message is retained in durable queue until delivery succeeds',
+    () async {
+      final store = _MemoryMessagingStore();
+      final gateway = _FakeMessagingGateway()..failNextSend = true;
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-test-image',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-test-image',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
 
-    await coordinator.sendImage(
-      'conversation-a',
-      mediaId: '00000000-0000-0000-0000-000000000123',
-      width: 1080,
-      height: 1440,
-    );
-    expect(coordinator.pending, hasLength(1));
-    expect(coordinator.pending.single.type, 'IMAGE');
-    expect(store.state.pending.single.mediaId, '00000000-0000-0000-0000-000000000123');
+      await coordinator.sendImage(
+        'conversation-a',
+        mediaId: '00000000-0000-0000-0000-000000000123',
+        width: 1080,
+        height: 1440,
+      );
+      expect(coordinator.pending, hasLength(1));
+      expect(coordinator.pending.single.type, 'IMAGE');
+      expect(
+        store.state.pending.single.mediaId,
+        '00000000-0000-0000-0000-000000000123',
+      );
 
-    await coordinator.flushPending();
-    expect(coordinator.pending, isEmpty);
-    expect(gateway.sentImageIds, ['00000000-0000-0000-0000-000000000123']);
-  });
+      await coordinator.flushPending();
+      expect(coordinator.pending, isEmpty);
+      expect(gateway.sentImageIds, ['00000000-0000-0000-0000-000000000123']);
+    },
+  );
 
-  test('gif message stays durable while offline and retries with same media', () async {
-    final store = _MemoryMessagingStore();
-    final gateway = _FakeMessagingGateway()..failNextSend = true;
-    final realtime = RealtimeClient(
-      baseUri: Uri.parse('http://127.0.0.1:19999'),
-      clientId: 'device-test-gif',
-      channelFactory: (_) => throw StateError('not used'),
-    );
-    final coordinator = MessagingCoordinator(
-      origin: Uri.parse('http://127.0.0.1:18473'),
-      accessToken: 'token',
-      currentUserId: 'user-a',
-      deviceId: 'device-test-gif',
-      gateway: gateway,
-      localStore: store,
-      realtimeClient: realtime,
-    );
-    addTearDown(() async {
-      coordinator.dispose();
-      await realtime.dispose();
-    });
+  test(
+    'gif message stays durable while offline and retries with same media',
+    () async {
+      final store = _MemoryMessagingStore();
+      final gateway = _FakeMessagingGateway()..failNextSend = true;
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-test-gif',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-test-gif',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
 
-    await coordinator.sendMedia(
-      'conversation-a',
-      type: 'GIF',
-      mediaId: '00000000-0000-0000-0000-000000000456',
-      width: 480,
-      height: 320,
-    );
-    expect(coordinator.pending, hasLength(1));
-    final clientMessageId = coordinator.pending.single.clientMessageId;
-    expect(coordinator.pending.single.type, 'GIF');
-    expect(store.state.pending.single.clientMessageId, clientMessageId);
+      await coordinator.sendMedia(
+        'conversation-a',
+        type: 'GIF',
+        mediaId: '00000000-0000-0000-0000-000000000456',
+        width: 480,
+        height: 320,
+      );
+      expect(coordinator.pending, hasLength(1));
+      final clientMessageId = coordinator.pending.single.clientMessageId;
+      expect(coordinator.pending.single.type, 'GIF');
+      expect(store.state.pending.single.clientMessageId, clientMessageId);
 
-    await coordinator.flushPending();
-    expect(coordinator.pending, isEmpty);
-    expect(gateway.sentMediaTypes, ['GIF']);
-    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000456']);
-  });
+      await coordinator.flushPending();
+      expect(coordinator.pending, isEmpty);
+      expect(gateway.sentMediaTypes, ['GIF']);
+      expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000456']);
+    },
+  );
 
-  test('file message stays durable while offline and preserves metadata', () async {
-    final store = _MemoryMessagingStore();
-    final gateway = _FakeMessagingGateway()..failNextSend = true;
-    final realtime = RealtimeClient(
-      baseUri: Uri.parse('http://127.0.0.1:19999'),
-      clientId: 'device-test-file',
-      channelFactory: (_) => throw StateError('not used'),
-    );
-    final coordinator = MessagingCoordinator(
-      origin: Uri.parse('http://127.0.0.1:18473'),
-      accessToken: 'token',
-      currentUserId: 'user-a',
-      deviceId: 'device-test-file',
-      gateway: gateway,
-      localStore: store,
-      realtimeClient: realtime,
-    );
-    addTearDown(() async {
-      coordinator.dispose();
-      await realtime.dispose();
-    });
+  test(
+    'file message stays durable while offline and preserves metadata',
+    () async {
+      final store = _MemoryMessagingStore();
+      final gateway = _FakeMessagingGateway()..failNextSend = true;
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-test-file',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-test-file',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
 
-    await coordinator.sendMedia(
-      'conversation-a',
-      type: 'FILE',
-      mediaId: '00000000-0000-0000-0000-000000000654',
-      fileName: 'report.pdf',
-      mimeType: 'application/pdf',
-      sizeBytes: 2048,
-    );
-    expect(coordinator.pending, hasLength(1));
-    expect(coordinator.pending.single.type, 'FILE');
-    expect(coordinator.pending.single.fileName, 'report.pdf');
-    expect(store.state.pending.single.sizeBytes, 2048);
+      await coordinator.sendMedia(
+        'conversation-a',
+        type: 'FILE',
+        mediaId: '00000000-0000-0000-0000-000000000654',
+        fileName: 'report.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+      );
+      expect(coordinator.pending, hasLength(1));
+      expect(coordinator.pending.single.type, 'FILE');
+      expect(coordinator.pending.single.fileName, 'report.pdf');
+      expect(store.state.pending.single.sizeBytes, 2048);
 
-    await coordinator.flushPending();
-    expect(coordinator.pending, isEmpty);
-    expect(gateway.sentMediaTypes, ['FILE']);
-    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000654']);
-  });
+      await coordinator.flushPending();
+      expect(coordinator.pending, isEmpty);
+      expect(gateway.sentMediaTypes, ['FILE']);
+      expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000654']);
+    },
+  );
 
-  test('voice message stays durable while offline and preserves duration', () async {
-    final store = _MemoryMessagingStore();
-    final gateway = _FakeMessagingGateway()..failNextSend = true;
-    final realtime = RealtimeClient(
-      baseUri: Uri.parse('http://127.0.0.1:19999'),
-      clientId: 'device-test-voice',
-      channelFactory: (_) => throw StateError('not used'),
-    );
-    final coordinator = MessagingCoordinator(
-      origin: Uri.parse('http://127.0.0.1:18473'),
-      accessToken: 'token',
-      currentUserId: 'user-a',
-      deviceId: 'device-test-voice',
-      gateway: gateway,
-      localStore: store,
-      realtimeClient: realtime,
-    );
-    addTearDown(() async {
-      coordinator.dispose();
-      await realtime.dispose();
-    });
+  test(
+    'voice message stays durable while offline and preserves duration',
+    () async {
+      final store = _MemoryMessagingStore();
+      final gateway = _FakeMessagingGateway()..failNextSend = true;
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-test-voice',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-test-voice',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
 
-    await coordinator.sendMedia(
-      'conversation-a',
-      type: 'VOICE',
-      mediaId: '00000000-0000-0000-0000-000000000789',
-      durationMs: 4200,
-      mimeType: 'audio/wav',
-      sizeBytes: 64000,
-    );
-    expect(coordinator.pending, hasLength(1));
-    expect(coordinator.pending.single.type, 'VOICE');
-    expect(coordinator.pending.single.durationMs, 4200);
-    expect(store.state.pending.single.durationMs, 4200);
+      await coordinator.sendMedia(
+        'conversation-a',
+        type: 'VOICE',
+        mediaId: '00000000-0000-0000-0000-000000000789',
+        durationMs: 4200,
+        mimeType: 'audio/wav',
+        sizeBytes: 64000,
+      );
+      expect(coordinator.pending, hasLength(1));
+      expect(coordinator.pending.single.type, 'VOICE');
+      expect(coordinator.pending.single.durationMs, 4200);
+      expect(store.state.pending.single.durationMs, 4200);
 
-    await coordinator.flushPending();
-    expect(coordinator.pending, isEmpty);
-    expect(gateway.sentMediaTypes, ['VOICE']);
-    expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000789']);
-  });
+      await coordinator.flushPending();
+      expect(coordinator.pending, isEmpty);
+      expect(gateway.sentMediaTypes, ['VOICE']);
+      expect(gateway.sentMediaIds, ['00000000-0000-0000-0000-000000000789']);
+    },
+  );
 
   test('heard voice state is persisted and restored', () async {
     final store = _MemoryMessagingStore();
@@ -222,7 +237,10 @@ void main() {
 
     expect(coordinator.recentEmoji, hasLength(12));
     expect(coordinator.recentEmoji.first, 'emoji-5');
-    expect(coordinator.recentEmoji.where((item) => item == 'emoji-5'), hasLength(1));
+    expect(
+      coordinator.recentEmoji.where((item) => item == 'emoji-5'),
+      hasLength(1),
+    );
     expect(store.state.recentEmoji, coordinator.recentEmoji);
   });
 
@@ -271,7 +289,7 @@ void main() {
   );
 
   test(
-    'expired access token keeps pending message and requests refresh',
+    'expired access token refreshes once and retries the pending message',
     () async {
       final gateway = _FakeMessagingGateway()
         ..nextSendApiError = const MessagingApiException(
@@ -296,6 +314,7 @@ void main() {
         realtimeClient: realtime,
         onUnauthorized: () async {
           refreshCalls++;
+          return 'fresh-token';
         },
       );
       addTearDown(() async {
@@ -307,10 +326,11 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(refreshCalls, 1);
-      expect(coordinator.pending, hasLength(1));
-      expect(coordinator.pending.single.lastError, isNull);
-      expect(store.state.pending, hasLength(1));
-      expect(coordinator.errorMessage, contains('会话正在刷新'));
+      expect(coordinator.accessToken, 'fresh-token');
+      expect(gateway.sentClientIds, hasLength(2));
+      expect(coordinator.pending, isEmpty);
+      expect(store.state.pending, isEmpty);
+      expect(coordinator.errorMessage, isNull);
     },
   );
 
@@ -489,6 +509,92 @@ void main() {
     expect(gateway.markedReads, [('conversation-1', 1)]);
   });
 
+  test('targeted block relationship event is surfaced immediately', () async {
+    final gateway = _FakeMessagingGateway()
+      ..syncPages.add(
+        SyncPage(
+          items: [
+            SyncEventItem(
+              eventId: 'event-block-1',
+              cursor: 1,
+              type: 'RELATIONSHIP_BLOCKED_BY_PEER',
+              resourceId: 'user-b',
+              payload: const {'blockedByUserId': 'user-b'},
+              occurredAt: DateTime.utc(2026, 8, 9),
+            ),
+          ],
+          nextCursor: 1,
+          hasMore: false,
+        ),
+      );
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-block',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-block',
+      gateway: gateway,
+      localStore: _MemoryMessagingStore(),
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    final noticeFuture = coordinator.relationshipNotices.first;
+    await coordinator.syncNow();
+    final notice = await noticeFuture.timeout(const Duration(seconds: 1));
+    expect(notice.type, 'RELATIONSHIP_BLOCKED_BY_PEER');
+    expect(notice.peerUserId, 'user-b');
+    expect(notice.message, '对方已将你拉黑');
+  });
+
+  test(
+    'saving a message materializes it into the Saved Messages self chat',
+    () async {
+      final gateway = _FakeMessagingGateway();
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-saved',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-saved',
+        gateway: gateway,
+        localStore: _MemoryMessagingStore(),
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
+      final message = ChatMessage(
+        id: 'source-message-1',
+        conversationId: 'conversation-source',
+        sequence: 1,
+        senderUserId: 'user-b',
+        senderDeviceId: 'device-b',
+        clientMessageId: 'source-client-1',
+        type: 'TEXT',
+        content: const TextMessageContent(text: 'save me'),
+        createdAt: DateTime.utc(2026, 8, 9),
+      );
+
+      await coordinator.saveMessage(message);
+
+      expect(gateway.savedMessageIds, ['source-message-1']);
+      expect(gateway.ensureSavedCalls, 1);
+    },
+  );
+
   test('sync cursor only advances and is persisted', () async {
     final gateway = _FakeMessagingGateway()
       ..syncPages.addAll([
@@ -590,6 +696,8 @@ final class _FakeMessagingGateway implements MessagingGateway {
   final List<String> sentImageIds = [];
   final List<String> sentMediaIds = [];
   final List<String> sentMediaTypes = [];
+  final List<String> savedMessageIds = [];
+  int ensureSavedCalls = 0;
   final List<SyncPage> syncPages = [];
   List<ChatMessage> history = const [];
   final List<(String, int)> markedReads = [];
@@ -656,7 +764,11 @@ final class _FakeMessagingGateway implements MessagingGateway {
       senderDeviceId: 'device-a',
       clientMessageId: clientMessageId,
       type: 'IMAGE',
-      content: TextMessageContent(mediaId: mediaId, width: width, height: height),
+      content: TextMessageContent(
+        mediaId: mediaId,
+        width: width,
+        height: height,
+      ),
       replyToMessageId: replyToMessageId,
       createdAt: DateTime.utc(2026, 8, 8),
     );
@@ -670,6 +782,7 @@ final class _FakeMessagingGateway implements MessagingGateway {
     required String clientMessageId,
     required String type,
     required String mediaId,
+    String? posterMediaId,
     int? width,
     int? height,
     int? durationMs,
@@ -684,7 +797,8 @@ final class _FakeMessagingGateway implements MessagingGateway {
     return ChatMessage(
       id: 'media-$clientMessageId',
       conversationId: conversationId,
-      sequence: sentClientIds.length + sentImageIds.length + sentMediaIds.length,
+      sequence:
+          sentClientIds.length + sentImageIds.length + sentMediaIds.length,
       senderUserId: 'user-a',
       senderDeviceId: 'device-a',
       clientMessageId: clientMessageId,
@@ -707,6 +821,13 @@ final class _FakeMessagingGateway implements MessagingGateway {
   }) async => const [];
 
   @override
+  Future<ConversationItem> getConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) => throw UnimplementedError();
+
+  @override
   Future<MessagePage> listMessages({
     required Uri origin,
     required String accessToken,
@@ -714,6 +835,66 @@ final class _FakeMessagingGateway implements MessagingGateway {
     int beforeSequence = 0,
     int limit = 50,
   }) async => MessagePage(items: history.reversed.toList(), hasMore: false);
+
+  @override
+  Future<List<SavedMessageItem>> listSavedMessages({
+    required Uri origin,
+    required String accessToken,
+  }) async => const [];
+
+  @override
+  Future<void> saveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {
+    savedMessageIds.add(messageId);
+  }
+
+  @override
+  Future<void> unsaveMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {}
+
+  @override
+  Future<List<PinnedMessageItem>> listPinnedMessages({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) async => const [];
+
+  @override
+  Future<void> pinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {}
+
+  @override
+  Future<void> unpinMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+  }) async {}
+
+  @override
+  Future<ChatMessage> forwardMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String targetConversationId,
+    required String clientMessageId,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<List<MessageSearchHit>> searchMessages({
+    required Uri origin,
+    required String accessToken,
+    required String query,
+    String? conversationId,
+  }) async => const [];
 
   @override
   Future<SyncPage> sync({
@@ -738,6 +919,15 @@ final class _FakeMessagingGateway implements MessagingGateway {
   }
 
   @override
+  Future<ConversationItem> ensureSavedConversation({
+    required Uri origin,
+    required String accessToken,
+  }) async {
+    ensureSavedCalls++;
+    return _testConversation();
+  }
+
+  @override
   Future<ConversationItem> updatePreferences({
     required Uri origin,
     required String accessToken,
@@ -745,6 +935,7 @@ final class _FakeMessagingGateway implements MessagingGateway {
     bool? isPinned,
     DateTime? mutedUntil,
     bool clearMute = false,
+    bool? isArchived,
   }) async {
     if (isPinned != null) {
       lastPinned = isPinned;
@@ -765,6 +956,13 @@ final class _FakeMessagingGateway implements MessagingGateway {
   }
 
   @override
+  Future<void> hideConversation({
+    required Uri origin,
+    required String accessToken,
+    required String conversationId,
+  }) async {}
+
+  @override
   Future<int> markRead({
     required Uri origin,
     required String accessToken,
@@ -774,6 +972,15 @@ final class _FakeMessagingGateway implements MessagingGateway {
     markedReads.add((conversationId, sequence));
     return sequence;
   }
+
+  @override
+  Future<ChatMessage> editMessage({
+    required Uri origin,
+    required String accessToken,
+    required String messageId,
+    required String text,
+    required int expectedEditVersion,
+  }) async => throw UnimplementedError();
 
   @override
   Future<ChatMessage> recallMessage({

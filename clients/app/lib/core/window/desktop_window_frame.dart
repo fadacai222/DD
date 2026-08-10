@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../theme/app_theme.dart';
+
 /// Windows 使用 DD 自己的窗口栏，底层 Win32 只保留阴影、缩放边界和窗口生命周期。
 /// Web / Android / iOS / macOS / Linux 不插入这一层。
 class DesktopWindowFrame extends StatefulWidget {
@@ -82,9 +84,10 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
   Widget build(BuildContext context) {
     if (!_enabled) return widget.child;
 
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final background = dark ? const Color(0xFF202020) : const Color(0xFFF4F4F4);
-    final border = dark ? const Color(0xFF343434) : const Color(0xFFD8D8D8);
+    final brightness = Theme.of(context).brightness;
+    final dark = brightness == Brightness.dark;
+    final background = DdDesktopTokens.titleBarSurface(brightness);
+    final border = DdDesktopTokens.borderSubtle(brightness);
 
     return Stack(
       children: [
@@ -95,7 +98,7 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
               children: [
                 Container(
                   key: const Key('desktop-window-titlebar'),
-                  height: 28,
+                  height: DdDesktopTokens.titleBarHeight,
                   decoration: BoxDecoration(
                     color: background,
                     border: Border(
@@ -188,9 +191,7 @@ class _WindowButton extends StatelessWidget {
     final selectedColor = dark
         ? const Color(0xFF2E4A3D)
         : const Color(0xFFDDF3E8);
-    final foreground = dark
-        ? const Color(0xFFD0D0D0)
-        : const Color(0xFF4A4A4A);
+    final foreground = dark ? const Color(0xFFD0D0D0) : const Color(0xFF4A4A4A);
 
     return Tooltip(
       message: tooltip,
@@ -204,7 +205,7 @@ class _WindowButton extends StatelessWidget {
           highlightColor: hoverColor,
           child: SizedBox(
             width: 42,
-            height: 28,
+            height: DdDesktopTokens.titleBarHeight,
             child: Icon(icon, size: 14, color: danger ? null : foreground),
           ),
         ),

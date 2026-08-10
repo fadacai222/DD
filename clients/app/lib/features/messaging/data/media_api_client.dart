@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -31,12 +32,59 @@ final class MediaDownloadGrant {
   final DateTime expiresAt;
 }
 
+final class MediaObjectInfo {
+  const MediaObjectInfo({
+    required this.id,
+    required this.originalName,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.purpose,
+    required this.status,
+  });
+
+  factory MediaObjectInfo.fromJson(Map<String, dynamic> json) => MediaObjectInfo(
+    id: json['id'] as String? ?? '',
+    originalName: json['originalName'] as String? ?? '',
+    mimeType: json['mimeType'] as String? ?? '',
+    sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+    purpose: json['purpose'] as String? ?? '',
+    status: json['status'] as String? ?? '',
+  );
+
+  final String id;
+  final String originalName;
+  final String mimeType;
+  final int sizeBytes;
+  final String purpose;
+  final String status;
+
+  bool get isVideo => purpose == 'MOMENT_VIDEO' || mimeType.startsWith('video/');
+}
+
 final class MediaUploadCancellation {
   bool _cancelled = false;
+  final Set<void Function()> _abortListeners = <void Function()>{};
 
   bool get isCancelled => _cancelled;
 
-  void cancel() => _cancelled = true;
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    for (final listener in _abortListeners.toList(growable: false)) {
+      listener();
+    }
+    _abortListeners.clear();
+  }
+
+  void _attach(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _abortListeners.add(listener);
+  }
+
+  void _detach(void Function() listener) => _abortListeners.remove(listener);
 }
 
 final class MediaUploadCancelled implements Exception {
@@ -62,10 +110,18 @@ final class MediaDownloadCancelled implements Exception {
 }
 
 final class MediaApiClient {
-  MediaApiClient({http.Client? httpClient})
-    : _client = httpClient ?? createAuthHttpClient();
+  MediaApiClient({
+    http.Client? httpClient,
+    http.Client Function()? uploadClientFactory,
+  }) : _client = httpClient ?? createAuthHttpClient(),
+       _uploadClientFactory = uploadClientFactory ?? http.Client.new;
+
+  static const _apiTimeout = Duration(seconds: 30);
+  static const _uploadResponseTimeout = Duration(hours: 2);
+  static const _maximumUploadAttempts = 2;
 
   final http.Client _client;
+  final http.Client Function() _uploadClientFactory;
 
   Future<MediaUploadGrant> uploadChatImage({
     required Uri origin,
@@ -125,22 +181,72 @@ final class MediaApiClient {
 
     final digest = await sha256.bind(streamFactory()).first;
     _throwIfCancelled(cancellation);
-    final grant = await createUpload(
-      origin: origin,
-      accessToken: accessToken,
-      fileName: fileName,
-      size: size,
-      mimeType: mimeType,
-      sha256Hex: digest.toString(),
-      purpose: purpose,
-    );
+    Object? lastError;
+    StackTrace? lastStackTrace;
 
+    for (var attempt = 0; attempt < _maximumUploadAttempts; attempt++) {
+      _throwIfCancelled(cancellation);
+      try {
+        final grant = await createUpload(
+          origin: origin,
+          accessToken: accessToken,
+          fileName: fileName,
+          size: size,
+          mimeType: mimeType,
+          sha256Hex: digest.toString(),
+          purpose: purpose,
+        ).timeout(_apiTimeout);
+        await _putUpload(
+          grant: grant,
+          streamFactory: streamFactory,
+          size: size,
+          cancellation: cancellation,
+          onProgress: onProgress,
+        );
+        await _completeWithRetry(
+          origin: origin,
+          accessToken: accessToken,
+          uploadId: grant.uploadId,
+          cancellation: cancellation,
+        );
+        onProgress?.call(size, size);
+        return grant;
+      } catch (error, stackTrace) {
+        if (cancellation?.isCancelled == true || error is MediaUploadCancelled) {
+          throw const MediaUploadCancelled();
+        }
+        lastError = error;
+        lastStackTrace = stackTrace;
+        if (attempt + 1 >= _maximumUploadAttempts || !_isRetryableUploadError(error)) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        onProgress?.call(0, size);
+        await Future<void>.delayed(const Duration(milliseconds: 280));
+      }
+    }
+    Error.throwWithStackTrace(lastError!, lastStackTrace!);
+  }
+
+  Future<void> _putUpload({
+    required MediaUploadGrant grant,
+    required Stream<List<int>> Function() streamFactory,
+    required int size,
+    required MediaUploadCancellation? cancellation,
+    void Function(int sentBytes, int totalBytes)? onProgress,
+  }) async {
+    _throwIfCancelled(cancellation);
+    final uploadClient = _uploadClientFactory();
+    void abort() => uploadClient.close();
+    cancellation?._attach(abort);
     final request = http.StreamedRequest('PUT', grant.uploadUrl)
       ..headers.addAll(grant.requiredHeaders)
       ..contentLength = size;
-    var sentBytes = 0;
-    final responseFuture = _client.send(request);
+    final responseFuture = uploadClient
+        .send(request)
+        .timeout(_uploadResponseTimeout);
+    responseFuture.ignore();
     try {
+      var sentBytes = 0;
       await for (final chunk in streamFactory()) {
         _throwIfCancelled(cancellation);
         request.sink.add(chunk);
@@ -157,23 +263,63 @@ final class MediaApiClient {
           message: '媒体上传失败（对象存储返回 ${response.statusCode}）。',
         );
       }
-    } catch (_) {
-      await request.sink.close();
+      await response.stream.drain<void>();
+    } catch (error, stackTrace) {
+      uploadClient.close();
+      responseFuture.ignore();
       try {
-        await responseFuture;
-      } catch (_) {
-        // The caller's upload/cancellation error is the useful one here.
+        await request.sink.close();
+      } catch (_) {}
+      if (cancellation?.isCancelled == true) {
+        throw const MediaUploadCancelled();
       }
-      rethrow;
+      Error.throwWithStackTrace(error, stackTrace);
+    } finally {
+      cancellation?._detach(abort);
+      uploadClient.close();
     }
+  }
 
-    await completeUpload(
-      origin: origin,
-      accessToken: accessToken,
-      uploadId: grant.uploadId,
-    );
-    onProgress?.call(size, size);
-    return grant;
+  Future<void> _completeWithRetry({
+    required Uri origin,
+    required String accessToken,
+    required String uploadId,
+    required MediaUploadCancellation? cancellation,
+  }) async {
+    Object? lastError;
+    StackTrace? lastStackTrace;
+    for (var attempt = 0; attempt < _maximumUploadAttempts; attempt++) {
+      _throwIfCancelled(cancellation);
+      try {
+        await completeUpload(
+          origin: origin,
+          accessToken: accessToken,
+          uploadId: uploadId,
+        ).timeout(_apiTimeout);
+        return;
+      } catch (error, stackTrace) {
+        if (cancellation?.isCancelled == true || error is MediaUploadCancelled) {
+          throw const MediaUploadCancelled();
+        }
+        lastError = error;
+        lastStackTrace = stackTrace;
+        if (attempt + 1 >= _maximumUploadAttempts || !_isRetryableUploadError(error)) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 220));
+      }
+    }
+    Error.throwWithStackTrace(lastError!, lastStackTrace!);
+  }
+
+  bool _isRetryableUploadError(Object error) {
+    if (error is TimeoutException || error is http.ClientException) return true;
+    if (error is MessagingApiException) {
+      return error.statusCode == 408 ||
+          error.statusCode == 429 ||
+          error.statusCode >= 500;
+    }
+    return false;
   }
 
   void _throwIfCancelled(MediaUploadCancellation? cancellation) {
@@ -257,14 +403,27 @@ final class MediaApiClient {
     final builder = BytesBuilder(copy: false);
     var received = 0;
     await for (final chunk in response.stream) {
-      if (cancellation?.isCancelled == true)
+      if (cancellation?.isCancelled == true) {
         throw const MediaDownloadCancelled();
+      }
       builder.add(chunk);
       received += chunk.length;
       onProgress?.call(received, total);
     }
     onProgress?.call(received, total ?? received);
     return builder.takeBytes();
+  }
+
+  Future<MediaObjectInfo> getMedia({
+    required Uri origin,
+    required String accessToken,
+    required String mediaId,
+  }) async {
+    final response = await _client.get(
+      normalizeAuthOrigin(origin).resolve('/api/v1/media/$mediaId'),
+      headers: _authHeaders(accessToken),
+    );
+    return MediaObjectInfo.fromJson(_decodeData(response, const {200}));
   }
 
   Future<MediaDownloadGrant> createDownloadUrl({

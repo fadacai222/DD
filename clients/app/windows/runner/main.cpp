@@ -7,6 +7,25 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous,
                       _In_ wchar_t* command_line, _In_ int show_command) {
+  HANDLE single_instance_mutex =
+      ::CreateMutexW(nullptr, FALSE, L"Local\\DDCommunityIM.SingleInstance");
+  if (single_instance_mutex != nullptr &&
+      ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    if (HWND existing = ::FindWindowW(nullptr, L"DD")) {
+      if (::IsIconic(existing)) {
+        ::ShowWindow(existing, SW_RESTORE);
+      }
+      ::SetForegroundWindow(existing);
+      ::CloseHandle(single_instance_mutex);
+      return EXIT_SUCCESS;
+    }
+
+    // A previous process can survive without a top-level window after an
+    // interrupted Flutter/native startup. Do not let that stale mutex make
+    // every later launch silently exit with no UI. Continue startup so DD can
+    // recover and create a visible window.
+  }
+
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
   }
@@ -32,5 +51,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous,
   }
 
   ::CoUninitialize();
+  if (single_instance_mutex != nullptr) {
+    ::CloseHandle(single_instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

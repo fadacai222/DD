@@ -10,7 +10,21 @@ $DevDir = Join-Path $Root 'infra\dev'
 $EnvFile = Join-Path $DevDir '.env'
 
 if ((Test-Path -LiteralPath $EnvFile) -and -not $Force) {
-    Write-Host "Development environment already exists: $EnvFile"
+    $existing = Get-Content -LiteralPath $EnvFile -Encoding UTF8
+    $updated = $false
+    if (-not ($existing | Where-Object { $_ -match '^\s*TELEGRAM_BOT_TOKEN=' })) {
+        Add-Content -LiteralPath $EnvFile -Value @(
+            '# Optional: paste a Telegram Bot token to enable server-relayed sticker pack imports.'
+            'TELEGRAM_BOT_TOKEN='
+        ) -Encoding UTF8
+        $updated = $true
+    }
+    if ($updated) {
+        Write-Host "Development environment upgraded in place: $EnvFile"
+        Write-Host 'Existing credentials were preserved; only newly introduced optional keys were appended.'
+    } else {
+        Write-Host "Development environment already exists and is current: $EnvFile"
+    }
     Write-Host 'Use -Force only if you intentionally want to rotate all local development credentials.'
     exit 0
 }
@@ -48,6 +62,8 @@ $content = @(
     "DD_LIVEKIT_API_SECRET=$liveKitSecret"
     "AUTH_TOKEN_SECRET=$authTokenSecret"
     "EMAIL_CODE_PEPPER=$emailCodePepper"
+    '# Optional: paste a Telegram Bot token to enable server-relayed sticker pack imports.'
+    'TELEGRAM_BOT_TOKEN='
 ) -join "`n"
 
 New-Item -ItemType Directory -Path $DevDir -Force | Out-Null

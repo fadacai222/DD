@@ -49,8 +49,13 @@ type Config struct {
 	ReadinessChecks    map[string]ReadinessCheck
 	AuthService        AuthService
 	ContactsService    ContactsService
+	GroupsService      GroupsService
+	CallsService       CallsService
 	MessagingService   MessagingService
 	MediaService       MediaService
+	StickersService    StickersService
+	MomentsService     MomentsService
+	QRService          QRService
 	RealtimeEventBus   RealtimeEventBus
 	Logger             *slog.Logger
 	Now                func() time.Time
@@ -74,12 +79,17 @@ type server struct {
 	readinessChecks      map[string]ReadinessCheck
 	auth                 AuthService
 	contacts             ContactsService
+	groups               GroupsService
+	formalCalls          CallsService
 	messaging            MessagingService
 	media                MediaService
+	stickers             StickersService
+	moments              MomentsService
+	qr                   QRService
 	realtimeEventBus     RealtimeEventBus
 	realtimePublishQueue chan realtimeBusDelivery
 	eventSequence        atomic.Int64
-	calls                *callStore
+	legacyCalls          *callStore
 	hub                  *socketHub
 }
 
@@ -137,10 +147,15 @@ func NewHandler(config Config) http.Handler {
 		readinessChecks:    copyReadinessChecks(config.ReadinessChecks),
 		auth:               config.AuthService,
 		contacts:           config.ContactsService,
+		groups:             config.GroupsService,
+		formalCalls:        config.CallsService,
 		messaging:          config.MessagingService,
 		media:              config.MediaService,
+		stickers:           config.StickersService,
+		moments:            config.MomentsService,
+		qr:                 config.QRService,
 		realtimeEventBus:   config.RealtimeEventBus,
-		calls:              newCallStore(),
+		legacyCalls:        newCallStore(),
 		hub:                newSocketHub(),
 	}
 	s.eventSequence.Store(now().UTC().UnixMicro())
@@ -168,10 +183,14 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/auth/password/reset", s.handlePasswordReset)
 	mux.HandleFunc("/api/v1/auth/logout-all", s.handleLogoutAll)
 	mux.HandleFunc("/api/v1/me", s.handleMe)
+	mux.HandleFunc("/api/v1/me/email/send-code", s.handleMeEmailChangeCode)
+	mux.HandleFunc("/api/v1/me/email", s.handleMeEmail)
 	mux.HandleFunc("/api/v1/me/avatar", s.handleMeAvatar)
 	mux.HandleFunc("/api/v1/devices", s.handleDevices)
 	mux.HandleFunc("/api/v1/devices/", s.handleDeviceByID)
 	mux.HandleFunc("/api/v1/users/by-handle/", s.handleUserByHandle)
+	mux.HandleFunc("/api/v1/users/mention-suggestions", s.handleMentionSuggestions)
+	mux.HandleFunc("/api/v1/users/", s.handleUserByID)
 	mux.HandleFunc("/api/v1/avatars/", s.handleUserAvatar)
 	mux.HandleFunc("/api/v1/contact-requests", s.handleContactRequests)
 	mux.HandleFunc("/api/v1/contact-requests/", s.handleContactRequestByID)
@@ -179,13 +198,39 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/contacts/", s.handleContactByUserID)
 	mux.HandleFunc("/api/v1/blocks", s.handleBlocks)
 	mux.HandleFunc("/api/v1/blocks/", s.handleBlockByUserID)
+	mux.HandleFunc("/api/v1/groups", s.handleGroups)
+	mux.HandleFunc("/api/v1/groups/", s.handleGroupByID)
+	mux.HandleFunc("/api/v1/calls", s.handleFormalCalls)
+	mux.HandleFunc("/api/v1/calls/active", s.handleFormalActiveCall)
+	mux.HandleFunc("/api/v1/calls/", s.handleFormalCallByID)
 	mux.HandleFunc("/api/v1/conversations", s.handleConversations)
 	mux.HandleFunc("/api/v1/conversations/direct", s.handleDirectConversation)
 	mux.HandleFunc("/api/v1/conversations/", s.handleConversationByID)
+	mux.HandleFunc("/api/v1/saved-messages/conversation", s.handleSavedConversation)
+	mux.HandleFunc("/api/v1/saved-messages", s.handleSavedMessages)
+	mux.HandleFunc("/api/v1/messages/search", s.handleMessageSearch)
 	mux.HandleFunc("/api/v1/messages/", s.handleMessageByID)
 	mux.HandleFunc("/api/v1/media/uploads", s.handleMediaUploads)
 	mux.HandleFunc("/api/v1/media/uploads/", s.handleMediaUploadByID)
 	mux.HandleFunc("/api/v1/media/", s.handleMediaByID)
+	mux.HandleFunc("/api/v1/stickers/custom/order", s.handleCustomStickerOrder)
+	mux.HandleFunc("/api/v1/stickers/custom", s.handleCustomStickers)
+	mux.HandleFunc("/api/v1/stickers/packs/telegram", s.handleTelegramStickerPackImport)
+	mux.HandleFunc("/api/v1/stickers/packs/", s.handleStickerPackByID)
+	mux.HandleFunc("/api/v1/stickers/packs", s.handleStickerPacks)
+	mux.HandleFunc("/api/v1/moment-preferences", s.handleMomentPreferences)
+	mux.HandleFunc("/api/v1/moment-preferences/", s.handleMomentPreferences)
+	mux.HandleFunc("/api/v1/moments", s.handleMoments)
+	mux.HandleFunc("/api/v1/moments/", s.handleMomentByID)
+	mux.HandleFunc("/api/v1/qr/me", s.handleMyQR)
+	mux.HandleFunc("/api/v1/group-qr-invites", s.handleGroupQRInvites)
+	mux.HandleFunc("/api/v1/group-qr-invites/", s.handleGroupQRInvites)
+	mux.HandleFunc("/api/v1/group-qr/redeem", s.handleGroupQRRedeem)
+	mux.HandleFunc("/api/v1/qr-login", s.handleQRLoginCreate)
+	mux.HandleFunc("/api/v1/qr-login/status", s.handleQRLoginStatus)
+	mux.HandleFunc("/api/v1/qr-login/scan", s.handleQRLoginScan)
+	mux.HandleFunc("/api/v1/qr-login/confirm", s.handleQRLoginConfirm)
+	mux.HandleFunc("/api/v1/qr-login/consume", s.handleQRLoginConsume)
 	mux.HandleFunc("/api/v1/sync", s.handleSync)
 	mux.HandleFunc("/api/calls/token", s.handleCallToken)
 	mux.HandleFunc("/api/calls/active", s.handleActiveCall)
@@ -517,10 +562,21 @@ func methodNotAllowed(response http.ResponseWriter, allowedMethods ...string) {
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		payload, _ = json.Marshal(map[string]any{
+			"error": map[string]any{
+				"code":      "RESPONSE_ENCODING_FAILED",
+				"message":   "Internal server error",
+				"requestId": strings.TrimSpace(response.Header().Get(requestIDHeader)),
+			},
+		})
+	}
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(status)
-	_ = json.NewEncoder(response).Encode(value)
+	_, _ = response.Write(append(payload, '\n'))
 }
 
 func securityHeaders(next http.Handler) http.Handler {

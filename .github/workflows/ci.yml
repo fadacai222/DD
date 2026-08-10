@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -97,6 +98,18 @@ jobs:
         env:
           DD_CONTACTS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
         run: go test ./internal/contacts -run TestRelationshipLifecycleWithPostgres -count=1 -v
+
+      - name: Groups PostgreSQL lifecycle and authorization integration
+        working-directory: server
+        env:
+          DD_GROUPS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/groups -run TestGroupLifecycleWithPostgres -count=1 -v
+
+      - name: Calls PostgreSQL lifecycle and multi-device authorization integration
+        working-directory: server
+        env:
+          DD_CALLS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/calls -run TestCallLifecycleWithPostgres -count=1 -v
 
       - name: Messaging PostgreSQL reliability integration
         working-directory: server
@@ -218,3 +231,99 @@ jobs:
       - name: Flutter web release build
         working-directory: clients/app
         run: flutter build web --release
+
+      - name: Flutter Android release build
+        working-directory: clients/app
+        run: flutter build apk --release
+
+      - name: Upload Web release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dd-web-${{ github.sha }}
+          path: clients/app/build/web
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Android release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dd-android-${{ github.sha }}
+          path: clients/app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Flutter
+        shell: pwsh
+        run: |
+          $flutterRoot = Join-Path $env:RUNNER_TEMP 'flutter'
+          git clone --depth 1 --branch 3.44.9 https://github.com/flutter/flutter.git $flutterRoot
+          (Join-Path $flutterRoot 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Flutter version
+        shell: pwsh
+        run: flutter --version
+
+      - name: Enable Windows desktop
+        shell: pwsh
+        run: flutter config --enable-windows-desktop
+
+      - name: Flutter dependencies
+        working-directory: clients/app
+        shell: pwsh
+        run: flutter pub get
+
+      - name: Flutter Windows release build
+        working-directory: clients/app
+        shell: pwsh
+        run: flutter build windows --release --no-pub
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dd-windows-${{ github.sha }}
+          path: clients/app/build/windows/x64/runner/Release
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Prepare embedded real MP4 smoke fixture
+        shell: pwsh
+        run: |
+          $source = Get-Content -LiteralPath 'clients/app/test/features/messaging/video_media_probe_real_sample_test.dart' -Raw -Encoding UTF8
+          $match = [regex]::Match($source, "const _embeddedMp4Base64\s*=\s*'([^']+)';", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+          if (-not $match.Success) {
+            throw 'Unable to locate embedded MP4 fixture used by the video probe regression test.'
+          }
+          $fixture = Join-Path $env:RUNNER_TEMP 'dd-video-probe.mp4'
+          [System.IO.File]::WriteAllBytes($fixture, [Convert]::FromBase64String($match.Groups[1].Value))
+          "DD_VIDEO_SAMPLE_MP4=$fixture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows real-engine video probe
+        working-directory: clients/app
+        shell: pwsh
+        run: flutter build windows --release --no-pub --target tool/video_probe_smoke.dart
+
+      - name: Run Windows real-engine video probe
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path 'clients/app/build/windows/x64/runner/Release/im_client.exe'
+          $process = Start-Process -FilePath $exe -PassThru
+          try {
+            if (-not $process.WaitForExit(30000)) {
+              throw 'Windows video probe did not exit within 30 seconds.'
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "Windows video probe failed with exit code $($process.ExitCode)."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+          }

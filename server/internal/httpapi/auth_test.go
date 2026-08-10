@@ -59,7 +59,14 @@ func (fake *fakeAuthService) GetMe(_ context.Context, _ account.Principal) (acco
 	return account.Me{}, nil
 }
 func (fake *fakeAuthService) UpdateMe(_ context.Context, _ account.Principal, input account.UpdateMeInput) (account.Me, error) {
-	return account.Me{Profile: account.Profile{DisplayName: input.DisplayName, Bio: input.Bio}, Privacy: input.Privacy}, nil
+	return account.Me{Profile: account.Profile{Handle: input.Handle, DisplayName: input.DisplayName, Bio: input.Bio}, Privacy: input.Privacy}, nil
+}
+func (fake *fakeAuthService) SendEmailChangeCode(_ context.Context, _ account.Principal, email string) error {
+	fake.lastEmail = email
+	return fake.sendErr
+}
+func (fake *fakeAuthService) ChangeEmail(_ context.Context, _ account.Principal, input account.ChangeEmailInput) (account.Me, error) {
+	return account.Me{Profile: account.Profile{Email: input.Email}}, nil
 }
 func (fake *fakeAuthService) PutProfileAvatar(_ context.Context, _ account.Principal, _ string, _ []byte) (time.Time, error) {
 	return time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC), nil

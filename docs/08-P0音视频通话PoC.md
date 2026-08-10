@@ -1,349 +1,383 @@
-# P0 音视频通话 PoC
+# P0 音视频通话 PoC｜LiveKit/TURN 历史结论与 P7 正式 Calls
 
-## 目标
+> 更新时间：2026-08-11 03:36
+>
+> 本文保留 P0 的技术选型结论，同时描述 **P7 已经正式化的 Calls 状态机**。旧 `/api/calls` / 内存 CallStore 只属于历史背景，不再代表当前正式架构。
 
-验证自托管一对一音视频通话的最小闭环：
+---
 
-1. Go 服务端持有 LiveKit API Secret，并签发短期、房间级 JWT。
-2. Flutter 客户端仅接收短期 Token，不接触 API Secret。
-3. Windows、Web、Android 共用同一套房间、麦克风、摄像头和远端轨道逻辑。
-4. 本地 LiveKit 能完成房间加入、信令、ICE 协商和媒体发布。
-5. 失败、重连、挂断时能够释放房间、摄像头、麦克风和监听器。
+# 1. 选型结论
 
-## 当前实现
-
-### Go Token API
-
-接口：
+DD 音视频继续采用：
 
 ```text
-POST /api/calls/token
-Content-Type: application/json
+Signaling / authorization: DD Go API + PostgreSQL
+Media plane:              LiveKit
+NAT traversal:            ICE / STUN / TURN
+Client media:             livekit_client
 ```
 
-请求：
+保留 LiveKit 的原因：
 
-```json
-{
-  "room_name": "call-demo",
-  "participant_identity": "user-001",
-  "participant_name": "测试用户"
-}
-```
+- 不自研 WebRTC SFU/媒体服务器；
+- Windows/Android/Web 已验证 SDK 路线；
+- 服务端可签发短 TTL、room-scoped token；
+- TURN/STUN 与实际 RTC 平面边界清晰。
 
-响应：
+---
 
-```json
-{
-  "server_url": "ws://127.0.0.1:7880",
-  "participant_token": "短期JWT",
-  "expires_at": "RFC3339时间"
-}
-```
+# 2. P0 曾经验证了什么
 
-安全边界：
+P0 解决了：
 
-- 默认有效期 15 分钟，最长限制为 1 小时。
-- Token 只允许加入指定房间、发布和订阅媒体。
-- 禁止发布 Data Track。
-- 房间号和身份限制为 1-64 位安全 ASCII 标识符。
-- 显示名称限制为 1-80 个 Unicode 字符，拒绝控制字符。
-- 请求体限制 4 KiB，并拒绝未知字段和多余 JSON 对象。
-- API Secret 只存在于服务端环境变量。
+- Flutter 能创建/加入 LiveKit 房间；
+- Windows ↔ Android 能进入语音/视频通话页面；
+- 音视频轨道、摄像头开关、麦克风开关可工作；
+- Android 来电页 overflow 等基础 UI 问题可修；
+- 通话计时、结束自动退出、视频主画面 + 本地小窗的产品形态可实现；
+- LiveKit/TURN 是可继续投入的路线。
 
-### 双端呼叫信令
+P0 当时没有解决：
 
-新增一对一呼叫状态流：
+- Call 状态持久化；
+- Bearer Principal 全链授权；
+- 多设备接听仲裁；
+- API 重启恢复；
+- 联系人/Block 权限；
+- 正式 OpenAPI；
+- 服务端唯一通话结果消息。
+
+这些已在 P7 主体中补齐。
+
+---
+
+# 3. 当前正式 Call API
+
+正式新客户端使用：
 
 ```text
-呼叫方创建通话
-  -> 被叫方收到 call.incoming
-  -> 被叫方接听或拒绝
-  -> 双方收到 call.updated
-  -> 接听后双方领取受限 LiveKit Token
-  -> 自动进入同一个媒体房间
-  -> 任一端挂断后双方同步结束并释放媒体
+POST /api/v1/calls
+GET  /api/v1/calls/active
+POST /api/v1/calls/{callId}/actions
+POST /api/v1/calls/{callId}/token
 ```
 
-接口：
-
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| `POST` | `/api/calls` | 创建语音或视频呼叫 |
-| `GET` | `/api/calls/active` | 上线或重连后恢复当前通话 |
-| `POST` | `/api/calls/{id}/actions` | 接听、拒绝、取消或挂断 |
-| `POST` | `/api/calls/{id}/token` | 接听后签发当前通话房间的受限 Token |
-
-当前 PoC 已处理：
-
-- 呼叫方与被叫方状态同步。
-- 被叫方实时来电事件。
-- 接听、拒绝、呼叫前取消和通话中挂断。
-- 单用户忙线冲突，阻止同时加入两通电话。
-- 非通话参与者操作和领取 Token 时返回拒绝。
-- 信令断线期间漏掉事件时，重连后通过活动通话接口恢复状态。
-- 默认 45 秒无人接听自动超时，双方同步结束并释放忙线状态。
-- 媒体连接失败时尽力同步挂断，避免另一端长期卡在通话中。
-
-### Flutter 通话调试台
-
-路径：`clients/app/lib/features/calls/`
-
-功能：
-
-- Token API 地址、房间号、身份和显示名称配置。
-- 加入/离开房间。
-- 加入后可选择自动开启麦克风和摄像头。
-- 麦克风静音/恢复。
-- 摄像头开启/关闭。
-- 前后摄像头切换。
-- 本地视频和多个远端视频网格。
-- 参与者加入/离开、轨道订阅和媒体重连日志。
-- 离开页面或挂断时释放 Room、监听器和本地媒体。
-
-Flutter 入口增加了模块选择页：
+旧：
 
 ```text
-实时通信
-音视频通话
-双端通话
+/api/calls...
 ```
 
-## 本地服务
+只属于兼容/历史实验面，不能再作为新功能开发依据。
 
-配置：`compose.call-poc.yml`
+---
 
-默认端口：
-
-| 端口 | 用途 |
-|---|---|
-| `127.0.0.1:18473` | Go Token API 与实时通信 API |
-| `127.0.0.1:7880` | LiveKit HTTP/WebSocket 信令 |
-| `127.0.0.1:7881` | LiveKit RTC TCP |
-| `127.0.0.1:7882/udp` | LiveKit 本地 RTC UDP |
-| `127.0.0.1:3478/udp` | LiveKit 内置 TURN/UDP 入口 |
-| `127.0.0.1:30000-30019/udp` | TURN relay allocation 端口范围 |
-
-本地 Docker PoC 必须显式让 LiveKit 公布 `127.0.0.1` 作为节点地址，并固定 UDP 端口 `7882`。否则 LiveKit 可能向浏览器下发 Docker 内网地址（例如 `172.18.x.x:7882`），导致 Web 端信令已连通但 ICE/PeerConnection 超时。当前 Compose 使用 `--node-ip 127.0.0.1 --udp-port 7882`，自动媒体测试也会检查该运行时配置。
-
-开发凭据：
+# 4. 当前正式服务端 Domain
 
 ```text
-API Key: devkey
-API Secret: secret
+server/internal/calls
+server/internal/httpapi/formal_calls.go
+migrations/000018_calls
+migrations/000020_calls_conversation
 ```
 
-这些凭据只允许用于本地 PoC，禁止用于公网或生产部署。
+核心事实：
 
-启动：
+- Call 状态写 PostgreSQL，不再放 API 进程内 map；
+- caller identity/device 来自 Bearer Access Token Principal；
+- callee 必须是 active contact；
+- 双方任一 Block 均拒绝新 Call；
+- caller 自己不能呼叫自己；
+- active Call 竞争由 PostgreSQL transaction/lock 控制；
+- Call 与 DIRECT conversation 绑定。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-call-poc.ps1
-```
+---
 
-停止：
+# 5. Call 状态机
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-call-poc.ps1
-```
-
-### Windows ↔ Web 本机跨端验收
-
-先构建并启动 Web Release 静态站点：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-web-client.ps1
-```
-
-脚本会：
-
-- 构建最新 Web Release。
-- 从 `10000-65535` 随机选择未占用端口。
-- 仅绑定 `127.0.0.1`，不向局域网公开调试站点。
-- 记录 PID 和端口到 `.data/web-client.json`。
-- 不自动打开浏览器；终端会打印需要手工打开的 URL。
-
-已有最新 Web 构建时可跳过重新构建：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-web-client.ps1 -SkipBuild
-```
-
-停止 Web Release：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-web-client.ps1
-```
-
-停止脚本只会结束状态文件记录且命令行仍匹配 `http.server` 的精确 PID，避免误杀 PID 复用后的其他进程。
-
-### Windows ↔ Android 真机 LAN 验收
-
-Android 真机不能使用 `127.0.0.1` 访问电脑。项目提供独立 LAN PoC 模式，不改变默认 localhost 模式：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-call-poc-lan.ps1
-```
-
-当前脚本会：
-
-- 自动选择带默认网关、状态为 Up 的私网 IPv4，过滤 VMware/WSL 等无默认网关虚拟地址；也可通过 `-LanIP 192.168.x.x` 显式指定。
-- 同时保留 localhost 和 LAN 端口映射。
-- LiveKit 使用电脑 LAN IP 作为 `node-ip`，固定 RTC TCP `7881`、UDP `7882`，并启用内置 TURN/UDP `3478`。
-- TURN relay allocation 固定为 UDP `30000-30019`，避免只开放 3478 但实际 relay 端口无法进入容器。
-- LiveKit 1.12+ 默认限制 TURN 转发到私网 peer；LAN PoC 通过 `allow_restricted_peer_cidrs` 仅放行当前 SFU LAN IP `/32`，不开放整个局域网。
-- Windows 防火墙仅允许 `Private` Profile + `LocalSubnet` 访问 TCP `18473/7880/7881` 与 UDP `3478/7882/30000-30019`。
-- 首次创建/删除防火墙规则时会触发管理员 UAC；不会开放 Public Profile。
-- 将 LAN 地址写入 `.data/call-poc-lan.json`，便于停止时精确清理。
-
-本机当前验证地址为 `192.168.6.158`；实际使用时以脚本打印结果为准。Android 客户端“服务地址”填写：
+当前持久状态：
 
 ```text
-http://<电脑LAN-IP>:18473
+ringing
+accepted
+rejected
+ended
 ```
 
-停止 LAN 模式并删除防火墙规则：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-call-poc-lan.ps1
-```
-
-### 主开发环境已接入 LiveKit（2026-08-08）
-
-独立 `run-call-poc-lan.ps1` 仍保留给 P0 媒体专项诊断，但**日常聊天内通话不再要求另外启动 PoC 环境**。主开发入口：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
-```
-
-现在会与 PostgreSQL / Redis / Mailpit 一起启动 LiveKit，并按检测到的 LAN IP 提供：
+终止原因用于区分：
 
 ```text
-Signal      ws://<LAN-IP>:17880
-RTC/TCP     <LAN-IP>:17881
-RTC/UDP     <LAN-IP>:17882/udp
-TURN/UDP    <LAN-IP>:13478/udp
-API         http://<LAN-IP>:18473
+cancelled
+ended
+rejected
+timeout
+其它受控 reason
 ```
 
-防火墙只开放 Private Profile + LocalSubnet。聊天页的语音/视频按钮继续复用 P0 Call API 和 LiveKit Token 链，但媒体服务已经并入主开发环境，不再出现“UI 有通话入口、实际环境却把 LIVEKIT_URL/API_KEY/SECRET 清空”的断链。
+数据库约束保证：
 
-旧版本 `run-auth-dev.ps1` 启动出来的环境不会热更新容器配置。**截至 2026-08-08 12:14，当前机器仍是 10:23 启动的旧 auth-dev，LiveKit service 未运行；测试聊天内通话前必须先执行 `stop-auth-dev.ps1` 再重新 `run-auth-dev.ps1`。**
+- ringing 不能已经有 accepted/ended 信息；
+- accepted 必须有 `accepted_at + answered_device_id`；
+- rejected/ended 必须有终态时间；
+- `version` 非负，用于状态竞争控制；
+- ring expiry 晚于创建时间。
 
-另外 Call PoC 的 accept/reject/hangup 对重复的同状态操作现按幂等处理；客户端遇到 `INVALID_CALL_STATE` 会重新获取/清理最新状态，避免一端已经结束后另一端“挂不断”。这些仍属于 PoC 状态机加固，不等于 P7 数据库持久化通话已完成。
+---
 
-Android Debug APK 一键安装：
+# 6. 多设备模型
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-android-debug.ps1 -SkipBuild -Launch
+## caller
+
+Call 绑定 `caller_device_id`。
+
+同一 caller 的其它设备：
+
+- 不应冒充发起设备控制 Call；
+- 不能获取该 Call 的媒体 token。
+
+## callee
+
+ringing 时 callee 多台设备可以同时看到来电。
+
+第一台成功 accept 后：
+
+```text
+answered_device_id = winner device
 ```
 
-安装脚本会拒绝无授权设备和多设备场景，避免 APK 安装到错误目标。
+其它 callee 设备立即失去后续媒体控制权：
 
-### Windows / Web / Android 三端联合验收
+- 不能取 LiveKit token；
+- 不能挂断；
+- 不应继续显示自己是当前通话控制端。
 
-一条命令同时准备 LAN 通话服务与 Web Release：
+真实 PostgreSQL integration 已覆盖这条边界。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-call-poc-crossplatform.ps1 -SkipWebBuild
+---
+
+# 7. LiveKit Token 安全
+
+客户端不持有：
+
+```text
+LIVEKIT_API_SECRET
 ```
 
-脚本会复用启动前已经存在的 Web/LAN 服务，只启动缺失组件；对应停止脚本只清理它自己启动的资源：
+Token 由 DD API 在确认 caller/callee 与设备有权控制当前 accepted Call 后签发。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-call-poc-crossplatform.ps1
+原则：
+
+- room name 服务端决定；
+- participant identity/name 服务端决定；
+- token 短 TTL；
+- 非 Call 参与者不能构造 room 任意加入；
+- losing callee device 不能取 token。
+
+---
+
+# 8. 通话恢复
+
+客户端正式 Realtime 使用：
+
+```text
+/api/v1/realtime
 ```
 
-推荐身份：Windows=`alice`、Web=`bob`、Android=`charlie`。2026-08-08 本轮 Windows / Web / Android 联合人工验收已全部通过。
+重连/启动时：
 
-### WebRTC / TURN relay-only 诊断
-
-“音视频通话 PoC”页面新增 `检查 WebRTC / TURN` 按钮。它会申请短期 LiveKit Token，并依次执行 WebSocket、WebRTC、TURN 三项诊断。当前 `livekit_client 2.10.0` 的 TURN 检查会把 ICE transport policy 强制设为 `relay`，因此只有真正建立 TURN relay 才会显示成功；普通 host/srflx 直连成功不能冒充 TURN 成功。
-
-本地 PoC 已启用 LiveKit 内置 TURN/UDP `3478`；生产 TURN/TLS 仍是独立验收项，不能用本地 TURN/UDP 结果代替。
-
-自动媒体测试：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-call-poc.ps1
+```text
+GET /api/v1/calls/active
 ```
 
-该测试会：
+服务端根据 authenticated user/device 返回有权恢复的 active Call。
 
-1. 临时停止旧实时 PoC。
-2. 启动 Go Token API 和 LiveKit。
-3. 验证健康接口和 JWT 签发。
-4. 使用官方 `lk` CLI 加入房间并发布内置演示视频。
-5. 等待房间统计达到 `participants >= 1`、`publishers >= 1`。
-6. 检查 LiveKit 日志中实际出现 `udp relay` TURN candidate。
-7. 终止 CLI、关闭通话容器并恢复旧实时 PoC。
+与旧内存 CallStore 不同，API 进程重启不会单纯因为内存清空就丢失数据库中的 Call 状态。
 
-## 已通过验证
+仍需生产验证：
 
-- Go Token、输入校验、JWT 权限和 CORS 单元测试：通过。
-- Go 全量测试：通过。
-- Flutter/Dart 静态分析：通过。
-- Flutter 单元和 Widget Tests：20 项通过。
-- LiveKit 根探针：通过。
-- Token API 实际签发：通过。
-- 官方 LiveKit CLI 实际加入房间：通过。
-- 官方 LiveKit CLI 发布演示视频：通过。
-- 房间统计：`participants=1`、`publishers=1`。
-- Web Release：构建通过。
-- Android Debug APK：构建通过。
-- 双端信令集成测试：来电、接听、双方同步、忙线、越权和受限 Token 通过。
-- 浏览器式跨域信令测试：带真实 `Origin` 的 WebSocket 握手、CORS 接听请求和双方状态同步通过。
-- 不可信 HTTP Origin 在进入业务 Handler 前直接拒绝，避免跨站请求产生呼叫副作用。
-- 信令重连后活动通话恢复测试：通过。
-- LiveKit 内置 TURN/UDP `3478`：已启用；自动媒体测试观察到 `udp relay` candidate。
-- 客户端 WebSocket/WebRTC/TURN relay-only 诊断：Windows / Web / Android 三端人工执行均通过。
+- API 多实例；
+- LiveKit 服务重启；
+- Redis/realtime hint 丢失；
+- 客户端完全离线后靠 Sync/active recovery 补齐。
 
-## 人工验收记录
+---
 
-- 2026-08-07：Windows Release 构建通过。
-- 2026-08-07：Windows 本机双客户端进入同一房间通过。
-- 2026-08-07：远端人数更新、麦克风开关、摄像头开关和挂断通过。
-- 2026-08-07：新版双端流程人工验收通过：身份校验、呼叫、来电、接听、拒绝、取消、挂断、45 秒超时和超时后再次呼叫均正常。
-- 2026-08-07：Windows ↔ Web 真实浏览器媒体互通通过；修复 LiveKit 误公布 Docker `172.18.x.x` ICE 地址后，浏览器 PeerConnection 正常建立。
-- 2026-08-07：Android LAN Docker 路径预验证通过：`192.168.6.158:18473` 与 `:7880` HTTP 探针均为 200，LiveKit 启动日志确认 `nodeIP=192.168.6.158`。
-- 2026-08-07：Windows ↔ Android 真机媒体互通通过；呼叫/接听、音频、视频、静音、摄像头开关与挂断同步正常。
-- 2026-08-08：用户确认 `人工测试清单.md` P0 批次全部通过，包括 Web ↔ Android、Windows/Web/Android 三端 relay-only TURN、Android 后台/锁屏/短时断网恢复、蓝牙音频路由和窄屏布局。
-- 2026-08-08：聊天主壳接入语音/视频后发现主 `run-auth-dev.ps1` 仍清空 LiveKit 配置且未启动 LiveKit，导致 Android ↔ Windows 无法进入媒体房间；现已将 LAN LiveKit/RTC/TURN 合并进主开发环境，并补通话重复状态动作幂等。新的聊天内通话真人回归仍待重启旧 auth-dev 后执行。
+# 9. 通话结果消息
 
-## 尚未完成
+P7 已把“结束后客户端自己补一条聊天文本”的双写真相向服务端收口。
 
-- 公网 / CGNAT / 多运营商网络矩阵和生产 TURN/TLS 回退测试。
-- 更激进的弱网、长时断网和服务端重启后的媒体恢复专项。
-- iOS、macOS 和 Linux 构建与真机/真系统验收。
-- 正式 Auth 会话与通话身份绑定、数据库持久化、离线推送和多设备来电仲裁。
+目标/当前主体：
 
-开启 Windows 开发者模式：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\enable-windows-developer-mode.ps1
+```text
+Call 进入终态
+→ 同一服务端事务
+→ DIRECT conversation 分配 sequence
+→ SYSTEM call result message
+→ Message Outbox
+→ 多设备 Sync
 ```
 
-完成管理员确认后，关闭并重新打开 PowerShell、VS Code 和 Android Studio，再执行：
+这样可以避免：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target windows
+- 客户端崩溃导致没有通话记录；
+- 双端同时写出两条重复记录；
+- Call 状态已结束但聊天记录仍显示另一套事实。
+
+真人需要确认最终显示文案、语音/视频图标与时长格式。
+
+---
+
+# 10. Flutter 当前通话链
+
+主要目录：
+
+```text
+features/calls/
+  data/
+    call_session_api.dart
+    http_call_session_api.dart
+    call_signaling_client.dart
+  domain/
+    call_session.dart
+  presentation/
+    two_party_call_controller.dart
+    chat_call_page.dart
+    call_video_stage.dart
 ```
 
-## 已知边界
+正式客户端已经切到：
 
-1. P2 正式注册/登录/Access/Refresh Token 已开始落地，但当前 P0 呼叫接口还没有接入正式 Auth 会话，客户端仍可自行填写呼叫身份；最终 P7 通话必须改为从已认证 user/device 会话派生身份和权限。
-2. 通话状态目前保存在 Go 进程内存中，服务重启会丢失；已有 45 秒 PoC 级自动超时，但没有数据库持久化、离线推送和未接来电历史。
-3. 当前“响铃”主要仍是客户端进程存活时的前台/实时连接状态；普通消息已接本地系统通知基线，但通话还没有完整的系统级来电通知、杀进程唤醒、锁屏接听和多设备仲裁。
-4. `LIVEKIT_URL=auto` 会根据请求 Host 推导本地 LiveKit 地址，只用于开发环境；生产必须配置固定的可信 `wss://` 地址。
-5. 当前 Compose 已有开发级 TURN/UDP `3478` + relay `30000-30019/udp`，但没有生产级 TLS、TURN/TLS、高可用和公网 NAT 配置；LAN relay-only 验证不能替代公网 TURN/TLS 验收。
-6. Android Debug 允许明文 HTTP；Release 默认禁止明文通信。
-7. Windows 开发者模式属于 Flutter 原生插件构建前置条件，不是应用运行权限。
+- Bearer `/api/v1/calls`；
+- authenticated `/api/v1/realtime`；
+- Access Token refresh 后更新后续 realtime reconnect credential。
 
-## 官方依据
+旧测试/factory 可以保留兼容路径，但产品代码不能退回客户端自报身份。
 
-- Flutter SDK：`https://github.com/livekit/client-sdk-flutter`
-- Flutter 连接和媒体发布：`https://docs.livekit.io/home/client/connect/`
-- LiveKit 本地运行：`https://docs.livekit.io/transport/self-hosting/local/`
-- LiveKit CLI：`https://github.com/livekit/livekit-cli`
-- 自托管端口：`https://docs.livekit.io/transport/self-hosting/ports-firewall/`
-- 生产部署：`https://docs.livekit.io/transport/self-hosting/deployment/`
+---
+
+# 11. 当前自动证据
+
+已存在/跑过：
+
+- `server/internal/calls/service_integration_test.go`；
+- 正式 Call HTTP tests；
+- `http_call_session_api_formal_test.dart`；
+- `two_party_call_controller_test.dart`；
+- call video stage / debug controller 回归。
+
+真实 PostgreSQL 已覆盖：
+
+- caller 多设备；
+- callee 多设备同时 ringing；
+- 首台 accept 获权；
+- losing device token/hangup 拒绝；
+- busy；
+- 非联系人；
+- Block；
+- reject；
+- timeout；
+- accepted 后结束与时长记录。
+
+当前阶段状态：
+
+```text
+IMPLEMENTED + AUTO-VERIFIED
+HUMAN-PENDING
+```
+
+---
+
+# 12. TURN / 公网部署仍是生产阻断项
+
+开发环境能进入 LiveKit 房间不等于生产 RTC 完成。
+
+正式上线至少验证：
+
+- WSS；
+- STUN；
+- UDP candidate；
+- TURN/UDP；
+- ICE/TCP fallback；
+- 目标网络需要时 TURN/TLS 443；
+- Windows 与 Android 不同 ISP/不同 NAT；
+- VPN/移动数据/Wi-Fi 切换；
+- 代理/企业网限制。
+
+旧诊断曾出现：
+
+```text
+No public IPv4 UDP
+Server is not configured for ICE/TCP
+TURN/TLS unavailable
+```
+
+所以不能拿 localhost/LAN 通过替代公网验收。
+
+---
+
+# 13. 产品体验基线
+
+### 音频
+
+- 来电/去电状态清晰；
+- 系统/自有提示音自然；
+- 接通后计时；
+- 挂断后约 1 秒自动退出；
+- 聊天里出现结构化结果与时长。
+
+### 视频
+
+- 对方视频作为主画面；
+- 本地画面右下小窗；
+- Android 产品页面不因视频内容横向而自动旋转整套 UI；
+- 摄像头关闭有明确占位；
+- 切换摄像头、静音、扬声器按钮状态同步。
+
+---
+
+# 14. 仍需真人/生产验收
+
+以下尚不能被自动测试替代：
+
+1. Windows ↔ Android 真机互打。
+2. Android ↔ Android 不同网络。
+3. Windows ↔ Web。
+4. 30 分钟音频。
+5. 30 分钟视频。
+6. Wi-Fi ↔ 移动网络切换。
+7. 强制 TURN relay。
+8. 后台/锁屏来电与 P10 Push 联动。
+9. 蓝牙耳机/扬声器/听筒路由。
+10. 长时间 CPU/GPU/内存/电量。
+
+---
+
+# 15. 与 P10 Push 的关系
+
+当前 realtime 只能在进程活跃/系统允许时可靠收到来电提示。
+
+P10 完成后，离线/后台 Call invite 应通过最小 Push hint 唤醒客户端，再通过正式 Call API 获取真实状态；Push payload 不能成为 Call 状态机本身。
+
+---
+
+# 16. 与 P11 E2EE 的关系
+
+音视频媒体端到端加密与消息 E2EE 是不同问题。
+
+P11 不能因为文字消息加密就宣称 LiveKit 通话已经 E2EE；如果产品以后承诺 RTC E2EE，需要单独选型、密钥交换、设备验证和跨端测试。
+
+---
+
+# 17. 当前结论
+
+```text
+LiveKit/TURN route: ACCEPTED
+P7 server call state: FORMAL / PERSISTED
+Formal Call API: IMPLEMENTED
+Multi-device arbitration: AUTO-VERIFIED
+Call result server transaction: IMPLEMENTED 主体
+Public TURN/TLS: HUMAN/PRODUCTION PENDING
+30-minute / weak-network: HUMAN PENDING
+```
+
+后续开发不能再把 P7 写成“需要从内存 CallStore 迁移”的待办；真正剩余的是 **公网 RTC、长时稳定、弱网、多节点和真人体验验收**。

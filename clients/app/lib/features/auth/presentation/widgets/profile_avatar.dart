@@ -31,6 +31,32 @@ class ProfileAvatar extends StatefulWidget {
     _cache.removeWhere((key, _) => key.startsWith(prefix));
   }
 
+  static Future<Uint8List?> _resolveBytes({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required int revision,
+  }) {
+    final cacheKey = '${origin.origin}|$userId|$revision';
+    return _cache.putIfAbsent(cacheKey, () async {
+      try {
+        final response = await _httpClient.get(
+          origin.resolve('/api/v1/avatars/$userId'),
+          headers: {
+            'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
+            'Authorization': 'Bearer $accessToken',
+          },
+        );
+        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+          return null;
+        }
+        return response.bodyBytes;
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+
   @override
   State<ProfileAvatar> createState() => _ProfileAvatarState();
 }
@@ -43,9 +69,6 @@ class _ProfileAvatarState extends State<ProfileAvatar> {
       ? widget.revision
       : DateTime.now().millisecondsSinceEpoch ~/
             const Duration(minutes: 1).inMilliseconds;
-
-  String get _cacheKey =>
-      '${widget.origin.origin}|${widget.userId}|$_resolvedRevision';
 
   @override
   void initState() {
@@ -68,30 +91,17 @@ class _ProfileAvatarState extends State<ProfileAvatar> {
 
   void _resolveImage() {
     _resolvedRevision = _effectiveRevision;
-    _imageFuture = ProfileAvatar._cache.putIfAbsent(_cacheKey, _loadAvatar);
-  }
-
-  Future<Uint8List?> _loadAvatar() async {
-    try {
-      final response = await ProfileAvatar._httpClient.get(
-        widget.origin.resolve('/api/v1/avatars/${widget.userId}'),
-        headers: {
-          'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
-          'Authorization': 'Bearer ${widget.accessToken}',
-        },
-      );
-      if (response.statusCode != 200 || response.bodyBytes.isEmpty) return null;
-      return response.bodyBytes;
-    } catch (_) {
-      return null;
-    }
+    _imageFuture = ProfileAvatar._resolveBytes(
+      origin: widget.origin,
+      accessToken: widget.accessToken,
+      userId: widget.userId,
+      revision: _resolvedRevision,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final radius = widget.size <= 42 ? 5.0 : 7.0;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
+    return ClipOval(
       child: SizedBox(
         width: widget.size,
         height: widget.size,
@@ -138,6 +148,85 @@ class _ProfileAvatarState extends State<ProfileAvatar> {
             fontWeight: FontWeight.w600,
           ),
         ),
+      ),
+    );
+  }
+}
+
+class ProfileAvatarViewerPage extends StatelessWidget {
+  const ProfileAvatarViewerPage({
+    super.key,
+    required this.origin,
+    required this.accessToken,
+    required this.userId,
+    required this.displayName,
+    this.revision = 0,
+  });
+
+  final Uri origin;
+  final String accessToken;
+  final String userId;
+  final String displayName;
+  final int revision;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: const Key('profile-avatar-viewer'),
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(displayName),
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final side = constraints.maxWidth.clamp(240.0, 720.0);
+          final resolvedRevision = revision != 0
+              ? revision
+              : DateTime.now().millisecondsSinceEpoch ~/
+                    const Duration(minutes: 1).inMilliseconds;
+          return FutureBuilder<Uint8List?>(
+            future: ProfileAvatar._resolveBytes(
+              origin: origin,
+              accessToken: accessToken,
+              userId: userId,
+              revision: resolvedRevision,
+            ),
+            builder: (context, snapshot) {
+              final bytes = snapshot.data;
+              if (bytes == null || bytes.isEmpty) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.white70),
+                  );
+                }
+                return Center(
+                  child: Text(
+                    '暂无头像',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: Colors.white60),
+                  ),
+                );
+              }
+              return Center(
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 5,
+                  child: SizedBox.square(
+                    dimension: side,
+                    child: Image.memory(
+                      bytes,
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.high,
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }

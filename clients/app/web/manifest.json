@@ -1,12 +1,23 @@
 {
-  "name": "OpenIMX Realtime Console",
-  "short_name": "OpenIMX",
+  "name": "DD",
+  "short_name": "DD",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#f7faf8",
-  "theme_color": "#16835f",
-  "description": "Realtime transport verification console for OpenIMX.",
+  "background_color": "#ffffff",
+  "theme_color": "#07C160",
+  "description": "DD 即时通讯",
   "orientation": "any",
   "prefer_related_applications": false,
-  "icons": []
+  "icons": [
+    {
+      "src": "icons/Icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
 }

@@ -6,13 +6,13 @@ import (
 )
 
 var (
-	ErrUnavailable   = errors.New("media service unavailable")
-	ErrInvalidInput  = errors.New("invalid media input")
-	ErrNotFound      = errors.New("media not found")
-	ErrForbidden     = errors.New("media forbidden")
-	ErrConflict      = errors.New("media conflict")
-	ErrQuotaExceeded = errors.New("media quota exceeded")
-	ErrUploadExpired = errors.New("media upload expired")
+	ErrUnavailable    = errors.New("media service unavailable")
+	ErrInvalidInput   = errors.New("invalid media input")
+	ErrNotFound       = errors.New("media not found")
+	ErrForbidden      = errors.New("media forbidden")
+	ErrConflict       = errors.New("media conflict")
+	ErrQuotaExceeded  = errors.New("media quota exceeded")
+	ErrUploadExpired  = errors.New("media upload expired")
 	ErrObjectMismatch = errors.New("uploaded object does not match reservation")
 )
 
@@ -22,8 +22,11 @@ const (
 	PurposeChatImage Purpose = "CHAT_IMAGE"
 	PurposeChatFile  Purpose = "CHAT_FILE"
 	PurposeChatVoice Purpose = "CHAT_VOICE"
-	PurposeSticker   Purpose = "STICKER"
-	PurposeGIF       Purpose = "GIF"
+	PurposeChatVideo   Purpose = "CHAT_VIDEO"
+	PurposeSticker     Purpose = "STICKER"
+	PurposeGIF         Purpose = "GIF"
+	PurposeMomentImage Purpose = "MOMENT_IMAGE"
+	PurposeMomentVideo Purpose = "MOMENT_VIDEO"
 )
 
 type Status string
@@ -45,10 +48,10 @@ type CreateUploadInput struct {
 }
 
 type UploadGrant struct {
-	UploadID       string            `json:"uploadId"`
-	MediaID        string            `json:"mediaId"`
-	UploadURL      string            `json:"uploadUrl"`
-	ExpiresAt      time.Time         `json:"expiresAt"`
+	UploadID        string            `json:"uploadId"`
+	MediaID         string            `json:"mediaId"`
+	UploadURL       string            `json:"uploadUrl"`
+	ExpiresAt       time.Time         `json:"expiresAt"`
 	RequiredHeaders map[string]string `json:"requiredHeaders"`
 }
 
@@ -68,6 +71,12 @@ type MediaObject struct {
 
 type CompleteUploadResult struct {
 	Media MediaObject `json:"media"`
+}
+
+type ManagedStickerInput struct {
+	FileName string
+	MIMEType string
+	Bytes    []byte
 }
 
 type ObjectInfo struct {

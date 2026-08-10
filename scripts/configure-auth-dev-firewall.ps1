@@ -25,6 +25,41 @@ function Invoke-ElevatedSelf {
     }
 }
 
+function Test-FirewallRuleReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $true)][string]$Protocol,
+        [Parameter(Mandatory = $true)][string[]]$LocalPorts
+    )
+
+    $rule = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $rule) { return $false }
+    if ($rule.Enabled -ne 'True' -or $rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow' -or $rule.Profile -ne 'Private') {
+        return $false
+    }
+
+    $portFilter = $rule | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
+    $addressFilter = $rule | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue
+    if ($null -eq $portFilter -or $null -eq $addressFilter) { return $false }
+    if ([string]$portFilter.Protocol -ne $Protocol) { return $false }
+
+    $actualPorts = @($portFilter.LocalPort | ForEach-Object { [string]$_ } | Sort-Object)
+    $expectedPorts = @($LocalPorts | ForEach-Object { [string]$_ } | Sort-Object)
+    if (($actualPorts -join ',') -ne ($expectedPorts -join ',')) { return $false }
+    if ((@($addressFilter.LocalAddress) -join ',') -ne $LanIP) { return $false }
+    if ((@($addressFilter.RemoteAddress) -join ',') -ne 'LocalSubnet') { return $false }
+    return $true
+}
+
+if (-not $Remove) {
+    $tcpReady = Test-FirewallRuleReady -DisplayName $RuleName -Protocol 'TCP' -LocalPorts @('18473', '17880', '17881', '19000')
+    $udpReady = Test-FirewallRuleReady -DisplayName $UdpRuleName -Protocol 'UDP' -LocalPorts @('17882', '13478')
+    if ($tcpReady -and $udpReady) {
+        Write-Host "DD Auth Dev firewall already ready for $LanIP; elevation skipped."
+        exit 0
+    }
+}
+
 if (-not (Test-IsAdministrator)) {
     Invoke-ElevatedSelf
     exit 0

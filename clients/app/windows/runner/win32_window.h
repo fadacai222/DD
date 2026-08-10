@@ -43,8 +43,12 @@ class Win32Window {
 
   static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wparam,
                                   LPARAM lparam) noexcept;
+  static LRESULT CALLBACK ChildContentSubclassProc(
+      HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+      UINT_PTR subclass_id, DWORD_PTR reference_data) noexcept;
   static Win32Window* GetThisFromHandle(HWND window) noexcept;
   static void UpdateTheme(HWND window);
+  LRESULT HitTestResizeBorder(HWND window, LPARAM lparam) const noexcept;
 
   bool quit_on_close_ = false;
   HWND window_handle_ = nullptr;

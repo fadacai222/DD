@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../theme/app_theme.dart';
 import '../../domain/debug_log_entry.dart';
 
 class EventLogPanel extends StatelessWidget {
@@ -157,7 +158,7 @@ class _LogEntryTile extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(DdRadii.surface),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),

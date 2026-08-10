@@ -16,14 +16,19 @@ import (
 	"example.com/selfhosted-im/server/internal/auth/emailcode"
 	"example.com/selfhosted-im/server/internal/auth/password"
 	"example.com/selfhosted-im/server/internal/auth/session"
+	"example.com/selfhosted-im/server/internal/calls"
 	"example.com/selfhosted-im/server/internal/contacts"
+	"example.com/selfhosted-im/server/internal/groups"
 	"example.com/selfhosted-im/server/internal/httpapi"
 	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
+	"example.com/selfhosted-im/server/internal/moments"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
 	"example.com/selfhosted-im/server/internal/platform/maildelivery"
+	"example.com/selfhosted-im/server/internal/qrcode"
 	"example.com/selfhosted-im/server/internal/realtimebus"
+	"example.com/selfhosted-im/server/internal/stickers"
 )
 
 var version = "dev"
@@ -42,8 +47,13 @@ func main() {
 	readinessChecks := make(map[string]httpapi.ReadinessCheck)
 	var authService httpapi.AuthService
 	var contactsService httpapi.ContactsService
+	var groupsService httpapi.GroupsService
+	var callsService httpapi.CallsService
 	var messagingService httpapi.MessagingService
 	var mediaService httpapi.MediaService
+	var stickersService httpapi.StickersService
+	var momentsService httpapi.MomentsService
+	var qrService httpapi.QRService
 	var realtimeEventBus httpapi.RealtimeEventBus
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -81,11 +91,12 @@ func main() {
 				os.Exit(2)
 			}
 		}
-		authService, err = account.NewService(account.Config{
+		accountService, accountErr := account.NewService(account.Config{
 			Pool: pool, Codec: codeCodec, Hasher: hasher, Sessions: sessionManager,
 			Mailer: mailer, RegistrationMode: string(config.RegistrationMode),
 		})
-		if err != nil {
+		if accountErr != nil {
+			err = accountErr
 			logger.Error("authentication service initialization failed", "error", err)
 			os.Exit(2)
 		}
@@ -94,11 +105,25 @@ func main() {
 			logger.Error("contacts service initialization failed", "error", err)
 			os.Exit(2)
 		}
+		authService = accountService
+		groupService, groupErr := groups.NewService(groups.Config{Pool: pool})
+		if groupErr != nil {
+			err = groupErr
+			logger.Error("groups service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		groupsService = groupService
+		callsService, err = calls.NewService(calls.Config{Pool: pool})
+		if err != nil {
+			logger.Error("calls service initialization failed", "error", err)
+			os.Exit(2)
+		}
 		messagingService, err = messaging.NewService(messaging.Config{Pool: pool})
 		if err != nil {
 			logger.Error("messaging service initialization failed", "error", err)
 			os.Exit(2)
 		}
+		var managedMedia *media.Service
 		if config.MediaS3Endpoint != "" {
 			mediaStore, storeErr := media.NewS3Store(media.S3Config{
 				Endpoint:  config.MediaS3Endpoint,
@@ -111,11 +136,41 @@ func main() {
 				logger.Error("media object storage initialization failed", "error", storeErr)
 				os.Exit(2)
 			}
-			mediaService, err = media.NewService(media.Config{Pool: pool, Store: mediaStore})
+			managedMedia, err = media.NewService(media.Config{Pool: pool, Store: mediaStore})
 			if err != nil {
 				logger.Error("media service initialization failed", "error", err)
 				os.Exit(2)
 			}
+			mediaService = managedMedia
+		}
+		var telegramProvider stickers.TelegramProvider
+		if config.TelegramBotToken != "" {
+			telegramProvider, err = stickers.NewTelegramBotProvider(stickers.TelegramBotProviderConfig{Token: config.TelegramBotToken})
+			if err != nil {
+				logger.Error("telegram sticker relay initialization failed", "error", err)
+				os.Exit(2)
+			}
+		}
+		stickersService, err = stickers.NewService(stickers.Config{Pool: pool, Provider: telegramProvider, Media: managedMedia})
+		if err != nil {
+			logger.Error("sticker service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		momentsService, err = moments.NewService(moments.Config{Pool: pool})
+		if err != nil {
+			logger.Error("moments service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		qrOrigin := config.PublicBaseURL
+		if qrOrigin == "" {
+			qrOrigin = fmt.Sprintf("http://127.0.0.1:%d", config.Port)
+		}
+		qrService, err = qrcode.NewService(qrcode.Config{
+			Pool: pool, PublicBaseURL: qrOrigin, Auth: accountService, Groups: groupService,
+		})
+		if err != nil {
+			logger.Error("qr service initialization failed", "error", err)
+			os.Exit(2)
 		}
 	}
 
@@ -153,8 +208,13 @@ func main() {
 			ReadinessChecks:    readinessChecks,
 			AuthService:        authService,
 			ContactsService:    contactsService,
+			GroupsService:      groupsService,
+			CallsService:       callsService,
 			MessagingService:   messagingService,
 			MediaService:       mediaService,
+			StickersService:    stickersService,
+			MomentsService:     momentsService,
+			QRService:          qrService,
 			RealtimeEventBus:   realtimeEventBus,
 			Logger:             logger,
 		}),

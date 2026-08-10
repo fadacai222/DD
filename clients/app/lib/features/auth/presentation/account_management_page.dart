@@ -1,6 +1,14 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../../core/logging/client_log.dart';
+import '../../../core/notifications/app_notification_service.dart';
+import '../../../core/theme/app_theme_mode_store.dart';
 import '../../../theme/app_theme.dart';
+import '../../messaging/data/chat_appearance_store.dart';
+import '../../messaging/presentation/chat_background_settings_page.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
@@ -22,8 +30,6 @@ class AccountManagementPage extends StatefulWidget {
 }
 
 class _AccountManagementPageState extends State<AccountManagementPage> {
-  late final TextEditingController _displayName;
-  late final TextEditingController _bio;
   AccountMe? _me;
   List<AccountDevice> _devices = const [];
   bool _busy = true;
@@ -33,6 +39,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   bool _readReceipts = true;
   bool _notificationPreview = true;
   String? _message;
+  Timer? _autoSaveTimer;
   int _section = 0;
 
   String get _accessToken => widget.session.tokens.accessToken;
@@ -40,15 +47,12 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   @override
   void initState() {
     super.initState();
-    _displayName = TextEditingController();
-    _bio = TextEditingController();
     _load();
   }
 
   @override
   void dispose() {
-    _displayName.dispose();
-    _bio.dispose();
+    _autoSaveTimer?.cancel();
     super.dispose();
   }
 
@@ -148,10 +152,12 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
       children: [
         if (_message != null) _messageBanner(),
-        _sectionTitle('账号'),
-        _profileEditor(),
+        _sectionTitle('通用'),
+        _themeModeRow(),
+        const Divider(height: 1),
+        _chatBackgroundRow(),
         const SizedBox(height: 18),
-        _sectionTitle('隐私与通用'),
+        _sectionTitle('隐私'),
         _privacySettings(),
         const SizedBox(height: 18),
         _sectionTitle('设备'),
@@ -179,27 +185,9 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   }
 
   Widget _accountAndStorage() {
-    final me = _me;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _sectionTitle('账号'),
-        if (me != null)
-          _SettingLine(
-            title: me.profile.displayName,
-            subtitle: '@${me.profile.handle} · ${me.profile.email}',
-            trailing: OutlinedButton(
-              onPressed: _busy ? null : _saveProfile,
-              child: const Text('保存资料'),
-            ),
-          ),
-        const Divider(height: 1),
-        const SizedBox(height: 10),
-        _profileEditor(),
-        const SizedBox(height: 24),
-        _sectionTitle('登录设备'),
-        _deviceSettings(),
-      ],
+      children: [_sectionTitle('登录设备'), _deviceSettings()],
     );
   }
 
@@ -208,16 +196,118 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _sectionTitle('通用'),
+        _themeModeRow(),
+        const Divider(height: 1),
+        _chatBackgroundRow(),
+        const Divider(height: 1),
         _privacySettings(),
-        const SizedBox(height: 16),
-        Align(
-          alignment: Alignment.centerRight,
-          child: FilledButton(
-            onPressed: _busy ? null : _saveProfile,
-            child: const Text('保存设置'),
-          ),
-        ),
       ],
+    );
+  }
+
+  Widget _themeModeRow() => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      key: const Key('settings-theme-mode'),
+      borderRadius: BorderRadius.circular(DdRadii.surface),
+      onTap: _chooseThemeMode,
+      child: _SettingLine(
+        title: '外观',
+        subtitle: AppThemeModeStore.shared.label,
+        leading: const Icon(
+          Icons.brightness_6_outlined,
+          size: 20,
+          color: DdColors.textSecondary,
+        ),
+        trailing: const Icon(
+          Icons.chevron_right_rounded,
+          size: 19,
+          color: DdColors.textTertiary,
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _chooseThemeMode() async {
+    final store = AppThemeModeStore.shared;
+    // Opening the appearance chooser must never wait on secure-storage I/O.
+    // The app shell loads this preference at startup; an isolated settings
+    // page can still show the safe system default immediately.
+    unawaited(store.load());
+    final selected = await showModalBottomSheet<ThemeMode>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '外观',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          for (final option in const <(ThemeMode, String, IconData)>[
+            (ThemeMode.system, '跟随系统', Icons.brightness_auto_outlined),
+            (ThemeMode.light, '浅色', Icons.light_mode_outlined),
+            (ThemeMode.dark, '深色', Icons.dark_mode_outlined),
+          ])
+            ListTile(
+              key: Key('theme-mode-${option.$1.name}'),
+              leading: Icon(option.$3),
+              title: Text(option.$2),
+              trailing: store.mode == option.$1
+                  ? const Icon(Icons.check_rounded, color: DdColors.green)
+                  : null,
+              onTap: () => Navigator.pop(sheetContext, option.$1),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+    if (selected == null || selected == store.mode) return;
+    try {
+      await store.setMode(selected);
+      if (mounted) setState(() => _message = null);
+    } catch (_) {
+      if (mounted) setState(() => _message = '外观设置保存失败，请重试。');
+    }
+  }
+
+  Widget _chatBackgroundRow() => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      key: const Key('settings-chat-background'),
+      borderRadius: BorderRadius.circular(DdRadii.surface),
+      onTap: _openChatBackground,
+      child: const _SettingLine(
+        title: '聊天背景',
+        subtitle: '设置所有聊天默认使用的背景',
+        leading: Icon(
+          Icons.wallpaper_rounded,
+          size: 20,
+          color: DdColors.textSecondary,
+        ),
+        trailing: Icon(
+          Icons.chevron_right_rounded,
+          size: 19,
+          color: DdColors.textTertiary,
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _openChatBackground() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatBackgroundSettingsPage(
+          store: ChatAppearanceStore.shared(widget.session.user.id),
+        ),
+      ),
     );
   }
 
@@ -242,32 +332,124 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   }
 
   Widget _notificationSettings() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = dark ? const Color(0xFF2A2A2A) : const Color(0xFFF6F6F6);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _DesktopSectionHeading('通知'),
-        _SwitchSettingLine(
-          title: '通知显示消息预览',
-          subtitle: '关闭后系统通知不展示正文',
-          value: _notificationPreview,
-          enabled: !_busy,
-          onChanged: (value) => setState(() => _notificationPreview = value),
+        const _DesktopSectionHeading('通知与声音'),
+        Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(DdRadii.surface),
+          ),
+          child: Column(
+            children: [
+              _SwitchSettingLine(
+                title: '消息预览',
+                subtitle: '在通知里显示发送者和消息正文',
+                value: _notificationPreview,
+                enabled: !_busy,
+                onChanged: (value) {
+                  setState(() => _notificationPreview = value);
+                  _scheduleAutoSave();
+                },
+              ),
+              const Divider(height: 1, indent: 56),
+              const _SettingLine(
+                title: '桌面弹窗',
+                subtitle: '使用 DD 自定义浮层，显示发送者头像和消息内容',
+                trailing: Text(
+                  'DD 样式',
+                  style: TextStyle(color: DdColors.greenPressed, fontSize: 12),
+                ),
+              ),
+              const Divider(height: 1, indent: 56),
+              const _SettingLine(
+                title: '系统通知回退',
+                subtitle: '仅当 DD 自定义弹窗不可用时回退 Windows 系统通知',
+                trailing: Text(
+                  '自动',
+                  style: TextStyle(color: DdColors.textSecondary, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
         ),
-        const Divider(height: 1),
-        const _SettingLine(
-          title: '会话免打扰',
-          subtitle: '可在会话列表右键单独设置 8 小时或 7 天免打扰',
+        const SizedBox(height: 22),
+        const _DesktopSectionHeading('会话通知'),
+        Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(DdRadii.surface),
+          ),
+          child: const Column(
+            children: [
+              _SettingLine(title: '会话免打扰', subtitle: '在会话列表右键可设置 8 小时或 7 天免打扰'),
+              Divider(height: 1, indent: 56),
+              _SettingLine(
+                title: '前台消息',
+                subtitle: '软件处于前台时使用顶部轻量通知，不弹 Windows 系统通知',
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 16),
-        Align(
-          alignment: Alignment.centerRight,
-          child: FilledButton(
-            onPressed: _busy ? null : _saveProfile,
-            child: const Text('保存通知设置'),
+        const SizedBox(height: 22),
+        const _DesktopSectionHeading('预览与诊断'),
+        Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(DdRadii.surface),
+          ),
+          child: Column(
+            children: [
+              _SettingLine(
+                title: '测试桌面通知',
+                subtitle: '立即发送一条带头像的 DD 通知，用于检查弹窗样式',
+                trailing: TextButton(
+                  onPressed: _sendNotificationPreview,
+                  child: const Text('测试'),
+                ),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingLine(
+                title: '本地错误日志',
+                subtitle: ClientLog.path ?? '当前平台不写本地文件日志',
+                trailing: ClientLog.path == null
+                    ? null
+                    : IconButton(
+                        tooltip: '复制日志路径',
+                        onPressed: _copyLogPath,
+                        icon: const Icon(Icons.copy_rounded, size: 17),
+                      ),
+              ),
+            ],
           ),
         ),
       ],
     );
+  }
+
+  Future<void> _sendNotificationPreview() async {
+    await AppNotificationService.shared.initialize(requestPermission: false);
+    await AppNotificationService.shared.showMessage(
+      senderName: 'DD 通知预览',
+      preview: _notificationPreview ? '这是一条桌面通知预览。' : '你收到了一条新消息',
+      conversationId: 'notification-preview',
+      origin: widget.origin,
+      accessToken: widget.session.tokens.accessToken,
+      senderUserId: widget.session.user.id,
+    );
+  }
+
+  Future<void> _copyLogPath() async {
+    final path = ClientLog.path;
+    if (path == null) return;
+    await Clipboard.setData(ClipboardData(text: path));
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('日志路径已复制')));
   }
 
   Widget _pluginSettings() {
@@ -312,28 +494,6 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     );
   }
 
-  Widget _profileEditor() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TextField(
-          controller: _displayName,
-          enabled: !_busy,
-          decoration: const InputDecoration(labelText: '昵称'),
-        ),
-        const SizedBox(height: 10),
-        TextField(
-          controller: _bio,
-          enabled: !_busy,
-          maxLength: 500,
-          minLines: 2,
-          maxLines: 4,
-          decoration: const InputDecoration(labelText: '个人简介'),
-        ),
-      ],
-    );
-  }
-
   Widget _privacySettings() {
     return Column(
       children: [
@@ -341,22 +501,20 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
           title: '允许通过邮箱搜索我',
           value: _allowEmailSearch,
           enabled: !_busy,
-          onChanged: (value) => setState(() => _allowEmailSearch = value),
-        ),
-        const Divider(height: 1),
-        _SwitchSettingLine(
-          title: '允许陌生人消息',
-          subtitle: '关闭后只有好友可以主动给你发送新消息',
-          value: _allowStrangerMessages,
-          enabled: !_busy,
-          onChanged: (value) => setState(() => _allowStrangerMessages = value),
+          onChanged: (value) {
+            setState(() => _allowEmailSearch = value);
+            _scheduleAutoSave();
+          },
         ),
         const Divider(height: 1),
         _SwitchSettingLine(
           title: '显示在线状态',
           value: _showOnlineStatus,
           enabled: !_busy,
-          onChanged: (value) => setState(() => _showOnlineStatus = value),
+          onChanged: (value) {
+            setState(() => _showOnlineStatus = value);
+            _scheduleAutoSave();
+          },
         ),
         const Divider(height: 1),
         _SwitchSettingLine(
@@ -364,14 +522,20 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
           subtitle: '关闭后不会向对方暴露精确已读位置',
           value: _readReceipts,
           enabled: !_busy,
-          onChanged: (value) => setState(() => _readReceipts = value),
+          onChanged: (value) {
+            setState(() => _readReceipts = value);
+            _scheduleAutoSave();
+          },
         ),
         const Divider(height: 1),
         _SwitchSettingLine(
           title: '通知显示消息预览',
           value: _notificationPreview,
           enabled: !_busy,
-          onChanged: (value) => setState(() => _notificationPreview = value),
+          onChanged: (value) {
+            setState(() => _notificationPreview = value);
+            _scheduleAutoSave();
+          },
         ),
       ],
     );
@@ -424,7 +588,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: const Color(0xFFEAF7F1),
-        borderRadius: BorderRadius.circular(5),
+        borderRadius: BorderRadius.circular(DdRadii.control),
       ),
       child: Text(
         _message!,
@@ -454,8 +618,6 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     setState(() {
       _me = me;
       _devices = devices;
-      _displayName.text = me.profile.displayName;
-      _bio.text = me.profile.bio;
       _allowEmailSearch = me.privacy.allowEmailSearch;
       _allowStrangerMessages = me.privacy.allowStrangerMessages;
       _showOnlineStatus = me.privacy.showOnlineStatus;
@@ -464,12 +626,27 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     });
   });
 
-  Future<void> _saveProfile() => _run(() async {
+  void _scheduleAutoSave() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(milliseconds: 550), () {
+      if (!mounted) return;
+      if (_busy) {
+        _scheduleAutoSave();
+        return;
+      }
+      unawaited(_saveSettings());
+    });
+  }
+
+  Future<void> _saveSettings() => _run(() async {
+    final current = _me;
+    if (current == null) return;
     final me = await widget.gateway.updateMe(
       origin: widget.origin,
       accessToken: _accessToken,
-      displayName: _displayName.text.trim(),
-      bio: _bio.text.trim(),
+      handle: current.profile.handle,
+      displayName: current.profile.displayName,
+      bio: current.profile.bio,
       privacy: AccountPrivacy(
         allowEmailSearch: _allowEmailSearch,
         allowStrangerMessages: _allowStrangerMessages,
@@ -481,7 +658,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     if (!mounted) return;
     setState(() {
       _me = me;
-      _message = '设置已保存。';
+      _message = '设置已保存';
     });
   });
 
@@ -693,7 +870,7 @@ class _ShortcutKey extends StatelessWidget {
             ? const Color(0xFF303030)
             : const Color(0xFFF1F1F1),
         border: Border.all(color: DdColors.divider),
-        borderRadius: BorderRadius.circular(5),
+        borderRadius: BorderRadius.circular(DdRadii.pill),
       ),
       child: Text(label, style: const TextStyle(fontSize: 11)),
     );

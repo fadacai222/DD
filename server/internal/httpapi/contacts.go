@@ -15,12 +15,15 @@ import (
 
 type ContactsService interface {
 	SearchByHandle(ctx context.Context, principal account.Principal, handle string) (contacts.SearchResult, error)
+	GetUserByID(ctx context.Context, principal account.Principal, userID uuid.UUID) (contacts.SearchResult, error)
+	SuggestMentions(ctx context.Context, principal account.Principal, query string, conversationID *uuid.UUID, limit int) ([]contacts.MentionSuggestion, error)
 	SendRequest(ctx context.Context, principal account.Principal, input contacts.SendRequestInput) (contacts.ContactRequest, error)
 	AcceptRequest(ctx context.Context, principal account.Principal, requestID uuid.UUID) (contacts.ContactRequest, error)
 	RejectRequest(ctx context.Context, principal account.Principal, requestID uuid.UUID) (contacts.ContactRequest, error)
 	CancelRequest(ctx context.Context, principal account.Principal, requestID uuid.UUID) (contacts.ContactRequest, error)
 	ListRequests(ctx context.Context, principal account.Principal, direction string, page, pageSize int) (contacts.Page[contacts.ContactRequest], error)
 	ListContacts(ctx context.Context, principal account.Principal, page, pageSize int) (contacts.Page[contacts.Contact], error)
+	AddContact(ctx context.Context, principal account.Principal, contactUserID uuid.UUID) (contacts.Contact, error)
 	UpdateContact(ctx context.Context, principal account.Principal, contactUserID uuid.UUID, input contacts.UpdateContactInput) (contacts.Contact, error)
 	DeleteContact(ctx context.Context, principal account.Principal, contactUserID uuid.UUID) error
 	BlockUser(ctx context.Context, principal account.Principal, blockedUserID uuid.UUID) (contacts.BlockedUser, error)
@@ -48,6 +51,69 @@ func (s *server) handleUserByHandle(response http.ResponseWriter, request *http.
 		return
 	}
 	result, err := s.contacts.SearchByHandle(request.Context(), principal, handle)
+	if err != nil {
+		s.writeContactsError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, result)
+}
+
+func (s *server) handleMentionSuggestions(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+	principal, ok := s.requireContactsPrincipal(response, request)
+	if !ok {
+		return
+	}
+	query := strings.TrimSpace(request.URL.Query().Get("q"))
+	limit := 8
+	if rawLimit := strings.TrimSpace(request.URL.Query().Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_MENTION_QUERY", "A valid mention suggestion limit is required")
+			return
+		}
+		limit = parsed
+	}
+	var conversationID *uuid.UUID
+	if rawConversationID := strings.TrimSpace(request.URL.Query().Get("conversationId")); rawConversationID != "" {
+		parsed, err := uuid.Parse(rawConversationID)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_MENTION_QUERY", "A valid conversationId is required")
+			return
+		}
+		conversationID = &parsed
+	}
+	items, err := s.contacts.SuggestMentions(
+		request.Context(),
+		principal,
+		query,
+		conversationID,
+		limit,
+	)
+	if err != nil {
+		s.writeContactsError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) handleUserByID(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+	principal, ok := s.requireContactsPrincipal(response, request)
+	if !ok {
+		return
+	}
+	userID, ok := parseUUIDPathSuffix(response, request.URL.Path, "/api/v1/users/", "userId")
+	if !ok {
+		return
+	}
+	result, err := s.contacts.GetUserByID(request.Context(), principal, userID)
 	if err != nil {
 		s.writeContactsError(response, request, err)
 		return
@@ -177,6 +243,13 @@ func (s *server) handleContactByUserID(response http.ResponseWriter, request *ht
 		return
 	}
 	switch request.Method {
+	case http.MethodPut:
+		result, err := s.contacts.AddContact(request.Context(), principal, contactUserID)
+		if err != nil {
+			s.writeContactsError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, result)
 	case http.MethodPatch:
 		if !requireJSON(response, request) {
 			return
@@ -203,7 +276,7 @@ func (s *server) handleContactByUserID(response http.ResponseWriter, request *ht
 		}
 		writeSuccess(response, http.StatusOK, map[string]any{"deleted": true})
 	default:
-		methodNotAllowed(response, http.MethodPatch, http.MethodDelete)
+		methodNotAllowed(response, http.MethodPut, http.MethodPatch, http.MethodDelete)
 	}
 }
 
@@ -242,6 +315,13 @@ func (s *server) handleBlocks(response http.ResponseWriter, request *http.Reques
 		if err != nil {
 			s.writeContactsError(response, request, err)
 			return
+		}
+		if s.messaging != nil {
+			if _, dispatchErr := s.messaging.DispatchOutbox(request.Context(), 100); dispatchErr != nil {
+				s.logger.Warn("block outbox dispatch failed; worker will retry", "error", dispatchErr)
+			} else {
+				s.publishEventAvailable([]uuid.UUID{blockedUserID}, "relationship-blocked")
+			}
 		}
 		writeSuccess(response, http.StatusCreated, result)
 	default:
@@ -284,11 +364,13 @@ func (s *server) writeContactsError(response http.ResponseWriter, request *http.
 	case errors.Is(err, contacts.ErrForbidden):
 		writeAPIError(response, http.StatusForbidden, "FORBIDDEN", "Operation is not allowed")
 	case errors.Is(err, contacts.ErrBlocked):
-		writeAPIError(response, http.StatusConflict, "RELATIONSHIP_UNAVAILABLE", "Relationship action is unavailable")
+		writeAPIError(response, http.StatusForbidden, "BLOCKED", "Relationship is blocked")
 	case errors.Is(err, contacts.ErrAlreadyContact):
 		writeAPIError(response, http.StatusConflict, "ALREADY_CONTACT", "Users are already contacts")
 	case errors.Is(err, contacts.ErrRequestConflict), errors.Is(err, contacts.ErrInvalidState):
 		writeAPIError(response, http.StatusConflict, "RELATIONSHIP_STATE_CONFLICT", "Relationship state does not allow this action")
+	case errors.Is(err, contacts.ErrInvalidMentionQuery):
+		writeAPIError(response, http.StatusBadRequest, "INVALID_MENTION_QUERY", "Mention query must contain 2-32 valid handle characters and limit must not exceed 8")
 	case errors.Is(err, contacts.ErrRateLimited):
 		response.Header().Set("Retry-After", "60")
 		writeAPIError(response, http.StatusTooManyRequests, "CONTACTS_RATE_LIMITED", "Too many relationship requests; try again later")

@@ -51,6 +51,7 @@ type Config struct {
 	MediaS3Region      string
 	MediaS3AccessKey   string
 	MediaS3SecretKey   string
+	TelegramBotToken   string
 	AuthTokenSecret    string
 	RegistrationMode   RegistrationMode
 	EmailCodePepper    string
@@ -109,6 +110,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	mediaS3SecretKey, err := ReadSecret("MEDIA_S3_SECRET_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	telegramBotToken, err := ReadSecret("TELEGRAM_BOT_TOKEN")
 	if err != nil {
 		return Config{}, err
 	}
@@ -175,6 +180,7 @@ func Load() (Config, error) {
 		MediaS3Region:      strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
 		MediaS3AccessKey:   mediaS3AccessKey,
 		MediaS3SecretKey:   mediaS3SecretKey,
+		TelegramBotToken:   telegramBotToken,
 		AuthTokenSecret:    authTokenSecret,
 		RegistrationMode:   registrationMode,
 		EmailCodePepper:    emailCodePepper,

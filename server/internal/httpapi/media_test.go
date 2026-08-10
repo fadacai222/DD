@@ -30,10 +30,10 @@ func (fake *fakeMediaService) CreateUpload(_ context.Context, principal account.
 		return media.UploadGrant{}, fake.createErr
 	}
 	return media.UploadGrant{
-		UploadID: "00000000-0000-0000-0000-000000000111",
-		MediaID: "00000000-0000-0000-0000-000000000222",
-		UploadURL: "http://storage.example/upload",
-		ExpiresAt: time.Date(2026, 8, 8, 6, 10, 0, 0, time.UTC),
+		UploadID:        "00000000-0000-0000-0000-000000000111",
+		MediaID:         "00000000-0000-0000-0000-000000000222",
+		UploadURL:       "http://storage.example/upload",
+		ExpiresAt:       time.Date(2026, 8, 8, 6, 10, 0, 0, time.UTC),
 		RequiredHeaders: map[string]string{"Content-Type": "image/jpeg"},
 	}, nil
 }
@@ -59,7 +59,7 @@ func TestMediaUploadEndpointAuthenticatesAndForwardsReservation(t *testing.T) {
 	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	service := &fakeMediaService{}
 	handler := NewHandler(Config{
-		AuthService: &stablePrincipalAuthService{principal: principal},
+		AuthService:  &stablePrincipalAuthService{principal: principal},
 		MediaService: service,
 	})
 	body := `{"fileName":"photo.jpg","size":1234,"mimeType":"image/jpeg","sha256":"` + strings.Repeat("a", 64) + `","purpose":"CHAT_IMAGE"}`
@@ -88,7 +88,7 @@ func TestMediaCompleteMapsObjectMismatchToConflict(t *testing.T) {
 	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	service := &fakeMediaService{completeErr: media.ErrObjectMismatch}
 	handler := NewHandler(Config{
-		AuthService: &stablePrincipalAuthService{principal: principal},
+		AuthService:  &stablePrincipalAuthService{principal: principal},
 		MediaService: service,
 	})
 	uploadID := uuid.New()
@@ -110,7 +110,7 @@ func TestMediaDownloadURLRequiresAuthenticatedService(t *testing.T) {
 	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	service := &fakeMediaService{}
 	handler := NewHandler(Config{
-		AuthService: &stablePrincipalAuthService{principal: principal},
+		AuthService:  &stablePrincipalAuthService{principal: principal},
 		MediaService: service,
 	})
 	mediaID := uuid.New()

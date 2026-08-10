@@ -2,22 +2,37 @@ import 'dart:async';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../../core/media/avatar_crop_page.dart';
 import '../../../core/media/avatar_image_processor.dart';
+import '../../../core/media/image_viewer_page.dart';
 import '../../../core/notifications/app_notification_service.dart';
+import '../../../core/sound/app_sound_service.dart';
+import '../../../core/widgets/dd_floating_navigation_bar.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/data/auth_api_client.dart';
+import '../../auth/domain/account_management.dart';
 import '../../auth/domain/auth_session.dart';
 import '../../auth/presentation/account_management_page.dart';
+import '../../auth/presentation/personal_profile_page.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../calls/domain/call_session.dart';
 import '../../calls/presentation/call_debug_controller.dart';
 import '../../calls/presentation/chat_call_page.dart';
 import '../../calls/presentation/two_party_call_controller.dart';
+import '../../contacts/data/contacts_api_client.dart';
+import '../../contacts/domain/contact_models.dart';
 import '../../contacts/presentation/contacts_page.dart';
+import '../../contacts/presentation/peer_profile_page.dart';
 import '../../messaging/application/messaging_coordinator.dart';
 import '../../messaging/presentation/conversations_page.dart';
+import '../../messaging/presentation/conversations_page_controller.dart';
+import '../../messaging/presentation/saved_messages_page.dart';
+import '../../messaging/presentation/text_chat_page.dart';
+import '../../moments/presentation/moments_feed_page.dart';
+import '../../qrcode/presentation/my_qr_page.dart';
+import '../../qrcode/presentation/qr_scanner_page.dart';
 
 class MainShellPage extends StatefulWidget {
   const MainShellPage({
@@ -26,13 +41,15 @@ class MainShellPage extends StatefulWidget {
     required this.session,
     required this.authGateway,
     required this.onRefreshSession,
+    required this.onProfileChanged,
     required this.onLogout,
   });
 
   final Uri origin;
   final AuthSession session;
   final AuthGateway authGateway;
-  final Future<void> Function() onRefreshSession;
+  final Future<String?> Function() onRefreshSession;
+  final Future<void> Function(AccountProfile profile) onProfileChanged;
   final Future<void> Function() onLogout;
 
   @override
@@ -42,15 +59,19 @@ class MainShellPage extends StatefulWidget {
 class _MainShellPageState extends State<MainShellPage>
     with WidgetsBindingObserver {
   int _index = 0;
+  int _contactsRootRequestToken = 0;
+  int _contactsAddFriendRequestToken = 0;
+  int _contactsRefreshRequestToken = 0;
   late final MessagingCoordinator _messagingCoordinator;
+  late final ConversationsPageController _conversationsController;
   late final AppNotificationService _notificationService;
   StreamSubscription<IncomingMessageNotice>? _incomingMessageSubscription;
+  StreamSubscription<RelationshipNotice>? _relationshipSubscription;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   late final CallDebugController _callMediaController;
   late final TwoPartyCallController _callController;
   late final Future<bool> _callStartup;
   bool _callRouteOpen = false;
-  String? _recordedCallId;
   int _avatarRevision = 0;
   bool _avatarBusy = false;
   OverlayEntry? _messageBanner;
@@ -60,6 +81,7 @@ class _MainShellPageState extends State<MainShellPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _conversationsController = ConversationsPageController();
     _messagingCoordinator = MessagingCoordinator(
       origin: widget.origin,
       accessToken: widget.session.tokens.accessToken,
@@ -71,15 +93,31 @@ class _MainShellPageState extends State<MainShellPage>
     unawaited(_notificationService.initialize(requestPermission: false));
     _incomingMessageSubscription = _messagingCoordinator.incomingMessages
         .listen(_handleIncomingMessage);
+    _relationshipSubscription = _messagingCoordinator.relationshipNotices
+        .listen(_handleRelationshipNotice);
     unawaited(_messagingCoordinator.initialize());
     _callMediaController = CallDebugController();
-    _callController = TwoPartyCallController(_callMediaController);
+    _callController = TwoPartyCallController(
+      _callMediaController,
+      accessTokenProvider: () async => widget.session.tokens.accessToken,
+    );
     _callController.addListener(_handleCallState);
     _callStartup = _callController.start(
       apiBaseUrl: widget.origin.toString(),
       participantIdentity: widget.session.user.id,
       participantName: widget.session.user.displayName,
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant MainShellPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldToken = oldWidget.session.tokens.accessToken;
+    final nextToken = widget.session.tokens.accessToken;
+    if (oldToken != nextToken) {
+      unawaited(_messagingCoordinator.updateAccessToken(nextToken));
+      _callController.updateAccessToken(nextToken);
+    }
   }
 
   @override
@@ -91,10 +129,12 @@ class _MainShellPageState extends State<MainShellPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_incomingMessageSubscription?.cancel());
+    unawaited(_relationshipSubscription?.cancel());
     _messageBannerTimer?.cancel();
     _messageBanner?.remove();
     _messageBanner = null;
     _messagingCoordinator.dispose();
+    _conversationsController.dispose();
     _callController.removeListener(_handleCallState);
     _callController.dispose();
     _callMediaController.dispose();
@@ -103,6 +143,7 @@ class _MainShellPageState extends State<MainShellPage>
 
   @override
   Widget build(BuildContext context) {
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -120,25 +161,32 @@ class _MainShellPageState extends State<MainShellPage>
                     avatarRevision: _avatarRevision,
                     unreadCount: _messagingCoordinator.totalUnreadCount,
                     selectedIndex: _index,
-                    onSelected: (value) => setState(() => _index = value),
+                    onSelected: _selectMainSection,
                     onSettings: _openAccountManagement,
                   ),
                 ),
-                const VerticalDivider(width: 1, thickness: 0.5),
+                VerticalDivider(
+                  width: 1,
+                  thickness: 0.5,
+                  color: DdDesktopTokens.borderSubtle(
+                    Theme.of(context).brightness,
+                  ),
+                ),
                 Expanded(child: SafeArea(left: false, child: pageStack)),
               ],
             );
           }
           return SafeArea(
+            bottom: false,
             child: Column(
               children: [
                 Expanded(child: pageStack),
-                NavigationBar(
+                DdFloatingNavigationBar(
                   selectedIndex: _index,
-                  onDestinationSelected: (value) =>
-                      setState(() => _index = value),
+                  hidden: keyboardVisible,
+                  onDestinationSelected: _selectMainSection,
                   destinations: [
-                    NavigationDestination(
+                    DdFloatingNavigationDestination(
                       icon: _UnreadNavigationIcon(
                         coordinator: _messagingCoordinator,
                         icon: Icons.chat_bubble_outline_rounded,
@@ -147,19 +195,19 @@ class _MainShellPageState extends State<MainShellPage>
                         coordinator: _messagingCoordinator,
                         icon: Icons.chat_bubble_rounded,
                       ),
-                      label: '消息',
+                      label: 'DD',
                     ),
-                    const NavigationDestination(
+                    const DdFloatingNavigationDestination(
                       icon: Icon(Icons.people_outline_rounded),
                       selectedIcon: Icon(Icons.people_rounded),
                       label: '联系人',
                     ),
-                    const NavigationDestination(
+                    const DdFloatingNavigationDestination(
                       icon: Icon(Icons.explore_outlined),
                       selectedIcon: Icon(Icons.explore_rounded),
                       label: '发现',
                     ),
-                    const NavigationDestination(
+                    const DdFloatingNavigationDestination(
                       icon: Icon(Icons.person_outline_rounded),
                       selectedIcon: Icon(Icons.person_rounded),
                       label: '我的',
@@ -174,13 +222,25 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
+  void _selectMainSection(int value) {
+    setState(() {
+      _index = value;
+      if (value == 1) _contactsRootRequestToken++;
+    });
+  }
+
+  void _openAddFriend() {
+    setState(() {
+      _index = 1;
+      _contactsAddFriendRequestToken++;
+    });
+  }
+
   List<Widget> _buildPages() {
-    final sessionVersion =
-        widget.session.tokens.accessExpiresAt.microsecondsSinceEpoch;
     return [
       ConversationsPage(
         key: ValueKey(
-          'shell-messages-${widget.session.user.id}-$sessionVersion',
+          'shell-messages-${widget.session.user.id}-${widget.session.device.id}',
         ),
         origin: widget.origin,
         accessToken: widget.session.tokens.accessToken,
@@ -189,56 +249,108 @@ class _MainShellPageState extends State<MainShellPage>
         currentUserDisplayName: widget.session.user.displayName,
         currentUserAvatarRevision: _avatarRevision,
         coordinator: _messagingCoordinator,
+        navigationController: _conversationsController,
         hostVisible: _index == 0,
         onStartCall: _startCall,
-        onOpenContacts: () => setState(() => _index = 1),
+        onOpenContacts: () => _selectMainSection(1),
+        onOpenAddFriend: _openAddFriend,
         embedded: true,
       ),
       ContactsPage(
         key: ValueKey(
-          'shell-contacts-${widget.session.user.id}-$sessionVersion',
+          'shell-contacts-${widget.session.user.id}-${widget.session.device.id}',
         ),
         origin: widget.origin,
         accessToken: widget.session.tokens.accessToken,
         currentUserId: widget.session.user.id,
         embedded: true,
+        rootRequestToken: _contactsRootRequestToken,
+        addFriendRequestToken: _contactsAddFriendRequestToken,
+        refreshRequestToken: _contactsRefreshRequestToken,
+        onUnauthorized: widget.onRefreshSession,
+        onOpenDirectChat: _openDirectChatFromContacts,
+        onStartAudioCall: (peerId, peerName) =>
+            _startCall(peerId, peerName, CallKind.audio),
+        onStartVideoCall: (peerId, peerName) =>
+            _startCall(peerId, peerName, CallKind.video),
       ),
-      const _DiscoveryPage(),
+      _DiscoveryPage(
+        onOpenMoments: _openMoments,
+        onOpenScanner: _openQrScanner,
+      ),
       _MePage(
         origin: widget.origin,
         session: widget.session,
         avatarRevision: _avatarRevision,
         avatarBusy: _avatarBusy,
-        onViewAvatar: _viewAvatar,
-        onChangeAvatar: _changeAvatar,
-        onRemoveAvatar: _removeAvatar,
-        onRefresh: widget.onRefreshSession,
+        onOpenProfile: _openPersonalProfile,
+        onRefresh: () async {
+          await widget.onRefreshSession();
+        },
+        onOpenSaved: _openSavedMessagesFromMe,
+        onOpenMyQr: _openMyQr,
         onOpenSettings: _openAccountManagement,
+        onSwitchAccount: widget.onLogout,
         onLogout: widget.onLogout,
       ),
     ];
   }
 
   void _handleIncomingMessage(IncomingMessageNotice notice) {
-    if (!mounted || notice.muted) return;
+    if (!mounted) return;
+    if (notice.messageType == 'SYSTEM' && notice.preview == '我刚刚同意了你的好友请求') {
+      setState(() => _contactsRefreshRequestToken++);
+    }
+    if (notice.muted) return;
     final alreadyReading =
         _index == 0 &&
         _messagingCoordinator.activeConversationId == notice.conversationId;
     if (alreadyReading) return;
+    unawaited(AppSoundService.shared.playMessageNotification());
 
     if (_lifecycleState == AppLifecycleState.resumed) {
       _showIncomingMessageBanner(notice);
       return;
     }
 
+    final notificationTitle = notice.mentionedCurrentUser
+        ? '${notice.senderName} 提到了你'
+        : notice.senderName;
     unawaited(
       _notificationService.showMessage(
-        senderName: notice.senderName,
+        senderName: notificationTitle,
         preview: notice.preview,
         conversationId: notice.conversationId,
         origin: widget.origin,
         accessToken: widget.session.tokens.accessToken,
         senderUserId: notice.senderUserId,
+      ),
+    );
+  }
+
+  void _handleRelationshipNotice(RelationshipNotice notice) {
+    if (!mounted) return;
+    setState(() => _contactsRefreshRequestToken++);
+    if (_lifecycleState == AppLifecycleState.resumed) {
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(notice.message),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+    unawaited(
+      _notificationService.showMessage(
+        senderName: 'DD',
+        preview: notice.message,
+        conversationId: 'relationship:${notice.peerUserId}',
+        origin: widget.origin,
+        accessToken: widget.session.tokens.accessToken,
+        senderUserId: notice.peerUserId.isEmpty ? null : notice.peerUserId,
       ),
     );
   }
@@ -249,7 +361,12 @@ class _MainShellPageState extends State<MainShellPage>
     _messageBanner?.remove();
     final overlay = Overlay.of(context);
     final topInset = MediaQuery.paddingOf(context).top;
-    final preview = notice.preview.trim().isEmpty ? '新消息' : notice.preview.trim();
+    final preview = notice.preview.trim().isEmpty
+        ? '新消息'
+        : notice.preview.trim();
+    final title = notice.mentionedCurrentUser
+        ? '${notice.senderName} 提到了你'
+        : notice.senderName;
     _messageBanner = OverlayEntry(
       builder: (overlayContext) => Positioned(
         left: 12,
@@ -263,17 +380,15 @@ class _MainShellPageState extends State<MainShellPage>
               tween: Tween<double>(begin: -18, end: 0),
               duration: const Duration(milliseconds: 180),
               curve: Curves.easeOutCubic,
-              builder: (context, offset, child) => Transform.translate(
-                offset: Offset(0, offset),
-                child: child,
-              ),
+              builder: (context, offset, child) =>
+                  Transform.translate(offset: Offset(0, offset), child: child),
               child: Material(
                 elevation: 7,
                 shadowColor: Colors.black26,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(DdRadii.surface),
                 color: Theme.of(overlayContext).colorScheme.surface,
                 child: InkWell(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(DdRadii.surface),
                   onTap: () {
                     _messageBannerTimer?.cancel();
                     _messageBanner?.remove();
@@ -298,7 +413,7 @@ class _MainShellPageState extends State<MainShellPage>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                notice.senderName,
+                                title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -341,22 +456,169 @@ class _MainShellPageState extends State<MainShellPage>
     final call = _callController.currentCall;
     if (call == null) return;
 
-    if (!call.isActive && call.acceptedAt != null) {
-      final end = call.endedAt ?? DateTime.now().toUtc();
-      final duration = end.difference(call.acceptedAt!.toUtc());
-      unawaited(
-        _recordFinishedCall(
-          call,
-          duration.isNegative ? Duration.zero : duration,
-        ),
-      );
-    }
-
     if (!call.isIncomingFor(widget.session.user.id) || _callRouteOpen) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    scheduleMicrotask(() {
       if (!mounted || _callRouteOpen) return;
       unawaited(_openCallPage(call.callerName));
     });
+  }
+
+  Future<void> _openDirectChatFromContacts(
+    String peerId,
+    String peerName,
+  ) async {
+    try {
+      final conversation = await _messagingCoordinator.ensureDirectConversation(
+        peerId,
+      );
+      if (!mounted) return;
+      setState(() => _index = 0);
+      _conversationsController.openConversation(conversation.id);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法打开与 $peerName 的会话：$error')));
+    }
+  }
+
+  Future<void> _openMoments() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentsFeedPage(
+          origin: widget.origin,
+          accessToken: widget.session.tokens.accessToken,
+          currentUserId: widget.session.user.id,
+          currentUserDisplayName: widget.session.user.displayName,
+          currentUserAvatarRevision: _avatarRevision,
+          onUnauthorized: widget.onRefreshSession,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMyQr() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MyQrPage(
+          origin: widget.origin,
+          accessToken: widget.session.tokens.accessToken,
+          userId: widget.session.user.id,
+          displayName: widget.session.user.displayName,
+          handle: widget.session.user.handle,
+          avatarRevision: _avatarRevision,
+          onUnauthorized: widget.onRefreshSession,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openQrScanner() async {
+    final result = await Navigator.of(context).push<QrScanResult>(
+      MaterialPageRoute<QrScanResult>(
+        fullscreenDialog: true,
+        builder: (_) => QrScannerPage(
+          origin: widget.origin,
+          accessToken: widget.session.tokens.accessToken,
+          onUnauthorized: widget.onRefreshSession,
+        ),
+      ),
+    );
+    if (!mounted || result == null) return;
+    switch (result.kind) {
+      case QrScanResultKind.user:
+        final userId = result.userId;
+        if (userId != null) await _openScannedUser(userId);
+      case QrScanResultKind.group:
+        final group = result.group;
+        if (group == null) return;
+        await _messagingCoordinator.refreshConversations();
+        if (!mounted) return;
+        setState(() => _index = 0);
+        _conversationsController.openConversation(group.id);
+      case QrScanResultKind.loginApproved:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已确认新设备登录。')),
+        );
+    }
+  }
+
+  Future<void> _openScannedUser(String userId) async {
+    final client = ContactsApiClient();
+    try {
+      var token = widget.session.tokens.accessToken;
+      ContactSearchResult result;
+      try {
+        result = await client.getUserById(
+          origin: widget.origin,
+          accessToken: token,
+          userId: userId,
+        );
+      } on ContactsApiException catch (error) {
+        if (error.statusCode != 401) rethrow;
+        final refreshed = await widget.onRefreshSession();
+        if (refreshed == null || refreshed.isEmpty) rethrow;
+        token = refreshed;
+        result = await client.getUserById(
+          origin: widget.origin,
+          accessToken: token,
+          userId: userId,
+        );
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => PeerProfilePage(
+            origin: widget.origin,
+            accessToken: token,
+            userId: result.user.id,
+            handle: result.user.handle,
+            displayName: result.user.displayName,
+            onMessage: result.user.id == widget.session.user.id
+                ? null
+                : () => _openDirectChatFromContacts(
+                    result.user.id,
+                    result.user.displayName,
+                  ),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法打开二维码用户资料：$error')),
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _openSavedMessagesFromMe() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => SavedMessagesPage(
+          coordinator: _messagingCoordinator,
+          onOpenMessage: (message) async {
+            final conversation = await _messagingCoordinator
+                .resolveConversation(message.conversationId);
+            if (!mounted || conversation == null) return;
+            await Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => TextChatPage(
+                  coordinator: _messagingCoordinator,
+                  conversation: conversation,
+                  currentUserId: widget.session.user.id,
+                  currentUserDisplayName: widget.session.user.displayName,
+                  currentUserAvatarRevision: _avatarRevision,
+                  onStartCall: _startCall,
+                  initialMessageId: message.id,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _startCall(String peerId, String peerName, CallKind kind) async {
@@ -396,44 +658,14 @@ class _MainShellPageState extends State<MainShellPage>
             controller: _callController,
             mediaController: _callMediaController,
             peerName: peerName,
-            onFinished: _recordFinishedCall,
+            peerId: _callController.peerIdentity,
+            origin: widget.origin,
+            accessToken: widget.session.tokens.accessToken,
           ),
         ),
       );
     } finally {
       _callRouteOpen = false;
-    }
-  }
-
-  Future<void> _recordFinishedCall(
-    CallSession call,
-    Duration duration,
-  ) async {
-    // Only the caller writes the shared call summary, otherwise both clients
-    // would append the same record to the direct conversation. The call id
-    // guard also makes signaling retries / route callbacks idempotent.
-    if (call.callerIdentity != widget.session.user.id ||
-        call.acceptedAt == null ||
-        _recordedCallId == call.id) {
-      return;
-    }
-    _recordedCallId = call.id;
-    try {
-      final peerId = call.peerIdentityFor(widget.session.user.id);
-      final conversation = await _messagingCoordinator.ensureDirectConversation(
-        peerId,
-      );
-      final totalSeconds = duration.inSeconds.clamp(0, 24 * 60 * 60 - 1);
-      final minutes = totalSeconds ~/ 60;
-      final seconds = totalSeconds % 60;
-      final kind = call.kind == CallKind.video ? '视频通话' : '语音通话';
-      await _messagingCoordinator.sendText(
-        conversation.id,
-        '$kind · 通话时长 $minutes:${seconds.toString().padLeft(2, '0')}',
-      );
-    } catch (_) {
-      // The call must still close promptly. MessagingCoordinator keeps any
-      // retryable send in its pending queue and exposes actionable failures.
     }
   }
 
@@ -495,51 +727,60 @@ class _MainShellPageState extends State<MainShellPage>
     final avatarUrl = widget.origin.resolve(
       '/api/v1/avatars/${widget.session.user.id}',
     );
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.88),
-      builder: (dialogContext) => Dialog.fullscreen(
-        backgroundColor: const Color(0xFF0D0D0D),
-        child: SafeArea(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: InteractiveViewer(
-                  minScale: 0.8,
-                  maxScale: 5,
-                  child: Center(
-                    child: Image.network(
-                      avatarUrl.toString(),
-                      headers: <String, String>{
-                        'Authorization':
-                            'Bearer ${widget.session.tokens.accessToken}',
-                      },
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) => const Center(
-                        child: Text(
-                          '暂无头像',
-                          style: TextStyle(color: Colors.white60),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              Positioned(
-                left: 8,
-                top: 8,
-                child: IconButton(
-                  tooltip: '关闭',
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  icon: const Icon(Icons.close_rounded),
-                  color: Colors.white,
-                ),
-              ),
-            ],
+    final client = http.Client();
+    try {
+      Future<http.Response> fetch(String token) => client.get(
+        avatarUrl,
+        headers: <String, String>{
+          'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      var response = await fetch(widget.session.tokens.accessToken);
+      if (response.statusCode == 401) {
+        final refreshed = await widget.onRefreshSession();
+        if (refreshed != null && refreshed.isNotEmpty) {
+          response = await fetch(refreshed);
+        }
+      }
+      if (!mounted) return;
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('暂无可查看的头像。')));
+        return;
+      }
+      final mimeType = (response.headers['content-type'] ?? 'image/jpeg')
+          .split(';')
+          .first
+          .trim()
+          .toLowerCase();
+      final extension = switch (mimeType) {
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/avif' => 'avif',
+        _ => 'jpg',
+      };
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => ImageViewerPage(
+            bytes: response.bodyBytes,
+            mimeType: mimeType,
+            suggestedName: 'DD-avatar-${widget.session.user.handle}.$extension',
           ),
         ),
-      ),
-    );
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('头像加载失败，请稍后重试。')));
+      }
+    } finally {
+      client.close();
+    }
   }
 
   Future<void> _removeAvatar() async {
@@ -565,6 +806,24 @@ class _MainShellPageState extends State<MainShellPage>
     } finally {
       if (mounted) setState(() => _avatarBusy = false);
     }
+  }
+
+  Future<void> _openPersonalProfile() async {
+    if (!mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PersonalProfilePage(
+          gateway: widget.authGateway,
+          origin: widget.origin,
+          session: widget.session,
+          avatarRevision: _avatarRevision,
+          onViewAvatar: _viewAvatar,
+          onChangeAvatar: _changeAvatar,
+          onRemoveAvatar: _removeAvatar,
+          onProfileChanged: (me) => widget.onProfileChanged(me.profile),
+        ),
+      ),
+    );
   }
 
   Future<void> _openAccountManagement() async {
@@ -604,13 +863,16 @@ class _DesktopRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 60,
-      color: DdColors.desktopRail,
-      child: SafeArea(
-        child: Column(
-          children: [
-            const SizedBox(height: 14),
+    final brightness = Theme.of(context).brightness;
+    return Material(
+      color: DdDesktopTokens.navigationSurface(brightness),
+      child: SizedBox(
+        key: const Key('shell-desktop-rail'),
+        width: DdDesktopTokens.navigationWidth,
+        child: SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: 16),
             Tooltip(
               message: session.user.displayName,
               child: _RailAvatar(
@@ -621,7 +883,7 @@ class _DesktopRail extends StatelessWidget {
                 revision: avatarRevision,
               ),
             ),
-            const SizedBox(height: 24),
+              const SizedBox(height: 22),
             _RailButton(
               key: const Key('shell-rail-messages'),
               icon: Icons.chat_bubble_outline_rounded,
@@ -664,8 +926,9 @@ class _DesktopRail extends StatelessWidget {
               selected: false,
               onTap: onSettings,
             ),
-            const SizedBox(height: 12),
-          ],
+              const SizedBox(height: 12),
+            ],
+          ),
         ),
       ),
     );
@@ -712,7 +975,7 @@ class _UnreadBadge extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: DdColors.danger,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(DdRadii.pill),
         border: Border.all(color: Colors.white, width: 1),
       ),
       child: Text(
@@ -748,30 +1011,66 @@ class _RailButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+    final foreground = selected
+        ? DdColors.greenPressed
+        : DdDesktopTokens.navigationIcon(brightness);
     return Tooltip(
       message: label,
       waitDuration: const Duration(milliseconds: 450),
-      child: SizedBox(
-        width: 60,
-        height: 52,
-        child: InkWell(
-          onTap: onTap,
-          child: Stack(
-            alignment: Alignment.center,
-            clipBehavior: Clip.none,
-            children: [
-              Icon(
-                selected ? selectedIcon : icon,
-                size: 25,
-                color: selected ? DdColors.green : const Color(0xFFA4A4A4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 8),
+        child: Material(
+          color: selected
+              ? DdDesktopTokens.selectedSurface(brightness)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(15),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            hoverColor: DdDesktopTokens.hoverSurface(brightness),
+            splashColor: Colors.transparent,
+            highlightColor: DdDesktopTokens.hoverSurface(brightness),
+            child: SizedBox(
+              key: Key('shell-rail-item-$label'),
+              width: DdDesktopTokens.navigationItemExtent,
+              height: DdDesktopTokens.navigationItemExtent,
+              child: Stack(
+                alignment: Alignment.center,
+                clipBehavior: Clip.none,
+                children: [
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 120),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeOutCubic,
+                    child: Icon(
+                      selected ? selectedIcon : icon,
+                      key: ValueKey<bool>(selected),
+                      size: 23,
+                      color: foreground,
+                    ),
+                  ),
+                  if (selected)
+                    Positioned(
+                      left: 0,
+                      child: Container(
+                        width: 3,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: DdDesktopTokens.activeIndicator(brightness),
+                          borderRadius: BorderRadius.circular(DdRadii.pill),
+                        ),
+                      ),
+                    ),
+                  if (badgeCount > 0)
+                    Positioned(
+                      right: 4,
+                      top: 4,
+                      child: _UnreadBadge(count: badgeCount),
+                    ),
+                ],
               ),
-              if (badgeCount > 0)
-                Positioned(
-                  left: 34,
-                  top: 8,
-                  child: _UnreadBadge(count: badgeCount),
-                ),
-            ],
+            ),
           ),
         ),
       ),
@@ -811,7 +1110,13 @@ class _RailAvatar extends StatelessWidget {
 }
 
 class _DiscoveryPage extends StatelessWidget {
-  const _DiscoveryPage();
+  const _DiscoveryPage({
+    required this.onOpenMoments,
+    required this.onOpenScanner,
+  });
+
+  final Future<void> Function() onOpenMoments;
+  final Future<void> Function() onOpenScanner;
 
   @override
   Widget build(BuildContext context) {
@@ -823,20 +1128,24 @@ class _DiscoveryPage extends StatelessWidget {
           Expanded(
             child: ListView(
               padding: const EdgeInsets.only(top: 10),
-              children: const [
+              children: [
                 _FeatureRow(
+                  key: const Key('discovery-moments'),
                   icon: Icons.camera_alt_outlined,
                   label: '朋友圈',
-                  trailing: 'P8 开发阶段接入',
+                  trailing: '',
+                  onTap: () => unawaited(onOpenMoments()),
                 ),
-                SizedBox(height: 8),
+                const SizedBox(height: 8),
                 _FeatureRow(
+                  key: const Key('discovery-qr-scanner'),
                   icon: Icons.qr_code_scanner_rounded,
                   label: '扫一扫',
-                  trailing: 'P9 开发阶段接入',
+                  trailing: '',
+                  onTap: () => unawaited(onOpenScanner()),
                 ),
-                SizedBox(height: 8),
-                _FeatureRow(
+                const SizedBox(height: 8),
+                const _FeatureRow(
                   icon: Icons.widgets_outlined,
                   label: '更多能力',
                   trailing: '按路线逐步开放',
@@ -852,17 +1161,177 @@ class _DiscoveryPage extends StatelessWidget {
 
 class _FeatureRow extends StatelessWidget {
   const _FeatureRow({
+    super.key,
     required this.icon,
     required this.label,
     required this.trailing,
+    this.onTap,
   });
 
   final IconData icon;
   final String label;
   final String trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 58,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Icon(icon, color: DdColors.greenPressed, size: 23),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(label, style: const TextStyle(fontSize: 15)),
+                ),
+                if (trailing.isNotEmpty)
+                  Text(
+                    trailing,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: DdColors.textTertiary,
+                    ),
+                  ),
+                const SizedBox(width: 5),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: DdColors.textTertiary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PersonalProfilePage extends StatefulWidget {
+  const _PersonalProfilePage({
+    required this.origin,
+    required this.session,
+    required this.avatarRevision,
+    required this.onViewAvatar,
+    required this.onChangeAvatar,
+    required this.onRemoveAvatar,
+  });
+
+  final Uri origin;
+  final AuthSession session;
+  final int avatarRevision;
+  final Future<void> Function() onViewAvatar;
+  final Future<void> Function() onChangeAvatar;
+  final Future<void> Function() onRemoveAvatar;
+
+  @override
+  State<_PersonalProfilePage> createState() => _PersonalProfilePageState();
+}
+
+class _PersonalProfilePageState extends State<_PersonalProfilePage> {
+  late int _avatarRevision;
+  bool _avatarBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _avatarRevision = widget.avatarRevision;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          '个人信息',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
+        centerTitle: true,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.only(top: 10, bottom: 24),
+        children: [
+          Material(
+            color: Theme.of(context).colorScheme.surface,
+            child: InkWell(
+              key: const Key('profile-avatar-row'),
+              onTap: _avatarBusy ? null : _avatarActions,
+              child: SizedBox(
+                height: 92,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      const Text('头像', style: TextStyle(fontSize: 16)),
+                      const Spacer(),
+                      Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          _RailAvatar(
+                            origin: widget.origin,
+                            accessToken: widget.session.tokens.accessToken,
+                            userId: widget.session.user.id,
+                            name: widget.session.user.displayName,
+                            revision: _avatarRevision,
+                            size: 64,
+                          ),
+                          if (_avatarBusy)
+                            Container(
+                              width: 64,
+                              height: 64,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.36),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        '更换并裁剪',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.chevron_right_rounded,
+                        color: DdColors.textTertiary,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          _profileLine('昵称', widget.session.user.displayName),
+          _profileLine('DDID', widget.session.user.handle),
+          _profileLine('邮箱', widget.session.user.email),
+          const SizedBox(height: 10),
+          _profileLine('二维码', '我的二维码', trailingIcon: Icons.qr_code_2_rounded),
+          _profileLine('个性签名', '未设置'),
+        ],
+      ),
+    );
+  }
+
+  Widget _profileLine(String label, String value, {IconData? trailingIcon}) {
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: SizedBox(
@@ -871,29 +1340,84 @@ class _FeatureRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              Icon(icon, color: DdColors.greenPressed, size: 23),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(label, style: const TextStyle(fontSize: 15)),
+              SizedBox(
+                width: 82,
+                child: Text(label, style: const TextStyle(fontSize: 16)),
               ),
-              Text(
-                trailing,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: DdColors.textTertiary,
+              Expanded(
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: DdColors.textSecondary,
+                  ),
                 ),
               ),
-              const SizedBox(width: 5),
-              const Icon(
-                Icons.chevron_right_rounded,
-                size: 20,
-                color: DdColors.textTertiary,
-              ),
+              if (trailingIcon != null) ...[
+                const SizedBox(width: 8),
+                Icon(trailingIcon, size: 21, color: DdColors.textSecondary),
+              ],
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _avatarActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('查看头像'),
+              onTap: () => Navigator.pop(sheetContext, 'view'),
+            ),
+            ListTile(
+              key: const Key('profile-change-avatar'),
+              leading: const Icon(Icons.crop_rounded),
+              title: const Text('更换并裁剪头像'),
+              subtitle: const Text('保留原图比例，在方形区域内裁剪'),
+              onTap: () => Navigator.pop(sheetContext, 'change'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded),
+              title: const Text(
+                '移除头像',
+                style: TextStyle(color: DdColors.danger),
+              ),
+              onTap: () => Navigator.pop(sheetContext, 'remove'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    if (action == 'view') {
+      await widget.onViewAvatar();
+      return;
+    }
+    setState(() => _avatarBusy = true);
+    try {
+      if (action == 'change') {
+        await widget.onChangeAvatar();
+      } else if (action == 'remove') {
+        await widget.onRemoveAvatar();
+      }
+      if (mounted) {
+        setState(() => _avatarRevision = DateTime.now().microsecondsSinceEpoch);
+      }
+    } finally {
+      if (mounted) setState(() => _avatarBusy = false);
+    }
   }
 }
 
@@ -903,11 +1427,12 @@ class _MePage extends StatelessWidget {
     required this.session,
     required this.avatarRevision,
     required this.avatarBusy,
-    required this.onViewAvatar,
-    required this.onChangeAvatar,
-    required this.onRemoveAvatar,
+    required this.onOpenProfile,
     required this.onRefresh,
+    required this.onOpenSaved,
+    required this.onOpenMyQr,
     required this.onOpenSettings,
+    required this.onSwitchAccount,
     required this.onLogout,
   });
 
@@ -915,11 +1440,12 @@ class _MePage extends StatelessWidget {
   final AuthSession session;
   final int avatarRevision;
   final bool avatarBusy;
-  final Future<void> Function() onViewAvatar;
-  final Future<void> Function() onChangeAvatar;
-  final Future<void> Function() onRemoveAvatar;
+  final Future<void> Function() onOpenProfile;
   final Future<void> Function() onRefresh;
+  final Future<void> Function() onOpenSaved;
+  final Future<void> Function() onOpenMyQr;
   final VoidCallback onOpenSettings;
+  final Future<void> Function() onSwitchAccount;
   final Future<void> Function() onLogout;
 
   @override
@@ -935,127 +1461,95 @@ class _MePage extends StatelessWidget {
               children: [
                 Material(
                   color: Theme.of(context).colorScheme.surface,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 22, 18, 22),
-                    child: Row(
-                      children: [
-                        Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            GestureDetector(
-                              key: const Key('shell-view-avatar'),
-                              behavior: HitTestBehavior.opaque,
-                              onTap: avatarBusy
-                                  ? null
-                                  : () => unawaited(onViewAvatar()),
-                              child: Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  _RailAvatar(
-                                    origin: origin,
-                                    accessToken: session.tokens.accessToken,
-                                    userId: session.user.id,
-                                    name: session.user.displayName,
-                                    revision: avatarRevision,
-                                    size: 58,
-                                  ),
-                                  if (avatarBusy)
-                                    Container(
-                                      width: 58,
-                                      height: 58,
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.38,
-                                        ),
-                                        borderRadius: BorderRadius.circular(7),
-                                      ),
-                                      alignment: Alignment.center,
-                                      child: const SizedBox(
-                                        width: 20,
-                                        height: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            Positioned(
-                              right: -8,
-                              bottom: -8,
-                              child: PopupMenuButton<String>(
-                                key: const Key('shell-edit-avatar'),
-                                tooltip: '编辑头像',
-                                enabled: !avatarBusy,
-                                onSelected: (value) {
-                                  if (value == 'change') {
-                                    unawaited(onChangeAvatar());
-                                  } else if (value == 'remove') {
-                                    unawaited(onRemoveAvatar());
-                                  }
-                                },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
-                                    value: 'change',
-                                    child: Text('更换并裁剪头像'),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'remove',
-                                    child: Text('移除头像'),
-                                  ),
-                                ],
-                                child: Container(
-                                  width: 28,
-                                  height: 28,
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.surface,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: DdColors.divider),
-                                  ),
-                                  child: const Icon(
-                                    Icons.camera_alt_outlined,
-                                    size: 16,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                  child: InkWell(
+                    key: const Key('shell-open-profile'),
+                    onTap: avatarBusy ? null : () => unawaited(onOpenProfile()),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 22, 14, 22),
+                      child: Row(
+                        children: [
+                          Stack(
+                            alignment: Alignment.center,
                             children: [
-                              Text(
-                                session.user.displayName,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              _RailAvatar(
+                                origin: origin,
+                                accessToken: session.tokens.accessToken,
+                                userId: session.user.id,
+                                name: session.user.displayName,
+                                revision: avatarRevision,
+                                size: 58,
                               ),
-                              const SizedBox(height: 5),
-                              Text(
-                                'DD号：${session.user.handle}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: DdColors.textSecondary,
+                              if (avatarBusy)
+                                Container(
+                                  width: 58,
+                                  height: 58,
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.38),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
                                 ),
-                              ),
                             ],
                           ),
-                        ),
-                        const Icon(
-                          Icons.qr_code_2_rounded,
-                          size: 22,
-                          color: DdColors.textSecondary,
-                        ),
-                      ],
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  session.user.displayName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 5),
+                                Text(
+                                  'DDID：${session.user.handle}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: DdColors.textSecondary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            key: const Key('shell-open-my-qr'),
+                            tooltip: '我的二维码',
+                            onPressed: () => unawaited(onOpenMyQr()),
+                            icon: const Icon(
+                              Icons.qr_code_2_rounded,
+                              size: 22,
+                              color: DdColors.textSecondary,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            size: 20,
+                            color: DdColors.textTertiary,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
+                ),
+                const SizedBox(height: 8),
+                _SettingsRow(
+                  key: const Key('shell-saved-messages'),
+                  icon: Icons.bookmark_rounded,
+                  label: '我的收藏',
+                  onTap: () => onOpenSaved(),
                 ),
                 const SizedBox(height: 8),
                 _SettingsRow(
@@ -1071,6 +1565,12 @@ class _MePage extends StatelessWidget {
                   onTap: () => onRefresh(),
                 ),
                 const SizedBox(height: 8),
+                _SettingsRow(
+                  key: const Key('shell-switch-account'),
+                  icon: Icons.switch_account_rounded,
+                  label: '切换账号',
+                  onTap: () => onSwitchAccount(),
+                ),
                 _SettingsRow(
                   key: const Key('shell-logout'),
                   icon: Icons.logout_rounded,

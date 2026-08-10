@@ -75,7 +75,7 @@
 
 ## 当前状态
 
-截至 2026-08-08，项目已经推进到 **P2 正式账号主体完成 + P3 好友关系链主体完成，准备进入 P4 可靠文字消息与同步**。
+截至 2026-08-09，项目已经推进到 **P4 可靠消息/同步主链基本形成 + P5 私有媒体主链持续收口**，当前重点不是继续堆大模块，而是把 Android / Windows / Web 的真人交互、媒体缓存、Saved Messages、自聊/直聊、通知、通话与商业客户端细节验收关闭。
 
 ### P0 已完成当前 Windows / Web / Android 验收批次
 
@@ -113,13 +113,15 @@ OpenAPI / Realtime Schema / Migration / CI
 - Native `flutter_secure_storage` + App 启动自动恢复。
 - Web HttpOnly Cookie + 页面启动自动恢复，不把 Refresh Token 放进 JS 存储。
 - Flutter 注册、登录、密码找回、资料、隐私、设备管理 UI。
+- 最近 5 个历史登录账号（头像/昵称/DDID/邮箱）、切换账号、资料自动保存。
+- Windows 单实例 + Native 安全存储串行化/Auth bundle，Access Token 401 单飞刷新并重试。
 - PostgreSQL + Mailpit 真实账号生命周期集成测试已进入 CI。
 
-### P3 好友关系链主体已落地
+### P3 联系人关系链主体已落地
 
 正式关系链现在支持：
 
-- 精确 Handle 搜索，不返回邮箱。
+- 精确 DDID 搜索（底层 API 字段仍兼容 `handle`），不返回邮箱。
 - 好友申请、接受、拒绝、撤销、过期。
 - 同向重复申请幂等。
 - 双方并发互相申请自动收敛为好友。
@@ -127,10 +129,25 @@ OpenAPI / Realtime Schema / Migration / CI
 - 联系人备注、标签、星标。
 - 删除好友但保留历史会话语义。
 - 拉黑、解除拉黑、取消 PENDING、搜索隐藏和再申请阻断。
-- Flutter “搜索 / 申请 / 联系人 / 黑名单”四 Tab 页面。
+- Flutter 联系人正式信息架构：新的朋友、标签、联系人分组、资料详情、添加朋友与黑名单管理；桌面端为通讯录目录 + 详情双栏。
+- 好友关系现在用于联系人管理；非好友知道 DDID 也能直接私聊，Block 才阻断新消息。
 - PostgreSQL 真库并发集成和 P3 Flutter Widget/API Client 自动测试。
 
 详细设计见 [P3 好友与关系链](docs/11-P3好友关系链.md)。
+
+### P4 / P5 当前在制主链
+
+当前工作树已包含：
+
+- PostgreSQL sequence + Durable Outbox + Sync cursor + Redis 跨节点唤醒 + pending 幂等重试。
+- 未读/已读可见性、不限时撤回、回复定位、全局文本搜索。
+- 会话归档、最多 10 个置顶、Android 左右滑快捷操作。
+- `我的收藏` 唯一 SELF 自聊、普通消息收藏复制、单目标转发、会话内消息置顶。
+- IMAGE / GIF / STICKER / FILE / VOICE 真实消息链；文件流式上传/下载；Windows 拖拽确认。
+- 图片/GIF/Sticker/语音按 `userId + mediaId` 隔离的 512 MiB 本地持久化媒体缓存。
+- 新的朋友关系 Outbox/实时刷新与好友接受 SYSTEM 消息。
+
+这些能力以“代码已实现 / 待真人关闭”为主，不等于当前批次已经全部人工通过。完整状态看 `开发进度跟踪.md` 和 `人工测试.md`。
 
 本地人工验收现在统一使用：
 
@@ -144,13 +161,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-auth-dev.ps1
 ```
 
-具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。2026-08-08 的 P4 真人验收暴露出的 Web 置顶/免打扰、误已读/红点、回车发送、移动菜单、Android 键盘、Windows 原生窗口、头像大图、通知和聊天内 LiveKit 通话问题，当前修复版已经完成自动回归与 Windows/Web/Android 构建。下一步是**先 stop/start 一次旧 auth-dev，让新版主开发环境启动 LiveKit，再按人工测试文档复测失败项**；Sticker/GIF、图片消息、语音条、独立“已送达”和杀进程 Push 仍属于后续阶段。
+具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。当前代码已经进一步加入：DDID 非好友直接私聊（好友审批不再是聊天前置，Block 才是硬阻断）、Android 会话左右滑、Telegram 式唯一 `我的收藏` SELF 自聊、归档/最多 10 个置顶、转发/消息置顶/全局搜索、历史登录/切换账号、关系实时刷新、图片/GIF/Sticker/文件/语音真实媒体链与本地持久化缓存。**这些最新在制改动仍要按人工测试文档做 Windows/Android 跨端关闭，不能因为代码存在就写成真人已通过。** 独立“已送达”、完整 SQLite、本地剪贴板媒体发送、杀进程可靠 Push、正式 P7 通话持久化、公网 TURN/TLS 等仍未完成。
 
 详细当前完成度见 [开发进度跟踪.md](开发进度跟踪.md)。
 
 仍需冻结的高风险决策：
 
-- 项目正式名称与开源许可证。
+- 开源许可证最终选择（项目产品名已统一为 **DD**）。
 - 是否要求首个公开版本必须包含私聊端到端加密。
 - 是否允许公开注册，还是默认邀请制/管理员审批。
 - iOS 推送与 App Store 发布路线。

@@ -53,6 +53,31 @@ func TestNormalizeBoundedTextCountsRunes(t *testing.T) {
 	}
 }
 
+func TestNormalizeMentionSuggestionQuery(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: " Al ", want: "al", ok: true},
+		{input: "alice_01", want: "alice_01", ok: true},
+		{input: "a", ok: false},
+		{input: "1a", ok: false},
+		{input: "al-ice", ok: false},
+		{input: "你好", ok: false},
+		{input: "", ok: false},
+	} {
+		got, err := normalizeMentionSuggestionQuery(test.input)
+		if test.ok {
+			if err != nil || got != test.want {
+				t.Fatalf("normalizeMentionSuggestionQuery(%q)=(%q,%v), want %q", test.input, got, err, test.want)
+			}
+		} else if err == nil {
+			t.Fatalf("normalizeMentionSuggestionQuery(%q) unexpectedly succeeded: %q", test.input, got)
+		}
+	}
+}
+
 func TestNormalizePageBounds(t *testing.T) {
 	page, size := normalizePage(0, 1000)
 	if page != 1 || size != maximumPageSize {

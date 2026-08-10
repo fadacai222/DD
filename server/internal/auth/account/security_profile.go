@@ -54,9 +54,15 @@ type Me struct {
 }
 
 type UpdateMeInput struct {
+	Handle      string          `json:"handle"`
 	DisplayName string          `json:"displayName"`
 	Bio         string          `json:"bio"`
 	Privacy     PrivacySettings `json:"privacy"`
+}
+
+type ChangeEmailInput struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
 }
 
 type ManagedDevice struct {
@@ -127,14 +133,32 @@ func (service *Service) UpdateMe(ctx context.Context, principal Principal, input
 	if displayName == "" || utf8.RuneCountInString(displayName) > 80 || utf8.RuneCountInString(bio) > 500 {
 		return Me{}, errors.New("invalid profile")
 	}
+	handle := ""
+	if strings.TrimSpace(input.Handle) != "" {
+		normalized, err := identity.NormalizeHandle(input.Handle)
+		if err != nil {
+			return Me{}, fmt.Errorf("invalid handle: %w", err)
+		}
+		handle = normalized
+	}
 	now := service.now().UTC()
 	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Me{}, fmt.Errorf("begin profile update: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	result, err := tx.Exec(ctx, `UPDATE users SET display_name = $2, bio = $3, updated_at = $4 WHERE id = $1 AND status = 'ACTIVE'`, principal.UserID, displayName, bio, now)
+	result, err := tx.Exec(ctx, `
+		UPDATE users SET
+			display_name = $2,
+			bio = $3,
+			handle_normalized = CASE WHEN $4 = '' THEN handle_normalized ELSE $4 END,
+			updated_at = $5
+		WHERE id = $1 AND status = 'ACTIVE'
+	`, principal.UserID, displayName, bio, handle, now)
 	if err != nil {
+		if mapped := mapUniqueUserError(err); errors.Is(mapped, ErrHandleExists) {
+			return Me{}, mapped
+		}
 		return Me{}, fmt.Errorf("update profile: %w", err)
 	}
 	if result.RowsAffected() != 1 {
@@ -222,6 +246,132 @@ func (service *Service) RevokeAllDevices(ctx context.Context, principal Principa
 	}
 	service.audit(ctx, principal.UserID, principal.DeviceID, "LOGOUT_ALL", `{}`)
 	return nil
+}
+
+func (service *Service) SendEmailChangeCode(ctx context.Context, principal Principal, rawEmail string) error {
+	if service.codec == nil || service.mailer == nil {
+		return ErrUnavailable
+	}
+	email, err := identity.NormalizeEmail(rawEmail)
+	if err != nil {
+		return fmt.Errorf("invalid email: %w", err)
+	}
+	var currentEmail string
+	if err := service.pool.QueryRow(ctx, `SELECT email_normalized FROM users WHERE id=$1 AND status='ACTIVE'`, principal.UserID).Scan(&currentEmail); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load current email: %w", err)
+	}
+	if email == currentEmail {
+		return errors.New("new email must be different")
+	}
+	now := service.now().UTC()
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin email change code: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "change-email:"+email); err != nil {
+		return fmt.Errorf("lock email change scope: %w", err)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email_normalized=$1 AND status='ACTIVE' AND id<>$2)`, email, principal.UserID).Scan(&exists); err != nil {
+		return fmt.Errorf("check email change target: %w", err)
+	}
+	if exists {
+		return ErrEmailExists
+	}
+	var lastSent *time.Time
+	if err := tx.QueryRow(ctx, `SELECT max(sent_at) FROM email_codes WHERE email_normalized=$1 AND purpose='CHANGE_EMAIL'`, email).Scan(&lastSent); err != nil {
+		return fmt.Errorf("read email change cooldown: %w", err)
+	}
+	if lastSent != nil && now.Sub(lastSent.UTC()) < registrationCodeCooldown {
+		return ErrRateLimited
+	}
+	var recent int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM email_codes WHERE email_normalized=$1 AND purpose='CHANGE_EMAIL' AND sent_at >= $2`, email, now.Add(-registrationCodeWindow)).Scan(&recent); err != nil {
+		return fmt.Errorf("read email change rate: %w", err)
+	}
+	if recent >= registrationCodeMaxBurst {
+		return ErrRateLimited
+	}
+	code, err := service.codec.Generate()
+	if err != nil {
+		return err
+	}
+	hash := service.codec.Hash(email, emailcode.PurposeChangeEmail, code)
+	var codeID uuid.UUID
+	if err := tx.QueryRow(ctx, `INSERT INTO email_codes (purpose,email_normalized,code_hash,created_at,sent_at,expires_at) VALUES ('CHANGE_EMAIL',$1,$2,$3,$3,$4) RETURNING id`, email, hash, now, now.Add(registrationCodeTTL)).Scan(&codeID); err != nil {
+		return fmt.Errorf("store email change code: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit email change code: %w", err)
+	}
+	if err := service.mailer.SendVerificationCode(ctx, email, string(emailcode.PurposeChangeEmail), code); err != nil {
+		_, _ = service.pool.Exec(context.Background(), `UPDATE email_codes SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, codeID)
+		return fmt.Errorf("send email change code: %w", err)
+	}
+	service.audit(ctx, principal.UserID, principal.DeviceID, "EMAIL_CHANGE_CODE_SENT", `{}`)
+	return nil
+}
+
+func (service *Service) ChangeEmail(ctx context.Context, principal Principal, raw ChangeEmailInput) (Me, error) {
+	email, err := identity.NormalizeEmail(raw.Email)
+	if err != nil || strings.TrimSpace(raw.Code) == "" {
+		return Me{}, ErrInvalidCode
+	}
+	now := service.now().UTC()
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return Me{}, fmt.Errorf("begin email change: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "change-email-user:"+principal.UserID.String()); err != nil {
+		return Me{}, fmt.Errorf("lock email change user: %w", err)
+	}
+	var codeID uuid.UUID
+	var codeHash []byte
+	var attempts, maxAttempts int
+	var expiresAt time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT id,code_hash,attempts,max_attempts,expires_at
+		FROM email_codes
+		WHERE email_normalized=$1 AND purpose='CHANGE_EMAIL' AND consumed_at IS NULL
+		ORDER BY created_at DESC LIMIT 1 FOR UPDATE
+	`, email).Scan(&codeID, &codeHash, &attempts, &maxAttempts, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Me{}, ErrInvalidCode
+	}
+	if err != nil {
+		return Me{}, fmt.Errorf("load email change code: %w", err)
+	}
+	if !expiresAt.After(now) || attempts >= maxAttempts || !service.codec.Verify(codeHash, email, emailcode.PurposeChangeEmail, raw.Code) {
+		attempts++
+		_, _ = tx.Exec(ctx, `UPDATE email_codes SET attempts=LEAST($2,max_attempts), consumed_at=CASE WHEN $2>=max_attempts THEN $3 ELSE consumed_at END WHERE id=$1`, codeID, attempts, now)
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return Me{}, fmt.Errorf("record email change attempt: %w", commitErr)
+		}
+		return Me{}, ErrInvalidCode
+	}
+	result, err := tx.Exec(ctx, `UPDATE users SET email_normalized=$2,email_verified_at=$3,updated_at=$3 WHERE id=$1 AND status='ACTIVE'`, principal.UserID, email, now)
+	if err != nil {
+		if mapped := mapUniqueUserError(err); errors.Is(mapped, ErrEmailExists) {
+			return Me{}, mapped
+		}
+		return Me{}, fmt.Errorf("update email: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return Me{}, ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `UPDATE email_codes SET consumed_at=$2 WHERE id=$1`, codeID, now); err != nil {
+		return Me{}, fmt.Errorf("consume email change code: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Me{}, fmt.Errorf("commit email change: %w", err)
+	}
+	service.audit(ctx, principal.UserID, principal.DeviceID, "EMAIL_CHANGED", `{}`)
+	return service.GetMe(ctx, principal)
 }
 
 func (service *Service) SendPasswordResetCode(ctx context.Context, rawEmail string) error {

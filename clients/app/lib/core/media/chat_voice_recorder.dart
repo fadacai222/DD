@@ -25,7 +25,8 @@ final class ChatVoiceRecorder {
     : _recorder = recorder ?? AudioRecorder();
 
   final AudioRecorder _recorder;
-  final StreamController<double> _amplitudes = StreamController<double>.broadcast();
+  final StreamController<double> _amplitudes =
+      StreamController<double>.broadcast();
   BytesBuilder? _encoded;
   StreamSubscription<Uint8List>? _subscription;
   StreamSubscription<Amplitude>? _amplitudeSubscription;
@@ -106,10 +107,10 @@ final class ChatVoiceRecorder {
     final startedAt = _startedAt!;
     await _recorder.stop();
     await _awaitStreamClosed();
-    final durationMs = DateTime.now().difference(startedAt).inMilliseconds.clamp(
-      0,
-      maxChatVoiceDurationMs,
-    );
+    final durationMs = DateTime.now()
+        .difference(startedAt)
+        .inMilliseconds
+        .clamp(0, maxChatVoiceDurationMs);
     final encoded = _encoded!.takeBytes();
     final encoder = _encoder;
     final sampleRate = _sampleRate;

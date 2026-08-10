@@ -40,12 +40,32 @@
       "description": "Exact handle discovery, contact requests, contact metadata and blocking."
     },
     {
+      "name": "Groups",
+      "description": "Group lifecycle, membership, roles, join approval and ownership."
+    },
+    {
+      "name": "Calls",
+      "description": "Authenticated one-to-one audio/video call lifecycle and scoped LiveKit join credentials."
+    },
+    {
       "name": "Messaging",
-      "description": "Direct conversations, idempotent messages, read state, recall and cursor-based recovery sync."
+      "description": "Direct, self and group conversations, idempotent messages, read state, recall and cursor-based recovery sync."
     },
     {
       "name": "Media",
       "description": "Private media upload reservations, completion verification and short-lived authorized downloads."
+    },
+    {
+      "name": "Stickers",
+      "description": "Per-user custom stickers and server-relayed Telegram sticker-pack subscriptions."
+    },
+    {
+      "name": "Moments",
+      "description": "Contact-scoped social feed with per-post visibility, likes, comments and relationship privacy controls."
+    },
+    {
+      "name": "QR",
+      "description": "Instance-bound user/group QR payloads and one-time confirmed QR login sessions."
     }
   ],
   "paths": {
@@ -250,6 +270,37 @@
         }
       }
     },
+    "/api/v1/me/email/send-code": {
+      "post": {
+        "operationId": "requestCurrentUserEmailChangeCode",
+        "summary": "Send a verification code for changing the current user's email",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmailChangeCodeRequest"}}}},
+        "responses": {
+          "202": {"description": "Email change verification request accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmailCodeAcceptedResponse"}}}},
+          "400": {"description": "Email is invalid or matches the current email", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Email is already registered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Verification delivery is temporarily unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/me/email": {
+      "patch": {
+        "operationId": "changeCurrentUserEmail",
+        "summary": "Change the current user's email after verification",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChangeEmailRequest"}}}},
+        "responses": {
+          "200": {"description": "Email changed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountMeResponse"}}}},
+          "400": {"description": "Email or code is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Email is already registered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/me/avatar": {
       "put": {
         "operationId": "updateCurrentUserAvatar",
@@ -347,6 +398,41 @@
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "No visible active user exists for this handle", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "429": {"description": "Handle-search rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/users/mention-suggestions": {
+      "get": {
+        "operationId": "suggestMentionUsers",
+        "summary": "Suggest users for an @mention token",
+        "description": "Returns at most eight visible active users for a bounded handle-style query. Direct-conversation peers and contacts are ranked first. Blocked relationships are excluded and requests are rate limited.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "q", "in": "query", "required": true, "schema": {"type": "string", "minLength": 2, "maxLength": 32, "pattern": "^[A-Za-z][A-Za-z0-9_]{1,31}$"}},
+          {"name": "conversationId", "in": "query", "required": false, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 8, "default": 8}}
+        ],
+        "responses": {
+          "200": {"description": "Bounded mention suggestions", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MentionSuggestionListResponse"}}}},
+          "400": {"description": "Query, conversation id, or limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Mention suggestion rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/users/{userId}": {
+      "get": {
+        "operationId": "getPublicUserById",
+        "summary": "Resolve an active public user by stable user id",
+        "description": "Used by stable message entities such as mentions. Email is never returned and blocked or unavailable users are indistinguishable from not found.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "Public user and current relationship state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchUserResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "User is unavailable or blocked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -449,6 +535,21 @@
       }
     },
     "/api/v1/contacts/{userId}": {
+      "put": {
+        "operationId": "addContactDirectly",
+        "summary": "Add an existing user as an owned contact when relationship policy permits",
+        "description": "This endpoint is used by authenticated product flows that already resolved the stable user id. Normal discovery should still use the contact-request flow where required by policy.",
+        "tags": ["Contacts"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "Contact added or returned idempotently", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ContactResponse"}}}},
+          "400": {"description": "User id or relationship state is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Block or relationship policy forbids adding this contact", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target user is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
       "patch": {
         "operationId": "updateContactMetadata",
         "summary": "Update remark, star, or tags for one owned contact",
@@ -519,6 +620,561 @@
         }
       }
     },
+    "/api/v1/groups": {
+      "post": {
+        "operationId": "createGroup",
+        "summary": "Create a group conversation and invite initial contacts",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateGroupRequest"}}}},
+        "responses": {
+          "201": {"description": "Group created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupResponse"}}}},
+          "400": {"description": "Group name or member list is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "One or more invitees are not eligible contacts or are blocked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "One or more invitees are unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}": {
+      "get": {
+        "operationId": "getGroup",
+        "summary": "Get one active group visible to the current member",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "responses": {
+          "200": {"description": "Group details", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupResponse"}}}},
+          "400": {"description": "Group id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "updateGroup",
+        "summary": "Update group name, announcement or join policy",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateGroupRequest"}}}},
+        "responses": {
+          "200": {"description": "Group updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupResponse"}}}},
+          "400": {"description": "Update is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only an owner or admin may update group metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "dissolveGroup",
+        "summary": "Dissolve a group as its owner",
+        "description": "Dissolving revokes active group membership for every member and is not a local conversation hide.",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "responses": {
+          "200": {"description": "Group dissolved", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only the owner may dissolve the group", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/members": {
+      "get": {
+        "operationId": "listGroupMembers",
+        "summary": "List active group members",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "responses": {
+          "200": {"description": "Active members", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupMemberListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "inviteGroupMembers",
+        "summary": "Invite eligible contacts to a group",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InviteGroupMembersRequest"}}}},
+        "responses": {
+          "200": {"description": "Newly invited members", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupMemberListResponse"}}}},
+          "400": {"description": "Invite list is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Caller may not invite or an invitee is not eligible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Member limit reached", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/members/{userId}": {
+      "patch": {
+        "operationId": "updateGroupMember",
+        "summary": "Change an admin role or the current user's group nickname",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}, {"$ref": "#/components/parameters/UserId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateGroupMemberRequest"}}}},
+        "responses": {
+          "200": {"description": "Member updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupMemberResponse"}}}},
+          "400": {"description": "Member update is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Role or nickname update is not permitted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group member not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "removeGroupMember",
+        "summary": "Remove a member from a group",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}, {"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "Member removed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "400": {"description": "Target user id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Caller may not remove this member", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group member not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/leave": {
+      "post": {
+        "operationId": "leaveGroup",
+        "summary": "Leave a group as a non-owner member",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "responses": {
+          "200": {"description": "Membership ended", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Active group membership not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "The owner must transfer ownership or dissolve the group first", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/transfer": {
+      "post": {
+        "operationId": "transferGroupOwnership",
+        "summary": "Transfer group ownership to another active member",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TransferGroupOwnershipRequest"}}}},
+        "responses": {
+          "200": {"description": "Ownership transferred", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupResponse"}}}},
+          "400": {"description": "Target user id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only the current owner may transfer ownership", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target is not an active group member", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/join-requests": {
+      "get": {
+        "operationId": "listGroupJoinRequests",
+        "summary": "List pending group join requests for an owner or admin",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "responses": {
+          "200": {"description": "Pending join requests", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupJoinRequestListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only an owner or admin may list requests", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Group not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "requestGroupJoin",
+        "summary": "Request to join a group whose join mode is APPROVAL",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateGroupJoinRequest"}}}},
+        "responses": {
+          "201": {"description": "Join request created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupJoinRequestResponse"}}}},
+          "400": {"description": "Request message is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Group join policy or block relationship forbids the request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Requester is already an active member", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/join-requests/{requestId}/approve": {
+      "post": {
+        "operationId": "approveGroupJoinRequest",
+        "summary": "Approve a pending group join request",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}, {"$ref": "#/components/parameters/GroupJoinRequestId"}],
+        "responses": {
+          "200": {"description": "Join request approved", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupJoinRequestResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only an owner or admin may approve", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Join request not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Join request is already resolved or member limit reached", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/groups/{groupId}/join-requests/{requestId}/reject": {
+      "post": {
+        "operationId": "rejectGroupJoinRequest",
+        "summary": "Reject a pending group join request",
+        "tags": ["Groups"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/GroupId"}, {"$ref": "#/components/parameters/GroupJoinRequestId"}],
+        "responses": {
+          "200": {"description": "Join request rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupJoinRequestResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only an owner or admin may reject", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Join request not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Join request is already resolved", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moments": {
+      "get": {
+        "operationId": "listMomentsFeed",
+        "summary": "List the authenticated user's visible Moments feed",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "before", "in": "query", "required": false, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 50, "default": 30}}
+        ],
+        "responses": {
+          "200": {"description": "Visible Moments ordered newest first", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentListResponse"}}}},
+          "400": {"description": "Pagination is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "createMoment",
+        "summary": "Publish a Moment to a server-authorized contact audience",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateMomentRequest"}}}},
+        "responses": {
+          "201": {"description": "Moment published", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "400": {"description": "Text, media or visibility input is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Media ownership or audience relationship policy forbids publication", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moments/{momentId}": {
+      "get": {
+        "operationId": "getMoment",
+        "summary": "Get one Moment when it is currently visible to the authenticated user",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}],
+        "responses": {
+          "200": {"description": "Visible Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment does not exist or is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "deleteMoment",
+        "summary": "Delete a Moment authored by the authenticated user",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}],
+        "responses": {
+          "200": {"description": "Moment deleted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only the author may delete this Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moments/{momentId}/like": {
+      "put": {
+        "operationId": "likeMoment",
+        "summary": "Idempotently like a currently visible Moment",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}],
+        "responses": {
+          "200": {"description": "Updated Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment does not exist or is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "unlikeMoment",
+        "summary": "Idempotently remove the authenticated user's like",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}],
+        "responses": {
+          "200": {"description": "Updated Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment does not exist or is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moments/{momentId}/comments": {
+      "post": {
+        "operationId": "commentMoment",
+        "summary": "Add a comment or reply to a currently visible Moment",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateMomentCommentRequest"}}}},
+        "responses": {
+          "201": {"description": "Updated Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "400": {"description": "Comment is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment or reply target does not exist or is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moments/{momentId}/comments/{commentId}": {
+      "delete": {
+        "operationId": "deleteMomentComment",
+        "summary": "Delete an owned comment, or delete any comment from an owned Moment",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MomentId"}, {"$ref": "#/components/parameters/MomentCommentId"}],
+        "responses": {
+          "200": {"description": "Updated Moment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Comment deletion is not allowed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Moment or comment not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moment-preferences": {
+      "get": {
+        "operationId": "listMomentRelationshipPreferences",
+        "summary": "List non-default per-contact Moments privacy preferences",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Relationship preferences", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentPreferenceListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moment-preferences/{userId}": {
+      "patch": {
+        "operationId": "setMomentRelationshipPreference",
+        "summary": "Set or clear 'do not see them' and 'do not let them see me' for one current contact",
+        "tags": ["Moments"], "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateMomentPreferenceRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentPreferenceResponse"}}}},
+          "400": {"description": "Target or preference is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Target is not a current visible contact", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr/me": {
+      "get": {
+        "operationId": "getMyQrPayload",
+        "summary": "Get the authenticated user's instance-bound QR payload",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Stable user QR payload", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRPayloadResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/group-qr-invites": {
+      "post": {
+        "operationId": "createGroupQrInvite",
+        "summary": "Create a revocable expiring group QR invitation",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateGroupQRInviteRequest"}}}},
+        "responses": {
+          "201": {"description": "Group QR invitation created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupQRInviteResponse"}}}},
+          "400": {"description": "Group id, expiry or max-use constraint is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only current group owners or admins may create invitations", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Active group not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/group-qr-invites/{inviteId}": {
+      "delete": {
+        "operationId": "revokeGroupQrInvite",
+        "summary": "Revoke a group QR invitation",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "inviteId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "Invitation revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "400": {"description": "Invitation id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current user may not manage this group's invitations", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Invitation not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/group-qr/redeem": {
+      "post": {
+        "operationId": "redeemGroupQrInvite",
+        "summary": "Join a group using a secret QR invitation nonce",
+        "description": "The raw invitation nonce is carried in the POST body rather than the URL. The invitation is locked and its use count is updated in the same transaction as the group membership write.",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRNonceRequest"}}}},
+        "responses": {
+          "200": {"description": "Group joined or membership returned idempotently", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GroupQRRedeemResponse"}}}},
+          "400": {"description": "Nonce is malformed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Block or group policy forbids joining", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "QR invitation not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Group capacity or membership state conflicts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "QR invitation expired, revoked, or exhausted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr-login": {
+      "post": {
+        "operationId": "createQrLogin",
+        "summary": "Create a short-lived QR login challenge for a new desktop/web device",
+        "tags": ["QR"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateQRLoginRequest"}}}},
+        "responses": {
+          "201": {"description": "QR login challenge created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRLoginResponse"}}}},
+          "400": {"description": "Requested device is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr-login/status": {
+      "post": {
+        "operationId": "getQrLoginStatus",
+        "summary": "Poll QR login state without putting the bearer nonce in the URL",
+        "tags": ["QR"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRNonceRequest"}}}},
+        "responses": {
+          "200": {"description": "Current QR login state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRLoginResponse"}}}},
+          "400": {"description": "Nonce is malformed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Challenge not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr-login/scan": {
+      "post": {
+        "operationId": "scanQrLogin",
+        "summary": "Bind a QR login challenge to the authenticated mobile user and device",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRNonceRequest"}}}},
+        "responses": {
+          "200": {"description": "Challenge marked scanned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRLoginResponse"}}}},
+          "400": {"description": "Nonce is malformed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Challenge is bound to another scanner or wrong state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "Challenge is expired or consumed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr-login/confirm": {
+      "post": {
+        "operationId": "confirmQrLogin",
+        "summary": "Approve or reject a QR login from the same authenticated mobile device that scanned it",
+        "tags": ["QR"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfirmQRLoginRequest"}}}},
+        "responses": {
+          "200": {"description": "Challenge confirmed or rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRLoginResponse"}}}},
+          "400": {"description": "Request is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "The current account/device did not scan this challenge", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Challenge is already rejected or in an incompatible state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "Challenge is expired or consumed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/qr-login/consume": {
+      "post": {
+        "operationId": "consumeQrLogin",
+        "summary": "Consume an approved QR login exactly once and create the requested device session",
+        "description": "The new device and refresh token are created in the same PostgreSQL transaction that marks the challenge consumed, preventing duplicate sessions after retries or crashes.",
+        "tags": ["QR"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRNonceRequest"}}}},
+        "responses": {
+          "200": {"description": "Authenticated session for the newly authorized device", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QRLoginConsumeResponse"}}}},
+          "400": {"description": "Nonce is malformed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Challenge not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Challenge is pending, scanned, or rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "Challenge is expired or already consumed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/calls": {
+      "post": {
+        "operationId": "createCall",
+        "summary": "Start an authenticated one-to-one audio or video call",
+        "description": "The caller identity and origin device are derived from the bearer token. The callee must be an active contact and neither side may be blocked.",
+        "tags": ["Calls"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCallRequest"}}}},
+        "responses": {
+          "201": {"description": "Call is ringing", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CallResponse"}}}},
+          "400": {"description": "Call target or kind is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Relationship policy forbids the call", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Callee is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "One participant is already busy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/calls/active": {
+      "get": {
+        "operationId": "getActiveCall",
+        "summary": "Recover the active call for the current authenticated device",
+        "description": "A ringing callee call is visible on all callee devices. After one device accepts, only that device remains authorized for media control. The caller call is bound to the originating device.",
+        "tags": ["Calls"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Active call", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CallResponse"}}}},
+          "204": {"description": "No active call for this device"},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/calls/{callId}/actions": {
+      "post": {
+        "operationId": "applyCallAction",
+        "summary": "Accept, reject or hang up a call",
+        "tags": ["Calls"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/CallId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CallActionRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated call", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CallResponse"}}}},
+          "400": {"description": "Call id or action is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Authenticated user/device cannot perform this action", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Call not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Call is no longer in the required state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/calls/{callId}/token": {
+      "post": {
+        "operationId": "issueCallJoinToken",
+        "summary": "Issue a scoped LiveKit token for the accepted call and authenticated device",
+        "description": "The participant identity and display name are derived server-side. Caller-origin and callee-answering devices are the only devices allowed to obtain media credentials.",
+        "tags": ["Calls"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/CallId"}],
+        "responses": {
+          "200": {"description": "Scoped LiveKit join token", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CallJoinTokenResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Authenticated user is not a participant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Call not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Call is not accepted or this is not the authorized media device", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "LiveKit is not configured", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/conversations": {
       "get": {
         "operationId": "listConversations",
@@ -559,6 +1215,20 @@
         "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
         "responses": {
           "200": {"description": "Conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationResponse"}}}},
+          "400": {"description": "Conversation id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "hideConversationLocally",
+        "summary": "Hide a conversation locally through its current last sequence",
+        "description": "This is a per-user local hide. New messages can make the conversation visible again; the peer and shared history are not deleted.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/ConversationId"}],
+        "responses": {
+          "204": {"description": "Conversation hidden locally"},
           "400": {"description": "Conversation id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
@@ -635,6 +1305,69 @@
         }
       }
     },
+    "/api/v1/conversations/{conversationId}/pinned-messages": {
+      "get": {
+        "operationId": "listPinnedMessages",
+        "summary": "List messages pinned in a conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"$ref": "#/components/parameters/ConversationId"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}
+        ],
+        "responses": {
+          "200": {"description": "Pinned messages", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PinnedMessageListResponse"}}}},
+          "400": {"description": "Conversation id or limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Conversation is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/saved-messages/conversation": {
+      "put": {
+        "operationId": "ensureSavedMessagesConversation",
+        "summary": "Get or create the current user's SELF saved-messages conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Saved-messages SELF conversation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConversationResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Messaging service unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/saved-messages": {
+      "get": {
+        "operationId": "listSavedMessages",
+        "summary": "List the current user's saved-message bookmarks",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}],
+        "responses": {
+          "200": {"description": "Saved messages", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SavedMessageListResponse"}}}},
+          "400": {"description": "Limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/search": {
+      "get": {
+        "operationId": "searchMessages",
+        "summary": "Search visible message text globally or inside one conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "q", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 200}},
+          {"name": "conversationId", "in": "query", "required": false, "schema": {"type": "string", "format": "uuid"}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}
+        ],
+        "responses": {
+          "200": {"description": "Message search hits", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageSearchListResponse"}}}},
+          "400": {"description": "Query, conversationId, or limit is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/messages/{messageId}": {
       "get": {
         "operationId": "getMessage",
@@ -647,6 +1380,23 @@
           "400": {"description": "Message id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "Message is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "editMessage",
+        "summary": "Edit a text message sent by the current user",
+        "description": "Uses editVersion for optimistic concurrency. Repeating the same text is idempotent even when the supplied expected version is stale.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EditMessageRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}}},
+          "400": {"description": "Invalid text or unsupported message type", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current user cannot edit this message", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Edit version conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -676,6 +1426,78 @@
           "200": {"description": "Local deletion recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "Message is not visible to the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/save": {
+      "put": {
+        "operationId": "saveMessage",
+        "summary": "Save a visible message for the current user",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Message saved", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SavedMessageResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Message cannot be saved in its current state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "unsaveMessage",
+        "summary": "Remove a message from the current user's saved collection",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Message removed from saved collection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Saved message bookmark not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/pin": {
+      "put": {
+        "operationId": "pinMessage",
+        "summary": "Pin a visible message in its conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Message pinned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PinnedMessageResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Message is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Message cannot be pinned in its current state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "unpinMessage",
+        "summary": "Unpin a message from its conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Message unpinned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationResultResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Pinned message not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/forward": {
+      "post": {
+        "operationId": "forwardMessage",
+        "summary": "Forward a visible message into another visible conversation",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ForwardMessageRequest"}}}},
+        "responses": {
+          "201": {"description": "Forwarded message created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}}},
+          "400": {"description": "Forward request is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Source or target conversation policy forbids forwarding", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Source message or target conversation is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Forwarding state conflicts with the source message or target", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -756,6 +1578,109 @@
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "403": {"description": "Current user cannot access this media", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "Media not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/stickers/custom": {
+      "get": {
+        "operationId": "listCustomStickers",
+        "summary": "List custom stickers for the authenticated user",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Custom sticker library", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CustomStickerListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Sticker service unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "createCustomSticker",
+        "summary": "Add a READY STICKER media object to the current user's custom library",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCustomStickerRequest"}}}},
+        "responses": {
+          "201": {"description": "Custom sticker created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CustomStickerResponse"}}}},
+          "400": {"description": "Sticker metadata is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Media is not owned by the current user or cannot become a custom sticker", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Custom sticker library limit reached", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "delete": {
+        "operationId": "deleteCustomStickers",
+        "summary": "Soft-delete a batch of custom stickers owned by the current user",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteCustomStickersRequest"}}}},
+        "responses": {
+          "200": {"description": "Custom stickers deleted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StickerMutationResponse"}}}},
+          "400": {"description": "Sticker id batch is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "At least one sticker is not owned by the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/stickers/custom/order": {
+      "put": {
+        "operationId": "reorderCustomStickers",
+        "summary": "Replace the current user's complete custom sticker order",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReorderCustomStickersRequest"}}}},
+        "responses": {
+          "200": {"description": "Custom sticker order updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StickerMutationResponse"}}}},
+          "400": {"description": "Sticker order is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "At least one sticker is not owned by the current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Order does not contain the complete active sticker library", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/stickers/packs": {
+      "get": {
+        "operationId": "listStickerPacks",
+        "summary": "List Telegram sticker packs subscribed by the current user",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Subscribed sticker packs and cached items", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StickerPackListResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/stickers/packs/telegram": {
+      "post": {
+        "operationId": "importTelegramStickerPack",
+        "summary": "Import or subscribe to a Telegram sticker pack through the DD server relay",
+        "description": "Clients send only a validated Telegram setName. DD never accepts an arbitrary relay URL. The server uses the configured Telegram Bot API credential, caches supported files in DD object storage, and returns stable DD mediaIds. Static WebP stickers are supported in this contract; unsupported animated/video formats are counted explicitly rather than silently rendered blank.",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImportTelegramStickerPackRequest"}}}},
+        "responses": {
+          "200": {"description": "Pack subscribed using fresh cache or a completed relay import", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StickerPackResponse"}}}},
+          "400": {"description": "setName is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Per-user sticker pack limit reached", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "422": {"description": "Pack contains no currently supported static WebP sticker or a file violates size policy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "429": {"description": "Telegram pack import rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "502": {"description": "Telegram provider is temporarily unavailable or returned invalid data", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "TELEGRAM_STICKER_RELAY_NOT_CONFIGURED when this DD instance has no Telegram relay credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/stickers/packs/{packId}": {
+      "delete": {
+        "operationId": "removeStickerPack",
+        "summary": "Remove one user subscription without deleting the shared DD pack cache",
+        "tags": ["Stickers"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "packId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "responses": {
+          "200": {"description": "Pack subscription removed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StickerMutationResponse"}}}},
+          "400": {"description": "packId is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Current user is not subscribed to this pack", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -864,6 +1789,11 @@
       "PageSize": {"name": "pageSize", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
       "ContactRequestId": {"name": "requestId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "UserId": {"name": "userId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "GroupId": {"name": "groupId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "CallId": {"name": "callId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "MomentId": {"name": "momentId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "MomentCommentId": {"name": "commentId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "GroupJoinRequestId": {"name": "requestId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "ConversationId": {"name": "conversationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "MessageId": {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "UploadId": {"name": "uploadId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
@@ -912,7 +1842,7 @@
           "size": {"type": "integer", "format": "int64", "minimum": 1},
           "mimeType": {"type": "string", "minLength": 1, "maxLength": 120},
           "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
-          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "STICKER", "GIF"]}
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO"]}
         }
       },
       "MediaUploadGrant": {
@@ -942,7 +1872,7 @@
           "mimeType": {"type": "string"},
           "sizeBytes": {"type": "integer", "format": "int64", "minimum": 0},
           "sha256": {"type": "string"},
-          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "STICKER", "GIF"]},
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO"]},
           "status": {"type": "string", "enum": ["UPLOADING", "READY", "QUARANTINED", "FAILED", "DELETED"]},
           "encryptionMode": {"type": "string"},
           "createdAt": {"type": "string", "format": "date-time"},
@@ -969,6 +1899,116 @@
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/MediaDownloadGrant"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
+      "CustomSticker": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "mediaId", "mimeType", "width", "height", "sizeBytes", "sortOrder", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "mediaId": {"type": "string", "format": "uuid"},
+          "mimeType": {"type": "string", "enum": ["image/png", "image/webp", "image/gif"]},
+          "width": {"type": "integer", "minimum": 1, "maximum": 4096},
+          "height": {"type": "integer", "minimum": 1, "maximum": 4096},
+          "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1},
+          "sortOrder": {"type": "integer", "minimum": 0},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateCustomStickerRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mediaId", "width", "height"],
+        "properties": {
+          "mediaId": {"type": "string", "format": "uuid", "description": "READY media owned by the current user with purpose STICKER."},
+          "width": {"type": "integer", "minimum": 1, "maximum": 4096},
+          "height": {"type": "integer", "minimum": 1, "maximum": 4096}
+        }
+      },
+      "DeleteCustomStickersRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stickerIds"],
+        "properties": {
+          "stickerIds": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}
+        }
+      },
+      "ReorderCustomStickersRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stickerIds"],
+        "properties": {
+          "stickerIds": {"type": "array", "minItems": 1, "maxItems": 500, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}, "description": "Complete active custom-sticker order for the current user."}
+        }
+      },
+      "CustomStickerList": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "maxItems": 500, "items": {"$ref": "#/components/schemas/CustomSticker"}}}
+      },
+      "CustomStickerListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/CustomStickerList"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "CustomStickerResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/CustomSticker"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "StickerItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "mediaId", "emoji", "mimeType", "width", "height", "sizeBytes", "sortOrder"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "mediaId": {"type": "string", "format": "uuid", "description": "Stable DD media id; Telegram file URLs are never persisted in chat history."},
+          "emoji": {"type": "string", "maxLength": 32},
+          "mimeType": {"type": "string", "const": "image/webp"},
+          "width": {"type": "integer", "minimum": 1},
+          "height": {"type": "integer", "minimum": 1},
+          "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1},
+          "sortOrder": {"type": "integer", "minimum": 0}
+        }
+      },
+      "StickerPack": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "setName", "title", "supportedStickerCount", "unsupportedStickerCount", "sortOrder", "items", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "setName": {"type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 128},
+          "coverMediaId": {"type": "string", "format": "uuid"},
+          "supportedStickerCount": {"type": "integer", "minimum": 0, "maximum": 120},
+          "unsupportedStickerCount": {"type": "integer", "minimum": 0, "maximum": 120},
+          "sortOrder": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "maxItems": 120, "items": {"$ref": "#/components/schemas/StickerItem"}},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "StickerPackList": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "maxItems": 64, "items": {"$ref": "#/components/schemas/StickerPack"}}}
+      },
+      "StickerPackListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/StickerPackList"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "StickerPackResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/StickerPack"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "ImportTelegramStickerPackRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["setName"],
+        "properties": {"setName": {"type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$", "description": "Normalized Telegram sticker set name only. URLs are rejected at the server boundary."}}
+      },
+      "StickerMutationData": {
+        "type": "object",
+        "additionalProperties": {"type": ["boolean", "integer", "string"]}
+      },
+      "StickerMutationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/StickerMutationData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
       "AuthDeviceInput": {
         "type": "object",
         "additionalProperties": false,
@@ -986,6 +2026,21 @@
         "properties": {
           "email": {"type": "string", "format": "email", "maxLength": 254},
           "purpose": {"type": "string", "const": "register"}
+        }
+      },
+      "EmailChangeCodeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": {"email": {"type": "string", "format": "email", "maxLength": 254}}
+      },
+      "ChangeEmailRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "code"],
+        "properties": {
+          "email": {"type": "string", "format": "email", "maxLength": 254},
+          "code": {"type": "string", "pattern": "^[0-9]{6}$"}
         }
       },
       "EmailCodeAccepted": {
@@ -1215,6 +2270,32 @@
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/SearchUserResult"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
+      "MentionSuggestion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user", "relationship"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/PublicContactUser"},
+          "relationship": {"type": "string", "enum": ["CONVERSATION_PEER", "CONTACT", "NONE"]}
+        }
+      },
+      "MentionSuggestionListData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": {"type": "array", "maxItems": 8, "items": {"$ref": "#/components/schemas/MentionSuggestion"}}
+        }
+      },
+      "MentionSuggestionListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "requestId"],
+        "properties": {
+          "data": {"$ref": "#/components/schemas/MentionSuggestionListData"},
+          "requestId": {"$ref": "#/components/schemas/RequestIdValue"}
+        }
+      },
       "SendContactRequest": {
         "type": "object", "additionalProperties": false, "required": ["targetHandle"],
         "properties": {
@@ -1322,6 +2403,356 @@
         "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/OperationResultData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
+      "MomentUserPreview": {
+        "type": "object", "additionalProperties": false, "required": ["id", "handle", "displayName"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+        }
+      },
+      "MomentComment": {
+        "type": "object", "additionalProperties": false, "required": ["id", "author", "text", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "author": {"$ref": "#/components/schemas/MomentUserPreview"},
+          "replyToCommentId": {"type": ["string", "null"], "format": "uuid"},
+          "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "Moment": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "author", "text", "visibility", "mediaIds", "likeUsers", "comments", "likedByMe", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "author": {"$ref": "#/components/schemas/MomentUserPreview"},
+          "text": {"type": "string", "maxLength": 2000},
+          "visibility": {"type": "string", "enum": ["ALL_CONTACTS", "PRIVATE", "EXCLUDE"]},
+          "mediaIds": {"type": "array", "maxItems": 9, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+          "likeUsers": {"type": "array", "items": {"$ref": "#/components/schemas/MomentUserPreview"}},
+          "comments": {"type": "array", "items": {"$ref": "#/components/schemas/MomentComment"}},
+          "likedByMe": {"type": "boolean"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "MomentResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Moment"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MomentListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Moment"}}}
+      },
+      "MomentListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MomentListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "CreateMomentRequest": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "text": {"type": "string", "maxLength": 2000},
+          "mediaIds": {"type": "array", "maxItems": 9, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+          "visibility": {"type": "string", "enum": ["ALL_CONTACTS", "PRIVATE", "EXCLUDE"], "default": "ALL_CONTACTS"},
+          "visibilityUserIds": {"type": "array", "maxItems": 500, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}
+        },
+        "anyOf": [
+          {"required": ["text"]},
+          {"required": ["mediaIds"]}
+        ]
+      },
+      "CreateMomentCommentRequest": {
+        "type": "object", "additionalProperties": false, "required": ["text"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "replyToCommentId": {"type": ["string", "null"], "format": "uuid"}
+        }
+      },
+      "MomentPreference": {
+        "type": "object", "additionalProperties": false, "required": ["target", "hideTarget", "hideFromTarget", "updatedAt"],
+        "properties": {
+          "target": {"$ref": "#/components/schemas/MomentUserPreview"},
+          "hideTarget": {"type": "boolean"},
+          "hideFromTarget": {"type": "boolean"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "UpdateMomentPreferenceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["hideTarget", "hideFromTarget"],
+        "properties": {
+          "hideTarget": {"type": "boolean"},
+          "hideFromTarget": {"type": "boolean"}
+        }
+      },
+      "MomentPreferenceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MomentPreference"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MomentPreferenceListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/MomentPreference"}}}
+      },
+      "MomentPreferenceListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MomentPreferenceListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "QRPayload": {
+        "type": "object", "additionalProperties": false, "required": ["type", "value"],
+        "properties": {
+          "type": {"type": "string", "enum": ["USER"]},
+          "value": {"type": "string", "pattern": "^dd://qr/v1/user\\?"},
+          "expiresAt": {"type": ["string", "null"], "format": "date-time"}
+        }
+      },
+      "QRPayloadResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/QRPayload"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "QRNonceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["nonce"],
+        "properties": {"nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true}}
+      },
+      "CreateGroupQRInviteRequest": {
+        "type": "object", "additionalProperties": false, "required": ["groupId"],
+        "properties": {
+          "groupId": {"type": "string", "format": "uuid"},
+          "expiresInSeconds": {"type": "integer", "minimum": 60, "maximum": 2592000, "default": 86400},
+          "maxUses": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000}
+        }
+      },
+      "GroupQRInvite": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "groupId", "payload", "createdAt", "expiresAt", "useCount"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "groupId": {"type": "string", "format": "uuid"},
+          "payload": {"type": "string", "pattern": "^dd://qr/v1/group\\?"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "revokedAt": {"type": ["string", "null"], "format": "date-time"},
+          "useCount": {"type": "integer", "minimum": 0},
+          "maxUses": {"type": ["integer", "null"], "minimum": 1, "maximum": 10000}
+        }
+      },
+      "GroupQRInviteResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupQRInvite"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "GroupQRRedeemData": {
+        "type": "object", "additionalProperties": false, "required": ["group"],
+        "properties": {"group": {"$ref": "#/components/schemas/Group"}}
+      },
+      "GroupQRRedeemResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupQRRedeemData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "QRLoginDeviceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["name", "platform"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 120},
+          "platform": {"type": "string", "enum": ["ANDROID", "IOS", "WINDOWS", "MACOS", "LINUX", "WEB"]},
+          "appVersion": {"type": "string", "maxLength": 40}
+        }
+      },
+      "CreateQRLoginRequest": {
+        "type": "object", "additionalProperties": false, "required": ["device"],
+        "properties": {"device": {"$ref": "#/components/schemas/QRLoginDeviceRequest"}}
+      },
+      "ConfirmQRLoginRequest": {
+        "type": "object", "additionalProperties": false, "required": ["nonce", "approved"],
+        "properties": {
+          "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true},
+          "approved": {"type": "boolean"}
+        }
+      },
+      "QRLogin": {
+        "type": "object", "additionalProperties": false, "required": ["status", "device", "expiresAt"],
+        "properties": {
+          "status": {"type": "string", "enum": ["PENDING", "SCANNED", "CONFIRMED", "REJECTED", "CONSUMED", "EXPIRED"]},
+          "device": {"$ref": "#/components/schemas/QRLoginDeviceRequest"},
+          "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$", "writeOnly": true, "description": "Returned only when the desktop/web client creates the challenge; omitted from later status responses."},
+          "payload": {"type": "string", "pattern": "^dd://qr/v1/login\\?"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "scannedAt": {"type": ["string", "null"], "format": "date-time"},
+          "confirmedAt": {"type": ["string", "null"], "format": "date-time"}
+        }
+      },
+      "QRLoginResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/QRLogin"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "QRLoginConsumeData": {
+        "type": "object", "additionalProperties": false, "required": ["session"],
+        "properties": {"session": {"$ref": "#/components/schemas/AuthSession"}}
+      },
+      "QRLoginConsumeResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/QRLoginConsumeData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "Call": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "room_name", "caller_identity", "caller_name", "callee_identity", "callee_name", "kind", "status", "created_at", "ring_timeout_seconds"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "room_name": {"type": "string", "minLength": 1, "maxLength": 96},
+          "caller_identity": {"type": "string", "format": "uuid"},
+          "caller_name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "callee_identity": {"type": "string", "format": "uuid"},
+          "callee_name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "kind": {"type": "string", "enum": ["audio", "video"]},
+          "status": {"type": "string", "enum": ["ringing", "accepted", "rejected", "ended"]},
+          "created_at": {"type": "string", "format": "date-time"},
+          "accepted_at": {"type": ["string", "null"], "format": "date-time"},
+          "ended_at": {"type": ["string", "null"], "format": "date-time"},
+          "end_reason": {"type": "string", "maxLength": 32},
+          "ring_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}
+        }
+      },
+      "CallResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Call"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "CreateCallRequest": {
+        "type": "object", "additionalProperties": false, "required": ["calleeUserId", "kind"],
+        "properties": {
+          "calleeUserId": {"type": "string", "format": "uuid"},
+          "kind": {"type": "string", "enum": ["audio", "video"]}
+        }
+      },
+      "CallActionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["action"],
+        "properties": {"action": {"type": "string", "enum": ["accept", "reject", "hangup"]}}
+      },
+      "CallJoinTokenResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["server_url", "token", "room_name", "participant_identity", "expires_in_seconds"],
+        "properties": {
+          "server_url": {"type": "string", "format": "uri"},
+          "token": {"type": "string", "minLength": 1},
+          "room_name": {"type": "string", "minLength": 1},
+          "participant_identity": {"type": "string", "format": "uuid"},
+          "expires_in_seconds": {"type": "integer", "minimum": 1}
+        }
+      },
+      "GroupUserPreview": {
+        "type": "object", "additionalProperties": false, "required": ["id", "handle", "displayName"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+        }
+      },
+      "Group": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "announcement", "joinMode", "status", "memberCount", "ownerUserId", "myRole", "myNickname", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "announcement": {"type": "string", "maxLength": 1000},
+          "joinMode": {"type": "string", "enum": ["INVITE_ONLY", "APPROVAL"]},
+          "status": {"type": "string", "enum": ["ACTIVE", "DISSOLVED"]},
+          "memberCount": {"type": "integer", "minimum": 0, "maximum": 500},
+          "ownerUserId": {"type": "string", "format": "uuid"},
+          "myRole": {"type": "string", "enum": ["OWNER", "ADMIN", "MEMBER"]},
+          "myNickname": {"type": "string", "maxLength": 80},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "dissolvedAt": {"type": ["string", "null"], "format": "date-time"}
+        }
+      },
+      "GroupResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/Group"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "CreateGroupRequest": {
+        "type": "object", "additionalProperties": false, "required": ["name", "memberIds"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "memberIds": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}
+        }
+      },
+      "UpdateGroupRequest": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "announcement": {"type": "string", "maxLength": 1000},
+          "joinMode": {"type": "string", "enum": ["INVITE_ONLY", "APPROVAL"]}
+        }
+      },
+      "InviteGroupMembersRequest": {
+        "type": "object", "additionalProperties": false, "required": ["userIds"],
+        "properties": {"userIds": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}}
+      },
+      "UpdateGroupMemberRequest": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "role": {"type": "string", "enum": ["ADMIN", "MEMBER"]},
+          "nickname": {"type": "string", "maxLength": 80}
+        }
+      },
+      "TransferGroupOwnershipRequest": {
+        "type": "object", "additionalProperties": false, "required": ["userId"],
+        "properties": {"userId": {"type": "string", "format": "uuid"}}
+      },
+      "CreateGroupJoinRequest": {
+        "type": "object", "additionalProperties": false,
+        "properties": {"message": {"type": "string", "maxLength": 200}}
+      },
+      "GroupMember": {
+        "type": "object", "additionalProperties": false, "required": ["user", "role", "nickname", "joinedAt"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/GroupUserPreview"},
+          "role": {"type": "string", "enum": ["OWNER", "ADMIN", "MEMBER"]},
+          "nickname": {"type": "string", "maxLength": 80},
+          "joinedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "GroupMemberResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupMember"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "GroupMemberListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "maxItems": 500, "items": {"$ref": "#/components/schemas/GroupMember"}}}
+      },
+      "GroupMemberListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupMemberListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "GroupJoinRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "groupId", "requester", "message", "status", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "groupId": {"type": "string", "format": "uuid"},
+          "requester": {"$ref": "#/components/schemas/GroupUserPreview"},
+          "message": {"type": "string", "maxLength": 200},
+          "status": {"type": "string", "enum": ["PENDING", "APPROVED", "REJECTED", "CANCELLED"]},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "resolvedAt": {"type": ["string", "null"], "format": "date-time"},
+          "resolvedByUserId": {"type": ["string", "null"], "format": "uuid"}
+        }
+      },
+      "GroupJoinRequestResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupJoinRequest"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "GroupJoinRequestListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/GroupJoinRequest"}}}
+      },
+      "GroupJoinRequestListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/GroupJoinRequestListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MessagingGroupPreview": {
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "memberCount"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 80},
+          "memberCount": {"type": "integer", "minimum": 0, "maximum": 500}
+        }
+      },
       "MessagingUserPreview": {
         "type": "object", "additionalProperties": false, "required": ["id", "handle", "displayName"],
         "properties": {
@@ -1330,23 +2761,37 @@
           "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
         }
       },
+      "MessageEntity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "offset", "length"],
+        "properties": {
+          "type": {"type": "string", "enum": ["MENTION", "MENTION_ALL"]},
+          "offset": {"type": "integer", "minimum": 0, "description": "UTF-16 code-unit offset in MessageContent.text."},
+          "length": {"type": "integer", "minimum": 1, "description": "UTF-16 code-unit length in MessageContent.text."},
+          "userId": {"type": "string", "format": "uuid", "description": "Stable server-authoritative user binding for a mention."},
+          "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$", "description": "Handle snapshot captured when the entity was bound."}
+        }
+      },
       "MessageContent": {
         "type": "object", "additionalProperties": false,
         "properties": {
           "text": {"type": "string", "maxLength": 4000},
+          "entities": {"type": "array", "maxItems": 64, "readOnly": true, "items": {"$ref": "#/components/schemas/MessageEntity"}, "description": "Server-generated structured entities. Client-supplied entity bindings are ignored and mentions are rebound from text."},
           "mediaId": {"type": "string", "format": "uuid"},
+          "posterMediaId": {"type": "string", "format": "uuid", "description": "Poster/thumbnail media for VIDEO messages."},
           "width": {"type": "integer", "minimum": 1, "maximum": 20000},
           "height": {"type": "integer", "minimum": 1, "maximum": 20000},
           "fileName": {"type": "string", "maxLength": 255, "readOnly": true},
           "mimeType": {"type": "string", "maxLength": 255, "readOnly": true},
           "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1, "readOnly": true},
-          "durationMs": {"type": "integer", "minimum": 250, "maximum": 600000}
+          "durationMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Duration in milliseconds. VOICE is additionally limited to 250..600000 by message-type validation; VIDEO supports up to 24 hours."}
         },
         "description": "Message content fields are validated by message type. Server-owned fileName/mimeType/sizeBytes are derived from the READY media object and cannot be spoofed by the sender."
       },
       "Message": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "conversationId", "sequence", "senderUserId", "senderDeviceId", "clientMessageId", "type", "createdAt"],
+        "required": ["id", "conversationId", "sequence", "senderUserId", "senderDeviceId", "clientMessageId", "type", "createdAt", "editVersion"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "conversationId": {"type": "string", "format": "uuid"},
@@ -1354,10 +2799,13 @@
           "senderUserId": {"type": "string", "format": "uuid"},
           "senderDeviceId": {"type": "string", "format": "uuid"},
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "SYSTEM", "ENCRYPTED"]},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "VIDEO", "SYSTEM", "ENCRYPTED"]},
           "content": {"oneOf": [{"$ref": "#/components/schemas/MessageContent"}, {"type": "null"}]},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"},
+          "forwardedFromMessageId": {"type": ["string", "null"], "format": "uuid"},
           "createdAt": {"type": "string", "format": "date-time"},
+          "editedAt": {"type": ["string", "null"], "format": "date-time"},
+          "editVersion": {"type": "integer", "minimum": 0, "default": 0},
           "recalledAt": {"type": ["string", "null"], "format": "date-time"}
         }
       },
@@ -1365,20 +2813,23 @@
         "type": "object", "additionalProperties": false, "required": ["isPinned"],
         "properties": {
           "isPinned": {"type": "boolean"},
-          "mutedUntil": {"type": ["string", "null"], "format": "date-time"}
+          "mutedUntil": {"type": ["string", "null"], "format": "date-time"},
+          "archivedAt": {"type": ["string", "null"], "format": "date-time"}
         }
       },
       "Conversation": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "type", "lastSequence", "lastReadSequence", "unreadCount", "preferences", "createdAt", "updatedAt"],
+        "required": ["id", "type", "lastSequence", "lastReadSequence", "unreadCount", "canWrite", "preferences", "createdAt", "updatedAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
-          "type": {"type": "string", "enum": ["DIRECT", "GROUP"]},
+          "type": {"type": "string", "enum": ["DIRECT", "GROUP", "SELF"]},
           "peer": {"oneOf": [{"$ref": "#/components/schemas/MessagingUserPreview"}, {"type": "null"}]},
+          "group": {"oneOf": [{"$ref": "#/components/schemas/MessagingGroupPreview"}, {"type": "null"}]},
           "lastSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "lastReadSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "peerLastReadSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 0, "description": "Direct-chat peer read cursor when the peer allows read receipts; null when hidden or not applicable."},
           "unreadCount": {"type": "integer", "format": "int64", "minimum": 0},
+          "canWrite": {"type": "boolean"},
           "lastMessage": {"oneOf": [{"$ref": "#/components/schemas/Message"}, {"type": "null"}]},
           "preferences": {"$ref": "#/components/schemas/ConversationPreferences"},
           "createdAt": {"type": "string", "format": "date-time"},
@@ -1405,9 +2856,16 @@
         "type": "object", "additionalProperties": false, "required": ["clientMessageId", "type", "content"],
         "properties": {
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE"]},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "VIDEO"]},
           "content": {"$ref": "#/components/schemas/MessageContent"},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"}
+        }
+      },
+      "EditMessageRequest": {
+        "type": "object", "additionalProperties": false, "required": ["text", "expectedEditVersion"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "expectedEditVersion": {"type": "integer", "minimum": 0}
         }
       },
       "MessageResponse": {
@@ -1446,8 +2904,67 @@
         "properties": {
           "isPinned": {"type": "boolean"},
           "mutedUntil": {"type": "string", "format": "date-time"},
-          "clearMute": {"type": "boolean", "default": false}
+          "clearMute": {"type": "boolean", "default": false},
+          "isArchived": {"type": "boolean"}
         }
+      },
+      "ForwardMessageRequest": {
+        "type": "object", "additionalProperties": false, "required": ["targetConversationId", "clientMessageId"],
+        "properties": {
+          "targetConversationId": {"type": "string", "format": "uuid"},
+          "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"}
+        }
+      },
+      "SavedMessage": {
+        "type": "object", "additionalProperties": false, "required": ["message", "savedAt"],
+        "properties": {
+          "message": {"$ref": "#/components/schemas/Message"},
+          "savedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "SavedMessageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/SavedMessage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "SavedMessageListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/SavedMessage"}}}
+      },
+      "SavedMessageListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/SavedMessageListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "PinnedMessage": {
+        "type": "object", "additionalProperties": false, "required": ["message", "pinnedByUserId", "pinnedAt"],
+        "properties": {
+          "message": {"$ref": "#/components/schemas/Message"},
+          "pinnedByUserId": {"type": "string", "format": "uuid"},
+          "pinnedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "PinnedMessageResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/PinnedMessage"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "PinnedMessageListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PinnedMessage"}}}
+      },
+      "PinnedMessageListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/PinnedMessageListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "MessageSearchHit": {
+        "type": "object", "additionalProperties": false, "required": ["message"],
+        "properties": {"message": {"$ref": "#/components/schemas/Message"}}
+      },
+      "MessageSearchListData": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/MessageSearchHit"}}}
+      },
+      "MessageSearchListResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MessageSearchListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
       "SyncEvent": {
         "type": "object", "additionalProperties": false,

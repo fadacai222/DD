@@ -221,10 +221,11 @@ if ($null -ne $portOwner) {
 }
 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
-if (-not (Test-Path -LiteralPath $EnvFile)) {
-    & $InitEnvScript
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to initialize infra/dev/.env.' }
-}
+# Always run the non-destructive environment upgrader. New optional settings
+# (for example Telegram sticker relay) must reach an existing developer .env
+# without forcing credential rotation.
+& $InitEnvScript
+if ($LASTEXITCODE -ne 0) { throw 'Failed to initialize or upgrade infra/dev/.env.' }
 Import-DotEnv -Path $EnvFile
 Ensure-AuthTokenSecret
 
@@ -249,10 +250,12 @@ $startedWeb = $false
 $firewallReady = $false
 
 try {
+    Write-Host '[1/6] Checking DD LAN firewall rules...'
     & $FirewallScript -LanIP $LanIP
     if ($LASTEXITCODE -ne 0) { throw 'Unable to configure Auth LAN firewall.' }
     $firewallReady = $true
 
+    Write-Host '[2/6] Starting PostgreSQL / Mailpit / Redis / MinIO / LiveKit...'
     & docker compose --env-file $EnvFile -f $ComposeFile up -d postgres mailpit redis minio livekit
     if ($LASTEXITCODE -ne 0) { throw 'Unable to start PostgreSQL/Mailpit/Redis/MinIO/LiveKit.' }
     Wait-ComposeHealthy -Service 'postgres'
@@ -260,6 +263,7 @@ try {
     Wait-ComposeHealthy -Service 'redis'
     Wait-ComposeHealthy -Service 'minio'
     Wait-ComposeHealthy -Service 'livekit'
+    Write-Host '[3/6] Initializing private MinIO bucket...'
     & docker compose --env-file $EnvFile -f $ComposeFile run --rm minio-init
     if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize private MinIO bucket dd-media.' }
 
@@ -288,6 +292,7 @@ try {
     $env:LIVEKIT_API_KEY = $env:DD_LIVEKIT_API_KEY
     $env:LIVEKIT_API_SECRET = $env:DD_LIVEKIT_API_SECRET
 
+    Write-Host '[4/6] Applying database migrations and building DD API / worker...'
     Push-Location $ServerDir
     try {
         & $GoExe run ./cmd/migrate up
@@ -302,6 +307,7 @@ try {
     }
 
     Remove-Item -LiteralPath $ApiOut, $ApiErr, $WorkerOut, $WorkerErr -Force -ErrorAction SilentlyContinue
+    Write-Host '[5/6] Starting DD API and messaging worker...'
     $apiProcess = Start-Process `
         -FilePath $ApiExe `
         -WorkingDirectory $ServerDir `
@@ -324,6 +330,7 @@ try {
     }
 
     if (-not $SkipClientBuild) {
+        Write-Host '[6/6] Building Windows / Web / Android clients...'
         & $BuildClientScript -Target all
         if ($LASTEXITCODE -ne 0) { throw 'Client build failed.' }
     }

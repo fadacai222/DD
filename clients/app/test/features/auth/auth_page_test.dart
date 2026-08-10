@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/auth/data/auth_api_client.dart';
+import 'package:im_client/features/auth/data/login_history_store.dart';
 import 'package:im_client/features/auth/domain/account_management.dart';
 import 'package:im_client/features/auth/domain/auth_session.dart';
 import 'package:im_client/features/auth/presentation/auth_page.dart';
@@ -24,6 +25,52 @@ void main() {
       expect(find.byKey(const Key('auth-email')), findsOneWidget);
       expect(find.byKey(const Key('auth-send-code')), findsOneWidget);
       expect(find.byKey(const Key('auth-register')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'registration uses DDID wording and login history pre-fills account',
+    (tester) async {
+      final history = _MemoryLoginHistory([
+        LoginHistoryEntry(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          userId: 'history-user',
+          email: 'history@example.com',
+          ddid: 'history_01',
+          displayName: '历史用户',
+          lastUsedAt: DateTime.utc(2026, 8, 9, 6),
+        ),
+      ]);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AuthPage(gateway: _FakeAuthGateway(), historyStore: history),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('DDID'), findsOneWidget);
+      expect(find.text('账号短号'), findsNothing);
+
+      await tester.tap(find.widgetWithText(Tab, '登录'));
+      await tester.pumpAndSettle();
+      expect(find.text('历史登录'), findsOneWidget);
+      expect(find.text('历史用户'), findsOneWidget);
+      expect(find.textContaining('DDID：history_01'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('login-history-history-user')));
+      await tester.pump();
+      final email = tester.widget<TextField>(
+        find.byKey(const Key('auth-email')),
+      );
+      expect(email.controller?.text, 'history@example.com');
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('auth-password')))
+            .focusNode
+            ?.hasFocus,
+        isTrue,
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -148,6 +195,7 @@ final class _FakeAuthGateway implements AuthGateway {
   Future<AccountMe> updateMe({
     required Uri origin,
     required String accessToken,
+    required String handle,
     required String displayName,
     required String bio,
     required AccountPrivacy privacy,
@@ -155,11 +203,41 @@ final class _FakeAuthGateway implements AuthGateway {
     profile: AccountProfile(
       id: 'u1',
       email: 'alice@example.com',
-      handle: 'alice',
+      handle: handle,
       displayName: displayName,
       bio: bio,
     ),
     privacy: privacy,
+  );
+
+  @override
+  Future<void> sendEmailChangeCode({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+  }) async {}
+
+  @override
+  Future<AccountMe> changeEmail({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+    required String code,
+  }) async => AccountMe(
+    profile: AccountProfile(
+      id: 'u1',
+      email: email,
+      handle: 'alice',
+      displayName: 'Alice',
+      bio: '',
+    ),
+    privacy: const AccountPrivacy(
+      allowEmailSearch: false,
+      allowStrangerMessages: false,
+      showOnlineStatus: true,
+      readReceiptsEnabled: true,
+      notificationPreviewEnabled: true,
+    ),
   );
 
   @override
@@ -197,6 +275,26 @@ final class _FakeAuthGateway implements AuthGateway {
 
   @override
   void close() {}
+}
+
+final class _MemoryLoginHistory implements LoginHistoryRepository {
+  _MemoryLoginHistory(List<LoginHistoryEntry> initial)
+    : entries = List<LoginHistoryEntry>.from(initial);
+
+  List<LoginHistoryEntry> entries;
+
+  @override
+  Future<List<LoginHistoryEntry>> list() async => List.unmodifiable(entries);
+
+  @override
+  Future<void> upsert(LoginHistoryEntry entry) async {
+    entries = [entry, ...entries.where((item) => item.userId != entry.userId)];
+  }
+
+  @override
+  Future<void> remove(LoginHistoryEntry entry) async {
+    entries = entries.where((item) => item.userId != entry.userId).toList();
+  }
 }
 
 AuthSession _session() => AuthSession(

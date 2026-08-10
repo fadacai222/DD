@@ -1,202 +1,289 @@
-# P0 实时通信 PoC
+# P0 实时通信 PoC｜历史结论与当前正式化状态
 
-## 目标
+> 更新时间：2026-08-11（P6-P10 演进状态同步）
+>
+> 本文不再作为“待做 PoC 清单”，而是记录实时通信 PoC 得出了什么结论，以及哪些能力已经进入正式主链。
 
-验证首版实时通信最小闭环，不包含账号、数据库和聊天业务：
+---
 
-1. Go 服务端提供 `/health`、`/version`、`/ws`。
-2. Flutter 客户端完成 HTTP 健康检查和 WebSocket 连接。
-3. WebSocket 首包必须为 `hello`。
-4. 服务端返回 `hello_ack` 并主动推送 `server_ready`。
-5. 客户端支持 `ping/pong`、自动重连和事件 ID 去重。
-6. 服务端默认拒绝跨域 WebSocket，仅允许显式配置的 Origin。
-7. Windows、Web、Android 使用同一套 Dart 实时通信代码。
+# 1. P0 当初要验证什么
 
-## 当前实现
+最初未知点：
 
-### Go 服务端
+- Flutter Windows/Android/Web 是否能稳定连接 Go WebSocket。
+- Origin / CORS / 局域网地址如何配置。
+- 断网、进程重启、重连行为是否可控。
+- 同一协议是否能跨三端复用。
 
-路径：`server/`
+P0 目标不是完整聊天，而是验证：
 
-- 默认端口：`18473`。
-- `IM_PORT`：监听端口，限制为 `10000-65535`。
-- `IM_ALLOWED_ORIGINS`：逗号分隔的 WebSocket Origin 模式。
-- WebSocket 单消息上限：16 KiB。
-- 连接 ID：128 位加密安全随机数。
-- 事件序号：服务进程内全局递增，并以当前微秒时间初始化。
-- 首包不是 `hello`、重复 `hello`、未知事件类型均返回结构化错误。
-- 已补 `go.sum`，依赖可重复解析。
-
-### 实时通信核心
-
-路径：`clients/realtime_poc/`
-
-该包被正式 Flutter App 通过 path dependency 引用：
-
-- 调用 `/health`。
-- 连接 `/ws` 并等待 `channel.ready` 后发送 `hello`。
-- 发送最近事件游标。
-- 断线后按 1、2、4、8、16、30 秒退避重连。
-- 拒绝重复或倒序事件 ID。
-- 支持 `ping/pong`。
-- 客户端主动关闭使用 WebSocket 正常关闭码 `1000`。
-- 提供一次握手冒烟测试和服务重启重连测试。
-
-### 正式 Flutter 调试 App
-
-路径：`clients/app/`
-
-当前不是最终聊天 UI，而是三端实时通信调试台：
-
-- 服务器地址输入。
-- 健康检查。
-- 连接、断开、发送 Ping。
-- 连接状态、活动服务器和客户端 ID。
-- 实时事件和错误日志。
-- 日志最多保留 200 条。
-- 桌面宽屏左右分栏，移动窄屏纵向排列。
-- Android Release 默认禁止明文 HTTP；仅 Debug Manifest 允许本机 PoC 明文访问。
-- 切换服务器前自动释放旧网关和 StreamSubscription。
-
-## 协议示例
-
-客户端首包：
-
-```json
-{
-  "type": "hello",
-  "requestId": "hello-001",
-  "payload": {
-    "clientId": "windows-test-client",
-    "lastEventId": 0
-  }
-}
+```text
+Go REST + WebSocket
+↔ Flutter Windows / Web / Android
 ```
 
-服务端确认：
+可行。
 
-```json
-{
-  "type": "hello_ack",
-  "requestId": "hello-001",
-  "eventId": 1,
-  "payload": {
-    "connectionId": "随机连接ID",
-    "protocolVersion": "1"
-  }
-}
+---
+
+# 2. 已验证结论
+
+P0 已完成并被后续正式代码继承：
+
+- Go HTTP 服务可作为 Core API。
+- Flutter 三端可使用同一实时协议。
+- WebSocket 连接可进行 Origin 检查。
+- 客户端可心跳、断线重连。
+- 局域网 Android 需要使用可达的 PC LAN IP，而不是 `127.0.0.1`。
+- Windows/Web/Android 可以围绕同一 API Origin 进行联调。
+
+这些结论已经不再只是 PoC：正式 `/api/v1/realtime`、MessagingCoordinator 与 Sync 都在使用类似能力。
+
+---
+
+# 3. 当前实时架构已发生的升级
+
+旧 PoC 心智：
+
+```text
+WebSocket = 实时消息本身
 ```
 
-服务端主动事件：
+当前正式心智：
 
-```json
-{
-  "type": "server_ready",
-  "eventId": 2,
-  "payload": {
-    "serverTime": "RFC3339时间"
-  }
-}
+```text
+PostgreSQL = 事实
+Outbox = 可靠异步出口
+Sync Events = 用户可恢复增量
+WebSocket = 低延迟唤醒/提示
+Redis = 跨 API 节点 hint
 ```
 
-## 验证命令
+这是后续可靠消息最重要的架构升级。
 
-### 完整质量检查
+---
+
+# 4. 当前入口
+
+### 正式
+
+```text
+GET Upgrade /api/v1/realtime
+```
+
+需要用户鉴权。
+
+### 兼容
+
+```text
+GET Upgrade /ws
+```
+
+保留给历史 PoC / 兼容工具，不应成为新客户端首选。
+
+---
+
+# 5. 当前服务器行为
+
+Realtime server 当前具备：
+
+- WebSocket Upgrade。
+- Origin policy。
+- 鉴权模式。
+- Ping/Pong/连接管理。
+- 用户在线连接路由。
+- 与 Redis realtime bus 的可选桥接。
+- Call event 等兼容实时事件。
+
+详细实现以 `server/internal/httpapi`、`server/internal/realtimev1`、`server/internal/realtimebus` 为准。
+
+---
+
+# 6. 当前客户端行为
+
+正式 Flutter 客户端不依赖 `clients/realtime_poc` 作为主 UI。
+
+真正业务入口在：
+
+```text
+clients/app/lib/features/messaging/application/messaging_coordinator.dart
+```
+
+客户端：
+
+1. 启动后加载本地/服务端会话。
+2. 建立 realtime。
+3. 收到新状态 hint。
+4. 拉 Sync/API 事实。
+5. 更新本地 UI。
+6. 断线后重连并补 Sync。
+
+---
+
+# 7. 为什么不能只靠 WebSocket
+
+WebSocket 可能因为以下原因丢事件：
+
+- 手机后台冻结。
+- Wi-Fi ↔ 蜂窝切换。
+- NAT 过期。
+- API 重启。
+- 用户暂时离线。
+- 浏览器 tab 挂起。
+- Redis 暂时不可用。
+
+如果“消息是否收到”只依赖 socket event，就会产生静默缺口。
+
+所以当前必须保持：
+
+```text
+socket for latency
+sync for correctness
+```
+
+---
+
+# 8. Realtime Event 设计原则
+
+事件尽量表达：
+
+```text
+某用户有新状态需要拉取
+```
+
+而不是把所有业务事实仅塞进瞬时 WebSocket frame。
+
+这样：
+
+- 事件重复可容忍。
+- 顺序临时错乱可通过 Sync 修正。
+- 多 API 节点更容易扩展。
+
+---
+
+# 9. 客户端重连要求
+
+必须：
+
+- 有退避。
+- 有 jitter。
+- 有最大间隔。
+- 网络恢复后快速尝试。
+- 重连成功立即 Sync。
+- Access Token 刷新后更新连接凭据。
+
+禁止：
+
+- 10ms 无限重连打爆服务端。
+- 重连后仅显示“已连接”但不补数据。
+
+---
+
+# 10. 多节点
+
+当前 Redis bus 为多 API 节点提供 hint。
+
+节点 A 写消息：
+
+```text
+Postgres commit
+→ Outbox/Sync
+→ Redis hint
+→ 节点 B 通知该用户 socket
+```
+
+Redis 短暂失败不能变成数据库事务失败的默认原因。
+
+---
+
+# 11. Push 与 Realtime 的区别
+
+当前 realtime 连接只有 App 进程活跃/系统允许时才可靠。
+
+真正“App 被杀死也收到通知”需要：
+
+```text
+FCM / APNs / UnifiedPush
+```
+
+P10 Push 已开始数据模型设计，最终应做：
+
+```text
+new sync event
+→ Push Worker
+→ OS wake/notification
+→ client opens/reconnects
+→ Sync
+```
+
+Push 不是消息存储。
+
+---
+
+# 12. P0 回归命令
+
+历史脚本仍存在：
 
 ```powershell
-cd C:\Users\admin\Desktop\复刻微信
-powershell -ExecutionPolicy Bypass -File .\scripts\test-client.ps1
-```
-
-该脚本包含：
-
-1. Go format、vet、test。
-2. 实时通信包 format、analyze、test。
-3. Flutter App format、analyze、Widget Test。
-4. 临时启动 Go 服务端，执行真实 REST/WebSocket 握手和 Ping/Pong。
-5. 检查服务和端口是否清理完成。
-
-### 服务重启与自动重连
-
-```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-poc.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\test-poc.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\test-realtime-protocol.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\test-reconnect.ps1
 ```
 
-脚本会：
+实际参数以脚本为准。
 
-1. 启动第一份 Go 服务。
-2. Dart 客户端完成第一次 `server_ready`。
-3. 强制停止服务端。
-4. 等待客户端检测断线。
-5. 启动第二份 Go 服务。
-6. 客户端自动重连并再次完成 Ping/Pong。
-7. 自动关闭全部临时进程。
+---
 
-### 三端构建
+# 13. 当前测试要求
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target all
-```
+## 自动
 
-可选目标：
+- Upgrade method。
+- Origin。
+- malformed frames。
+- auth failure。
+- heartbeat。
+- reconnect state machine。
+- Redis bus publish/consume。
+- Sync after disconnect。
 
-```powershell
--Target windows
--Target web
--Target android
-```
+## 真人
 
-## 当前验证结果
+- Windows → Android 消息。
+- Android → Windows 消息。
+- Web 同账号/另一账号。
+- 断 Wi-Fi 10～60 秒恢复。
+- 服务端重启。
+- App 后台再前台。
+- 同一用户多设备。
 
-截至 2026-08-07：
-
-- Go `gofmt`：通过。
-- Go `vet`：通过。
-- Go 测试：通过。
-- Dart 格式：通过。
-- Dart Analyze：通过。
-- 实时通信核心测试：2/2 通过。
-- Flutter App Analyze：通过。
-- Flutter App 测试：7/7 通过。
-- REST + WebSocket 真实握手：通过。
-- 服务重启后自动重连：通过。
-- 重连后 Ping/Pong：通过。
-- Web Release 构建：通过。
-- Windows Release 构建：通过。
-- Android Debug APK 构建：通过。
-- PowerShell 脚本语法：通过。
-
-构建产物：
+判定标准：
 
 ```text
-clients\app\build\windows\x64\runner\Release\im_client.exe
-clients\app\build\web\
-clients\app\build\app\outputs\flutter-apk\app-debug.apk
+最终消息一致
+未读一致
+重复 = 0
 ```
 
-## Windows 中文路径注意事项
+---
 
-项目根目录包含中文。当前工具链存在两个路径问题：
+# 14. P0 已完成与未完成的边界
 
-1. `flutter analyze` 的 LSP 服务器在该路径下可能发生 JSON 截断，因此质量脚本直接调用 Flutter 自带 Dart SDK 的 `dart analyze`。
-2. Windows CMake/MSBuild 会把中文路径错误解码，因此构建脚本临时使用 `subst` 映射 ASCII 盘符，结束后自动删除映射。
+### 已完成
 
-不要把临时盘符当成固定项目路径，也不要留下永久映射。
+- 实时技术路线验证。
+- 正式鉴权 realtime 入口。
+- Messaging realtime + Sync 主链。
+- Redis 可选跨节点 hint。
 
-## 当前未完成
+### 尚未完成
 
-- iOS 构建：需要 macOS 和 Xcode。
-- macOS 构建：需要 macOS。
-- Linux 桌面构建：需要 Linux CI 或 Linux 开发机。
-- Android 真机 UI 验证：APK 已构建，尚未安装到真实设备测试。
-- Web 浏览器运行时人工检查：Release 已构建，本轮未自动启动浏览器。
-- Windows 可视化人工检查：EXE 已构建，本轮未自动打开窗口。
+- P10 `000022_push` 真实 PostgreSQL roundtrip 与稳定 migration gate。
+- 完整 Push domain/API/Worker。
+- FCM/APNs/UnifiedPush provider 与客户端 token 注册。
+- 超大规模 fanout 压测。
+- 多地域部署。
+- Realtime metrics/alerting 完整生产化。
 
-## 已知边界
-
-1. 当前事件 ID 只保证单个服务进程内递增；正式离线同步必须改为数据库持久化用户游标。
-2. 当前没有身份认证，任何能访问端口的客户端都可连接。
-3. 当前没有心跳超时、连接限流、每用户连接数限制和全局背压。
-4. `example.com/selfhosted-im/server` 是 PoC 模块路径，公开仓库确定后必须替换。
-5. 当前 Android 包使用 Debug 签名，不能作为正式发行包。
-6. Web 构建器存在未实际引用 Cupertino 字体的非阻断警告，当前没有为了消除警告引入无用依赖。
+因此 P0 技术路线可视为 `HUMAN-PASS` 的历史基础，但实时系统整体仍需要随消息/通知模块持续回归。

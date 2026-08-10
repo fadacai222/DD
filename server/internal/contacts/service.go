@@ -2,6 +2,7 @@ package contacts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,28 +19,32 @@ import (
 )
 
 var (
-	ErrUnavailable     = errors.New("contacts service unavailable")
-	ErrNotFound        = errors.New("relationship resource not found")
-	ErrForbidden       = errors.New("relationship operation forbidden")
-	ErrBlocked         = errors.New("relationship is blocked")
-	ErrAlreadyContact  = errors.New("users are already contacts")
-	ErrRequestConflict = errors.New("contact request conflicts with current state")
-	ErrRateLimited     = errors.New("relationship rate limited")
-	ErrInvalidState    = errors.New("relationship state is invalid")
+	ErrUnavailable         = errors.New("contacts service unavailable")
+	ErrNotFound            = errors.New("relationship resource not found")
+	ErrForbidden           = errors.New("relationship operation forbidden")
+	ErrBlocked             = errors.New("relationship is blocked")
+	ErrAlreadyContact      = errors.New("users are already contacts")
+	ErrRequestConflict     = errors.New("contact request conflicts with current state")
+	ErrRateLimited         = errors.New("relationship rate limited")
+	ErrInvalidState        = errors.New("relationship state is invalid")
+	ErrInvalidMentionQuery = errors.New("invalid mention suggestion query")
 )
 
 const (
-	requestTTL            = 30 * 24 * time.Hour
-	handleSearchWindow    = 10 * time.Minute
-	handleSearchLimit     = 60
-	contactRequestWindow  = 24 * time.Hour
-	contactRequestLimit   = 30
-	defaultPageSize       = 50
-	maximumPageSize       = 100
-	maximumRequestMessage = 200
-	maximumRemarkLength   = 80
-	maximumTagLength      = 40
-	maximumTagsPerContact = 20
+	requestTTL                = 30 * 24 * time.Hour
+	handleSearchWindow        = 10 * time.Minute
+	handleSearchLimit         = 60
+	contactRequestWindow      = 24 * time.Hour
+	contactRequestLimit       = 30
+	defaultPageSize           = 50
+	maximumPageSize           = 100
+	maximumRequestMessage     = 200
+	maximumRemarkLength       = 80
+	maximumTagLength          = 40
+	maximumTagsPerContact     = 20
+	mentionSuggestionWindow   = time.Minute
+	mentionSuggestionLimit    = 60
+	maximumMentionSuggestions = 8
 )
 
 type Service struct {
@@ -60,6 +65,11 @@ type PublicUser struct {
 }
 
 type SearchResult struct {
+	User         PublicUser `json:"user"`
+	Relationship string     `json:"relationship"`
+}
+
+type MentionSuggestion struct {
 	User         PublicUser `json:"user"`
 	Relationship string     `json:"relationship"`
 }
@@ -146,6 +156,151 @@ func (service *Service) SearchByHandle(ctx context.Context, principal account.Pr
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("parse searched user id: %w", err)
 	}
+	return service.relationshipForUser(ctx, principal, user, targetID)
+}
+
+func (service *Service) GetUserByID(ctx context.Context, principal account.Principal, userID uuid.UUID) (SearchResult, error) {
+	if userID == uuid.Nil {
+		return SearchResult{}, ErrNotFound
+	}
+	var user PublicUser
+	err := service.pool.QueryRow(ctx, `
+		SELECT id,handle_normalized,display_name,bio
+		FROM users
+		WHERE id=$1 AND status='ACTIVE'
+	`, userID).Scan(&user.ID, &user.Handle, &user.DisplayName, &user.Bio)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SearchResult{}, ErrNotFound
+	}
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("load public user profile: %w", err)
+	}
+	return service.relationshipForUser(ctx, principal, user, userID)
+}
+
+func (service *Service) SuggestMentions(ctx context.Context, principal account.Principal, rawQuery string, conversationID *uuid.UUID, limit int) ([]MentionSuggestion, error) {
+	query, err := normalizeMentionSuggestionQuery(rawQuery)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = maximumMentionSuggestions
+	}
+	if limit > maximumMentionSuggestions {
+		return nil, ErrInvalidMentionQuery
+	}
+	if err := service.consumeRateLimit(ctx, principal.UserID, "MENTION_SUGGESTION", mentionSuggestionWindow, mentionSuggestionLimit); err != nil {
+		return nil, err
+	}
+
+	var conversation any
+	if conversationID != nil && *conversationID != uuid.Nil {
+		conversation = *conversationID
+	}
+	rows, err := service.pool.Query(ctx, `
+		WITH current_peer AS (
+			SELECT peer.user_id
+			FROM conversations c
+			JOIN conversation_members self
+			  ON self.conversation_id=c.id
+			 AND self.user_id=$1
+			 AND self.status='ACTIVE'
+			JOIN conversation_members peer
+			  ON peer.conversation_id=c.id
+			 AND peer.user_id<>$1
+			 AND peer.status='ACTIVE'
+			WHERE c.id=$3::uuid AND c.type='DIRECT'
+			LIMIT 1
+		), current_group_members AS (
+			SELECT member.user_id
+			FROM conversations c
+			JOIN conversation_members self
+			  ON self.conversation_id=c.id
+			 AND self.user_id=$1
+			 AND self.status='ACTIVE'
+			JOIN conversation_members member
+			  ON member.conversation_id=c.id
+			 AND member.user_id<>$1
+			 AND member.status='ACTIVE'
+			WHERE c.id=$3::uuid AND c.type='GROUP'
+		)
+		SELECT u.id::text,u.handle_normalized,u.display_name,u.bio,
+		       CASE
+		         WHEN cgm.user_id IS NOT NULL THEN 'GROUP_MEMBER'
+		         WHEN cp.user_id IS NOT NULL THEN 'CONVERSATION_PEER'
+		         WHEN contact.contact_user_id IS NOT NULL THEN 'CONTACT'
+		         ELSE 'NONE'
+		       END AS relationship
+		FROM users u
+		LEFT JOIN current_peer cp ON cp.user_id=u.id
+		LEFT JOIN current_group_members cgm ON cgm.user_id=u.id
+		LEFT JOIN contacts contact
+		  ON contact.owner_user_id=$1 AND contact.contact_user_id=u.id
+		WHERE u.status='ACTIVE'
+		  AND u.id<>$1
+		  AND (
+		    u.handle_normalized LIKE $2 || '%'
+		    OR lower(u.display_name) LIKE '%' || lower($2) || '%'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM blocks b
+		    WHERE (b.owner_user_id=$1 AND b.blocked_user_id=u.id)
+		       OR (b.owner_user_id=u.id AND b.blocked_user_id=$1)
+		  )
+		ORDER BY
+		  (cgm.user_id IS NOT NULL) DESC,
+		  (cp.user_id IS NOT NULL) DESC,
+		  (contact.contact_user_id IS NOT NULL) DESC,
+		  (u.handle_normalized LIKE $2 || '%') DESC,
+		  u.handle_normalized ASC
+		LIMIT $4
+	`, principal.UserID, query, conversation, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list mention suggestions: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]MentionSuggestion, 0, limit)
+	for rows.Next() {
+		var item MentionSuggestion
+		if err := rows.Scan(
+			&item.User.ID,
+			&item.User.Handle,
+			&item.User.DisplayName,
+			&item.User.Bio,
+			&item.Relationship,
+		); err != nil {
+			return nil, fmt.Errorf("scan mention suggestion: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mention suggestions: %w", err)
+	}
+	return items, nil
+}
+
+func normalizeMentionSuggestionQuery(raw string) (string, error) {
+	query := strings.ToLower(strings.TrimSpace(raw))
+	if len(query) < 2 || len(query) > 32 {
+		return "", ErrInvalidMentionQuery
+	}
+	for index := 0; index < len(query); index++ {
+		value := query[index]
+		if index == 0 {
+			if value < 'a' || value > 'z' {
+				return "", ErrInvalidMentionQuery
+			}
+			continue
+		}
+		if !((value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '_') {
+			return "", ErrInvalidMentionQuery
+		}
+	}
+	return query, nil
+}
+
+func (service *Service) relationshipForUser(ctx context.Context, principal account.Principal, user PublicUser, targetID uuid.UUID) (SearchResult, error) {
 	if targetID == principal.UserID {
 		return SearchResult{User: user, Relationship: "SELF"}, nil
 	}
@@ -153,16 +308,18 @@ func (service *Service) SearchByHandle(ctx context.Context, principal account.Pr
 	if blocked, err := service.IsBlockedBetween(ctx, principal.UserID, targetID); err != nil {
 		return SearchResult{}, err
 	} else if blocked {
-		// Do not reveal whether a blocked account still exists.
+		// Stable-id lookup follows the same privacy boundary as exact-handle
+		// search: a blocked account is indistinguishable from an unavailable
+		// account, so mention/profile lookup cannot be used to probe blocks.
 		return SearchResult{}, ErrNotFound
 	}
 
 	now := service.now().UTC()
 	if _, err := service.pool.Exec(ctx, `
 		UPDATE contact_requests
-		SET status = 'EXPIRED', resolved_at = $3
-		WHERE status = 'PENDING' AND expires_at <= $3
-		  AND ((sender_user_id = $1 AND receiver_user_id = $2) OR (sender_user_id = $2 AND receiver_user_id = $1))
+		SET status='EXPIRED',resolved_at=$3
+		WHERE status='PENDING' AND expires_at<=$3
+		  AND ((sender_user_id=$1 AND receiver_user_id=$2) OR (sender_user_id=$2 AND receiver_user_id=$1))
 	`, principal.UserID, targetID, now); err != nil {
 		return SearchResult{}, fmt.Errorf("expire stale contact request: %w", err)
 	}
@@ -170,9 +327,9 @@ func (service *Service) SearchByHandle(ctx context.Context, principal account.Pr
 	var isContact, outgoingPending, incomingPending bool
 	if err := service.pool.QueryRow(ctx, `
 		SELECT
-			EXISTS(SELECT 1 FROM contacts WHERE owner_user_id = $1 AND contact_user_id = $2),
-			EXISTS(SELECT 1 FROM contact_requests WHERE sender_user_id = $1 AND receiver_user_id = $2 AND status = 'PENDING'),
-			EXISTS(SELECT 1 FROM contact_requests WHERE sender_user_id = $2 AND receiver_user_id = $1 AND status = 'PENDING')
+			EXISTS(SELECT 1 FROM contacts WHERE owner_user_id=$1 AND contact_user_id=$2),
+			EXISTS(SELECT 1 FROM contact_requests WHERE sender_user_id=$1 AND receiver_user_id=$2 AND status='PENDING'),
+			EXISTS(SELECT 1 FROM contact_requests WHERE sender_user_id=$2 AND receiver_user_id=$1 AND status='PENDING')
 	`, principal.UserID, targetID).Scan(&isContact, &outgoingPending, &incomingPending); err != nil {
 		return SearchResult{}, fmt.Errorf("load relationship state: %w", err)
 	}
@@ -239,8 +396,7 @@ func (service *Service) sendRequestOnce(ctx context.Context, principal account.P
 	if blocked, err := isBlockedBetweenTx(ctx, tx, principal.UserID, targetID); err != nil {
 		return ContactRequest{}, err
 	} else if blocked {
-		// Hide whether the target exists or has blocked the caller.
-		return ContactRequest{}, ErrNotFound
+		return ContactRequest{}, ErrBlocked
 	}
 	var contactExists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM contacts WHERE owner_user_id = $1 AND contact_user_id = $2)`, principal.UserID, targetID).Scan(&contactExists); err != nil {
@@ -261,7 +417,7 @@ func (service *Service) sendRequestOnce(ctx context.Context, principal account.P
 			}
 			return existing, nil
 		}
-		accepted, err := acceptLoadedRequest(ctx, tx, existing, principal.UserID, now)
+		accepted, err := acceptLoadedRequest(ctx, tx, existing, principal.UserID, principal.DeviceID, now)
 		if err != nil {
 			return ContactRequest{}, err
 		}
@@ -349,7 +505,7 @@ func (service *Service) acceptRequestOnce(ctx context.Context, principal account
 	if err := lockPair(ctx, tx, mustUUID(request.Sender.ID), mustUUID(request.Receiver.ID)); err != nil {
 		return ContactRequest{}, err
 	}
-	accepted, err := acceptLoadedRequest(ctx, tx, request, principal.UserID, now)
+	accepted, err := acceptLoadedRequest(ctx, tx, request, principal.UserID, principal.DeviceID, now)
 	if err != nil {
 		return ContactRequest{}, err
 	}
@@ -504,6 +660,44 @@ func (service *Service) ListContacts(ctx context.Context, principal account.Prin
 	return makePage(items, page, pageSize, total), nil
 }
 
+func (service *Service) AddContact(ctx context.Context, principal account.Principal, contactUserID uuid.UUID) (Contact, error) {
+	if contactUserID == uuid.Nil || contactUserID == principal.UserID {
+		return Contact{}, ErrInvalidState
+	}
+	now := service.now().UTC()
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return Contact{}, fmt.Errorf("begin add contact: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockPair(ctx, tx, principal.UserID, contactUserID); err != nil {
+		return Contact{}, err
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND status='ACTIVE')`, contactUserID).Scan(&active); err != nil {
+		return Contact{}, fmt.Errorf("load contact target: %w", err)
+	}
+	if !active {
+		return Contact{}, ErrNotFound
+	}
+	if blocked, err := isBlockedBetweenTx(ctx, tx, principal.UserID, contactUserID); err != nil {
+		return Contact{}, err
+	} else if blocked {
+		return Contact{}, ErrBlocked
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO contacts(owner_user_id,contact_user_id,remark,is_starred,created_at,updated_at)
+		VALUES ($1,$2,'',false,$3,$3)
+		ON CONFLICT (owner_user_id,contact_user_id) DO NOTHING
+	`, principal.UserID, contactUserID, now); err != nil {
+		return Contact{}, fmt.Errorf("add contact: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Contact{}, fmt.Errorf("commit add contact: %w", err)
+	}
+	return service.getContact(ctx, principal.UserID, contactUserID)
+}
+
 func (service *Service) UpdateContact(ctx context.Context, principal account.Principal, contactUserID uuid.UUID, raw UpdateContactInput) (Contact, error) {
 	if contactUserID == principal.UserID {
 		return Contact{}, ErrInvalidState
@@ -576,15 +770,11 @@ func (service *Service) DeleteContact(ctx context.Context, principal account.Pri
 	if err := lockPair(ctx, tx, principal.UserID, contactUserID); err != nil {
 		return err
 	}
-	result, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		DELETE FROM contacts
 		WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)
-	`, principal.UserID, contactUserID)
-	if err != nil {
+	`, principal.UserID, contactUserID); err != nil {
 		return fmt.Errorf("delete contact pair: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return ErrNotFound
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit delete contact: %w", err)
@@ -611,7 +801,8 @@ func (service *Service) BlockUser(ctx context.Context, principal account.Princip
 	} else if err != nil {
 		return BlockedUser{}, fmt.Errorf("load block target: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO blocks (owner_user_id,blocked_user_id,created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, principal.UserID, blockedUserID, now); err != nil {
+	blockResult, err := tx.Exec(ctx, `INSERT INTO blocks (owner_user_id,blocked_user_id,created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, principal.UserID, blockedUserID, now)
+	if err != nil {
 		return BlockedUser{}, fmt.Errorf("create block: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, principal.UserID, blockedUserID); err != nil {
@@ -622,6 +813,20 @@ func (service *Service) BlockUser(ctx context.Context, principal account.Princip
 		WHERE status='PENDING' AND ((sender_user_id=$1 AND receiver_user_id=$2) OR (sender_user_id=$2 AND receiver_user_id=$1))
 	`, principal.UserID, blockedUserID, now); err != nil {
 		return BlockedUser{}, fmt.Errorf("cancel contact requests while blocking: %w", err)
+	}
+	if blockResult.RowsAffected() > 0 {
+		payload, _ := json.Marshal(map[string]any{
+			"blockedByUserId": principal.UserID.String(),
+		})
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO outbox_events(
+				aggregate_type,aggregate_id,event_type,target_user_id,
+				payload_json,created_at,available_at
+			)
+			VALUES('RELATIONSHIP',$1,'RELATIONSHIP_BLOCKED_BY_PEER',$2,$3::jsonb,$4,$4)
+		`, principal.UserID, blockedUserID, string(payload), now); err != nil {
+			return BlockedUser{}, fmt.Errorf("insert block relationship outbox: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return BlockedUser{}, fmt.Errorf("commit block user: %w", err)
@@ -745,7 +950,7 @@ func consumeRateLimitTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, scope 
 	return nil
 }
 
-func acceptLoadedRequest(ctx context.Context, tx pgx.Tx, request ContactRequest, actorID uuid.UUID, now time.Time) (ContactRequest, error) {
+func acceptLoadedRequest(ctx context.Context, tx pgx.Tx, request ContactRequest, actorID, actorDeviceID uuid.UUID, now time.Time) (ContactRequest, error) {
 	if request.Status != "PENDING" {
 		return ContactRequest{}, ErrInvalidState
 	}
@@ -777,7 +982,52 @@ func acceptLoadedRequest(ctx context.Context, tx pgx.Tx, request ContactRequest,
 	request.Status = "ACCEPTED"
 	request.ResolvedAt = &now
 	request.ConversationID = &conversationID
+	if err := insertFriendAcceptedSystemMessage(ctx, tx, mustUUID(conversationID), actorID, actorDeviceID, requestID, now); err != nil {
+		return ContactRequest{}, err
+	}
 	return request, nil
+}
+
+func insertFriendAcceptedSystemMessage(ctx context.Context, tx pgx.Tx, conversationID, actorID, actorDeviceID, requestID uuid.UUID, now time.Time) error {
+	var sequence int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE conversations SET last_sequence=last_sequence+1,updated_at=$2
+		WHERE id=$1 RETURNING last_sequence
+	`, conversationID, now).Scan(&sequence); err != nil {
+		return fmt.Errorf("allocate friend accepted message sequence: %w", err)
+	}
+	content, _ := json.Marshal(map[string]any{"text": "我刚刚同意了你的好友请求"})
+	var messageID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO messages(conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at)
+		VALUES($1,$2,$3,$4,$5,'SYSTEM',$6::jsonb,$7)
+		RETURNING id
+	`, conversationID, sequence, actorID, actorDeviceID, "friend-accept-"+requestID.String(), string(content), now).Scan(&messageID); err != nil {
+		return fmt.Errorf("insert friend accepted system message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_message_id=$2 WHERE id=$1`, conversationID, messageID); err != nil {
+		return fmt.Errorf("update friend accepted conversation last message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_members
+		SET archived_at=NULL
+		WHERE conversation_id=$1 AND user_id<>$2 AND archived_at IS NOT NULL
+		  AND (muted_until IS NULL OR muted_until<=$3)
+	`, conversationID, actorID, now); err != nil {
+		return fmt.Errorf("wake friend accepted conversation: %w", err)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"messageId":      messageID.String(),
+		"conversationId": conversationID.String(),
+		"sequence":       sequence,
+	})
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outbox_events(aggregate_type,aggregate_id,event_type,conversation_id,sequence,payload_json,created_at,available_at)
+		VALUES('MESSAGE',$1,'MESSAGE_CREATED',$2,$3,$4::jsonb,$5,$5)
+	`, messageID, conversationID, sequence, string(payload), now); err != nil {
+		return fmt.Errorf("insert friend accepted outbox: %w", err)
+	}
+	return nil
 }
 
 func ensureDirectConversationForRequest(ctx context.Context, tx pgx.Tx, request ContactRequest, now time.Time) (string, error) {

@@ -4,7 +4,8 @@
 .DS_Store
 Thumbs.db
 *.tmp
-/nul
+*.log
+**/nul
 
 # Secrets
 .env

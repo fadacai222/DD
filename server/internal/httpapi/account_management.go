@@ -15,6 +15,10 @@ type passwordResetSendRequest struct {
 	Email string `json:"email"`
 }
 
+type emailChangeSendRequest struct {
+	Email string `json:"email"`
+}
+
 func (s *server) handlePasswordResetCode(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		methodNotAllowed(response, http.MethodPost)
@@ -88,6 +92,49 @@ func (s *server) handleMe(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Allow", "GET, PATCH")
 		writeAPIError(response, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method is not allowed")
 	}
+}
+
+func (s *server) handleMeEmailChangeCode(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response, http.MethodPost)
+		return
+	}
+	principal, ok := s.requirePrincipal(response, request)
+	if !ok || !requireJSON(response, request) {
+		return
+	}
+	var input emailChangeSendRequest
+	if err := decodeSingleJSON(response, request, &input); err != nil {
+		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if err := s.auth.SendEmailChangeCode(request.Context(), principal, input.Email); err != nil {
+		s.writeAuthError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusAccepted, map[string]any{"accepted": true, "retryAfterSeconds": 60})
+}
+
+func (s *server) handleMeEmail(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPatch {
+		methodNotAllowed(response, http.MethodPatch)
+		return
+	}
+	principal, ok := s.requirePrincipal(response, request)
+	if !ok || !requireJSON(response, request) {
+		return
+	}
+	var input account.ChangeEmailInput
+	if err := decodeSingleJSON(response, request, &input); err != nil {
+		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	result, err := s.auth.ChangeEmail(request.Context(), principal, input)
+	if err != nil {
+		s.writeAuthError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, result)
 }
 
 func (s *server) handleMeAvatar(response http.ResponseWriter, request *http.Request) {

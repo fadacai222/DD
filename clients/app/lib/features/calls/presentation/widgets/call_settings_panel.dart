@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../theme/app_theme.dart';
 import '../call_debug_controller.dart';
 
 class CallSettingsPanel extends StatefulWidget {
@@ -43,7 +44,7 @@ class _CallSettingsPanelState extends State<CallSettingsPanel> {
                 DecoratedBox(
                   decoration: BoxDecoration(
                     color: theme.colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(DdRadii.control),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(10),

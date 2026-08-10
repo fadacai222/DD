@@ -3,9 +3,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/contacts/data/contacts_api_client.dart';
 import 'package:im_client/features/contacts/domain/contact_models.dart';
 import 'package:im_client/features/contacts/presentation/contacts_page.dart';
+import 'package:im_client/theme/app_theme.dart';
 
 void main() {
-  testWidgets('contacts page fits narrow Android viewport and sends request', (
+  testWidgets('DDID search adds a unilateral contact without approval UI', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(360, 640);
@@ -26,14 +27,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('联系人'), findsWidgets);
-    expect(tester.takeException(), isNull);
-
-    // The mobile address book now opens on Contacts by default; adding a
-    // friend remains an explicit action/tab.
-    await tester.tap(find.widgetWithText(Tab, '添加朋友'));
+    expect(find.text('新的朋友'), findsNothing);
+    expect(find.text('申请理由（可选）'), findsNothing);
+    await tester.tap(find.widgetWithText(Tab, '添加联系人'));
     await tester.pumpAndSettle();
-
     await tester.enterText(
       find.byKey(const Key('contacts-search-handle')),
       'bob_01',
@@ -42,20 +39,110 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Bob'), findsOneWidget);
-    expect(find.byKey(const Key('contacts-send-request')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('contacts-send-request')));
+    expect(find.byKey(const Key('contacts-add-contact')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('contacts-add-contact')));
     await tester.pumpAndSettle();
 
-    expect(gateway.sentHandles, ['bob_01']);
-    expect(find.text('好友申请已处理。'), findsOneWidget);
+    expect(gateway.addedUserIds, [_bob.id]);
+    expect(find.text('已添加到联系人。'), findsOneWidget);
+    expect(find.textContaining('已在联系人中'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('incoming request can be accepted and appears in contacts', (
+  testWidgets(
+    'mobile contacts keep full-width header, grouping and real tags',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final gateway = _FakeContactsGateway(
+        initialContacts: [
+          _contact(_bob, tags: const ['work']),
+          _contact(_zhao, tags: const ['friends']),
+        ],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ContactsPage(
+              origin: Uri.parse('http://127.0.0.1:18473'),
+              accessToken: 'access-token',
+              currentUserId: _alice.id,
+              gateway: gateway,
+              embedded: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final titleCenter = tester.getCenter(
+        find.byKey(const Key('contacts-mobile-title')),
+      );
+      final addCenter = tester.getCenter(
+        find.byKey(const Key('contacts-add-friend')),
+      );
+      expect(titleCenter.dx, closeTo(180, 2));
+      expect(addCenter.dx, greaterThan(320));
+      expect(find.byKey(const Key('contact-section-B')), findsOneWidget);
+      expect(find.byKey(const Key('contact-section-#')), findsOneWidget);
+
+      await tester.tap(find.text('标签'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('contact-tag-friends')), findsOneWidget);
+      expect(find.byKey(const Key('contact-tag-work')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('desktop contact detail exposes a primary message action', (
     tester,
   ) async {
-    final gateway = _FakeContactsGateway(withIncomingRequest: true);
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = _FakeContactsGateway(initialContacts: [_contact(_bob)]);
+    String? openedUserId;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContactsPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'access-token',
+            currentUserId: _alice.id,
+            gateway: gateway,
+            embedded: true,
+            onOpenDirectChat: (peerId, _) async => openedUserId = peerId,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const Key('desktop-contacts-sidebar'))).width,
+      DdDesktopTokens.sidebarWidth,
+    );
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.byKey(Key('desktop-contact-${_bob.id}')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('desktop-contact-message')), findsOneWidget);
+    expect(find.text('发消息'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('desktop-contact-message')));
+    await tester.pumpAndSettle();
+    expect(openedUserId, _bob.id);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('blocked-by-peer result explains that contact cannot be added', (
+    tester,
+  ) async {
+    final gateway = _FakeContactsGateway(searchRelationship: 'BLOCKED_BY_PEER');
     await tester.pumpWidget(
       MaterialApp(
         home: ContactsPage(
@@ -67,21 +154,51 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-
-    await tester.tap(find.widgetWithText(Tab, '新的朋友'));
+    await tester.tap(find.widgetWithText(Tab, '添加联系人'));
     await tester.pumpAndSettle();
-    expect(find.text('接受'), findsOneWidget);
-
-    await tester.tap(find.text('接受'));
+    await tester.enterText(
+      find.byKey(const Key('contacts-search-handle')),
+      'bob_01',
+    );
+    await tester.tap(find.byKey(const Key('contacts-search-button')));
     await tester.pumpAndSettle();
 
-    expect(gateway.acceptedRequestIds, [_pendingRequest.id]);
-    expect(find.text('已接受好友申请。'), findsOneWidget);
+    expect(find.textContaining('对方已将你拉黑'), findsOneWidget);
+    expect(find.text('您无法添加'), findsOneWidget);
+    expect(find.byKey(const Key('contacts-add-contact')), findsNothing);
+  });
 
-    await tester.tap(find.widgetWithText(Tab, '联系人'));
+  testWidgets('refresh token reloads contacts without leaving address book', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = _FakeContactsGateway();
+    Widget build(int refreshToken) => MaterialApp(
+      home: Scaffold(
+        body: ContactsPage(
+          key: const ValueKey('contacts-refresh-test'),
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'access-token',
+          currentUserId: _alice.id,
+          gateway: gateway,
+          embedded: true,
+          refreshRequestToken: refreshToken,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(build(0));
     await tester.pumpAndSettle();
-    expect(find.text('Bob'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    final before = gateway.listContactsCalls;
+    await tester.pumpWidget(build(1));
+    await tester.pumpAndSettle();
+
+    expect(gateway.listContactsCalls, greaterThan(before));
+    expect(find.text('联系人'), findsWidgets);
   });
 }
 
@@ -97,116 +214,71 @@ const _bob = ContactUser(
   displayName: 'Bob',
   bio: '',
 );
-
-final _pendingRequest = ContactRequestItem(
-  id: '018f0000-0000-7000-8000-000000000303',
-  sender: _bob,
-  receiver: _alice,
-  message: 'add me',
-  status: 'PENDING',
-  createdAt: DateTime.utc(2026, 8, 8, 3),
-  expiresAt: DateTime.utc(2026, 9, 7, 3),
+const _zhao = ContactUser(
+  id: '018f0000-0000-7000-8000-000000000306',
+  handle: 'zhao_06',
+  displayName: '赵六',
+  bio: '',
 );
 
-final class _FakeContactsGateway implements ContactsGateway {
-  _FakeContactsGateway({this.withIncomingRequest = false});
+ContactItem _contact(ContactUser user, {List<String> tags = const []}) =>
+    ContactItem(
+      user: user,
+      remark: '',
+      isStarred: false,
+      tags: tags,
+      createdAt: DateTime.utc(2026, 8, 8, 3),
+      updatedAt: DateTime.utc(2026, 8, 8, 3),
+    );
 
-  final bool withIncomingRequest;
-  final List<String> sentHandles = [];
-  final List<String> acceptedRequestIds = [];
-  bool _accepted = false;
+final class _FakeContactsGateway implements ContactsGateway {
+  _FakeContactsGateway({
+    this.initialContacts = const [],
+    this.searchRelationship = 'NONE',
+  }) : _contacts = List<ContactItem>.from(initialContacts);
+
+  final List<ContactItem> initialContacts;
+  final String searchRelationship;
+  final List<String> addedUserIds = [];
+  final List<ContactItem> _contacts;
+  int listContactsCalls = 0;
 
   @override
   Future<ContactSearchResult> searchByHandle({
     required Uri origin,
     required String accessToken,
     required String handle,
-  }) async => const ContactSearchResult(user: _bob, relationship: 'NONE');
+  }) async => ContactSearchResult(user: _bob, relationship: searchRelationship);
 
   @override
-  Future<ContactRequestItem> sendRequest({
+  Future<ContactSearchResult> getUserById({
     required Uri origin,
     required String accessToken,
-    required String targetHandle,
-    String message = '',
+    required String userId,
+  }) async => ContactSearchResult(user: _bob, relationship: searchRelationship);
+
+  @override
+  Future<ContactItem> addContact({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
   }) async {
-    sentHandles.add(targetHandle);
-    return ContactRequestItem(
-      id: '018f0000-0000-7000-8000-000000000304',
-      sender: _alice,
-      receiver: _bob,
-      message: message,
-      status: 'PENDING',
-      createdAt: DateTime.utc(2026, 8, 8, 3),
-      expiresAt: DateTime.utc(2026, 9, 7, 3),
-    );
+    addedUserIds.add(userId);
+    final item = _contact(_bob);
+    if (!_contacts.any((contact) => contact.user.id == userId)) {
+      _contacts.add(item);
+    }
+    return item;
   }
-
-  @override
-  Future<RelationshipPage<ContactRequestItem>> listRequests({
-    required Uri origin,
-    required String accessToken,
-    required String direction,
-  }) async {
-    final items = direction == 'incoming' && withIncomingRequest && !_accepted
-        ? [_pendingRequest]
-        : <ContactRequestItem>[];
-    return _page(items);
-  }
-
-  @override
-  Future<ContactRequestItem> acceptRequest({
-    required Uri origin,
-    required String accessToken,
-    required String requestId,
-  }) async {
-    acceptedRequestIds.add(requestId);
-    _accepted = true;
-    return ContactRequestItem(
-      id: _pendingRequest.id,
-      sender: _pendingRequest.sender,
-      receiver: _pendingRequest.receiver,
-      message: _pendingRequest.message,
-      status: 'ACCEPTED',
-      createdAt: _pendingRequest.createdAt,
-      expiresAt: _pendingRequest.expiresAt,
-      resolvedAt: DateTime.utc(2026, 8, 8, 3, 1),
-      conversationId: '018f0000-0000-7000-8000-000000000305',
-    );
-  }
-
-  @override
-  Future<ContactRequestItem> rejectRequest({
-    required Uri origin,
-    required String accessToken,
-    required String requestId,
-  }) async => _pendingRequest;
-
-  @override
-  Future<ContactRequestItem> cancelRequest({
-    required Uri origin,
-    required String accessToken,
-    required String requestId,
-  }) async => _pendingRequest;
 
   @override
   Future<RelationshipPage<ContactItem>> listContacts({
     required Uri origin,
     required String accessToken,
-  }) async => _page(
-    _accepted
-        ? [
-            ContactItem(
-              user: _bob,
-              remark: '',
-              isStarred: false,
-              tags: const [],
-              createdAt: DateTime.utc(2026, 8, 8, 3),
-              updatedAt: DateTime.utc(2026, 8, 8, 3),
-            ),
-          ]
-        : <ContactItem>[],
-  );
+  }) async {
+    listContactsCalls++;
+    return _page(_contacts);
+  }
 
   @override
   Future<ContactItem> updateContact({
@@ -230,7 +302,7 @@ final class _FakeContactsGateway implements ContactsGateway {
     required Uri origin,
     required String accessToken,
     required String userId,
-  }) async {}
+  }) async => _contacts.removeWhere((contact) => contact.user.id == userId);
 
   @override
   Future<BlockedUserItem> blockUser({
@@ -253,12 +325,50 @@ final class _FakeContactsGateway implements ContactsGateway {
     required String userId,
   }) async {}
 
+  // Legacy request APIs remain in the gateway for wire compatibility with old
+  // clients, but the current Telegram-style UI no longer exposes approval.
+  @override
+  Future<ContactRequestItem> sendRequest({
+    required Uri origin,
+    required String accessToken,
+    required String targetHandle,
+    String message = '',
+  }) => throw UnsupportedError('legacy contact request');
+
+  @override
+  Future<RelationshipPage<ContactRequestItem>> listRequests({
+    required Uri origin,
+    required String accessToken,
+    required String direction,
+  }) async => _page(const <ContactRequestItem>[]);
+
+  @override
+  Future<ContactRequestItem> acceptRequest({
+    required Uri origin,
+    required String accessToken,
+    required String requestId,
+  }) => throw UnsupportedError('legacy contact request');
+
+  @override
+  Future<ContactRequestItem> rejectRequest({
+    required Uri origin,
+    required String accessToken,
+    required String requestId,
+  }) => throw UnsupportedError('legacy contact request');
+
+  @override
+  Future<ContactRequestItem> cancelRequest({
+    required Uri origin,
+    required String accessToken,
+    required String requestId,
+  }) => throw UnsupportedError('legacy contact request');
+
   @override
   void close() {}
 }
 
 RelationshipPage<T> _page<T>(List<T> items) => RelationshipPage<T>(
-  items: items,
+  items: List<T>.from(items),
   page: 1,
   pageSize: 100,
   totalItems: items.length,

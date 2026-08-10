@@ -1,23 +1,47 @@
 import 'dart:async';
 
-import 'package:audioplayers/audioplayers.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../core/logging/client_log.dart';
 import '../../../core/media/chat_image_processor.dart';
 import '../../../core/media/chat_voice_recorder.dart';
+import '../../../core/media/image_viewer_page.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../calls/domain/call_session.dart';
+import '../../contacts/data/contacts_api_client.dart';
+import '../../contacts/domain/contact_models.dart';
 import '../../contacts/presentation/peer_profile_page.dart';
+import '../../groups/data/groups_api_client.dart';
+import '../../groups/domain/group_models.dart';
+import '../../groups/presentation/group_details_page.dart';
 import '../application/messaging_coordinator.dart';
+import '../data/chat_appearance_store.dart';
+import '../data/chat_voice_player.dart';
 import '../data/media_api_client.dart';
+import '../data/media_download_grant_cache.dart';
+import '../data/media_download_resolver.dart';
+import '../data/media_local_cache.dart';
 import '../data/messaging_api_client.dart' show MessagingApiException;
+import '../data/sticker_api_client.dart';
+import '../data/video_file_cache.dart';
+import '../data/video_media_probe.dart';
 import '../domain/messaging_models.dart';
+import '../domain/sticker_models.dart';
+import 'chat_background_settings_page.dart';
+import 'chat_details_page.dart';
+import 'chat_wallpaper_surface.dart';
+import 'mention_composer_controller.dart';
+import 'mention_rich_text.dart';
+import 'mention_suggestion_overlay.dart';
+import 'sticker_library_sheet.dart';
+import 'video_viewer_page.dart';
 
 class TextChatPage extends StatefulWidget {
   const TextChatPage({
@@ -28,8 +52,14 @@ class TextChatPage extends StatefulWidget {
     this.currentUserDisplayName = '',
     this.currentUserAvatarRevision = 0,
     this.onStartCall,
+    this.onOpenDirectChat,
+    this.mentionSuggestionLoader,
     this.hostVisible = true,
     this.embedded = false,
+    this.savedMessagesMode = false,
+    this.initialMessageId,
+    this.stickerGateway,
+    this.groupsGateway,
   });
 
   final MessagingCoordinator coordinator;
@@ -39,8 +69,15 @@ class TextChatPage extends StatefulWidget {
   final int currentUserAvatarRevision;
   final Future<void> Function(String peerId, String peerName, CallKind kind)?
   onStartCall;
+  final Future<void> Function(String userId)? onOpenDirectChat;
+  final Future<List<ContactMentionSuggestion>> Function(String query)?
+  mentionSuggestionLoader;
   final bool hostVisible;
   final bool embedded;
+  final bool savedMessagesMode;
+  final String? initialMessageId;
+  final StickerGateway? stickerGateway;
+  final GroupsGateway? groupsGateway;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -94,11 +131,22 @@ class _TextChatPageState extends State<TextChatPage>
   late final TextEditingController _composer;
   late final FocusNode _composerFocusNode;
   late final ScrollController _scrollController;
+  late final ChatAppearanceStore _appearanceStore;
   late final MediaApiClient _mediaApi;
+  late final ContactsApiClient _contactsApi;
+  late final GroupsGateway _groupsApi;
+  late final bool _ownsGroupsApi;
+  Map<String, GroupMemberItem> _groupMembers = const {};
+  late final MediaLocalCache _mediaCache;
+  late final VideoFileCache _videoFileCache;
+  late final MentionComposerController _mentionController;
+  final LayerLink _mentionLayerLink = LayerLink();
+  final GlobalKey _mentionAnchorKey = GlobalKey();
+  OverlayEntry? _mentionOverlayEntry;
   late final ChatVoiceRecorder _voiceRecorder;
-  late final AudioPlayer _voicePlayer;
-  final Map<String, MediaDownloadGrant> _mediaDownloadCache = {};
-  final Map<String, Future<MediaDownloadGrant>> _mediaDownloadInflight = {};
+  late final ChatVoicePlayer _voicePlayer;
+  final MediaDownloadGrantCache _mediaDownloadGrants =
+      MediaDownloadGrantCache();
   Timer? _draftSaveTimer;
   bool _imageSending = false;
   int _imageBatchCurrent = 0;
@@ -107,6 +155,9 @@ class _TextChatPageState extends State<TextChatPage>
   bool _gifSending = false;
   bool _stickerSending = false;
   bool _fileSending = false;
+  bool _videoSending = false;
+  double _videoUploadProgress = 0;
+  MediaUploadCancellation? _videoUploadCancellation;
   final Map<String, double> _fileDownloadProgress = {};
   final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
   double _fileUploadProgress = 0;
@@ -115,6 +166,7 @@ class _TextChatPageState extends State<TextChatPage>
   bool _voiceRecording = false;
   bool _voiceCancelGesture = false;
   bool _voiceSending = false;
+  bool _dropHover = false;
   int _voiceElapsedSeconds = 0;
   double _voiceAmplitude = 0;
   int? _voicePointerId;
@@ -126,6 +178,12 @@ class _TextChatPageState extends State<TextChatPage>
   Duration _voiceDuration = Duration.zero;
   double _voicePlaybackRate = 1;
   ChatMessage? _replyingTo;
+  ChatMessage? _editingMessage;
+  String? _draftBeforeEdit;
+  final Map<String, GlobalKey> _messageAnchorKeys = {};
+  String? _highlightedMessageId;
+  Timer? _highlightTimer;
+  List<PinnedMessageItem> _pinnedMessages = const [];
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
 
   bool get _keyboardSendEnabled =>
@@ -134,6 +192,12 @@ class _TextChatPageState extends State<TextChatPage>
       defaultTargetPlatform == TargetPlatform.windows ||
       defaultTargetPlatform == TargetPlatform.macOS ||
       defaultTargetPlatform == TargetPlatform.linux;
+
+  bool get _desktopFileDropEnabled =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.macOS ||
+          defaultTargetPlatform == TargetPlatform.linux);
 
   @override
   void initState() {
@@ -144,29 +208,54 @@ class _TextChatPageState extends State<TextChatPage>
     _composer.addListener(_scheduleDraftSave);
     _composerFocusNode = FocusNode(debugLabel: 'chat-composer');
     _scrollController = ScrollController();
+    _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
+    unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
+    _contactsApi = ContactsApiClient();
+    _ownsGroupsApi = widget.groupsGateway == null;
+    _groupsApi = widget.groupsGateway ?? GroupsApiClient();
+    _mentionController = MentionComposerController(
+      loader: (query) {
+        final injected = widget.mentionSuggestionLoader;
+        if (injected != null) return injected(query);
+        return widget.coordinator.withAuthorizedToken(
+          (token) => _contactsApi.suggestMentions(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            query: query,
+            conversationId: widget.conversation.id,
+          ),
+        );
+      },
+    );
+    _mentionController.addListener(_syncMentionOverlay);
+    _composer.addListener(_updateMentionTrigger);
+    _mentionController.update(_composer.value);
+    _mediaCache = MediaLocalCache(namespace: widget.currentUserId);
+    _videoFileCache = VideoFileCache(
+      namespace: '${widget.coordinator.origin.origin}|${widget.currentUserId}',
+    );
     _voiceRecorder = ChatVoiceRecorder();
     _voiceAmplitudeSubscription = _voiceRecorder.amplitudes.listen((value) {
       if (mounted && _voiceRecording) {
         setState(() => _voiceAmplitude = value);
       }
     });
-    _voicePlayer = AudioPlayer();
-    _voicePlayer.onPlayerStateChanged.listen((state) {
+    _voicePlayer = ChatVoicePlayer();
+    _voicePlayer.completed.listen((_) {
       if (!mounted) return;
-      if (state == PlayerState.completed) {
-        setState(() {
-          _playingVoiceMessageId = null;
-          _voicePosition = Duration.zero;
-        });
-      } else {
-        setState(() {});
-      }
+      setState(() {
+        _playingVoiceMessageId = null;
+        _voicePosition = Duration.zero;
+      });
     });
-    _voicePlayer.onPositionChanged.listen((position) {
+    _voicePlayer.playing.listen((_) {
+      if (mounted) setState(() {});
+    });
+    _voicePlayer.position.listen((position) {
       if (mounted) setState(() => _voicePosition = position);
     });
-    _voicePlayer.onDurationChanged.listen((duration) {
+    _voicePlayer.duration.listen((duration) {
       if (mounted) setState(() => _voiceDuration = duration);
     });
     WidgetsBinding.instance.addObserver(this);
@@ -183,6 +272,10 @@ class _TextChatPageState extends State<TextChatPage>
         oldWidget.conversation.id != widget.conversation.id) {
       if (oldWidget.conversation.id != widget.conversation.id) {
         widget.coordinator.deactivateConversation(oldWidget.conversation.id);
+        _mentionController.close();
+        _editingMessage = null;
+        _draftBeforeEdit = null;
+        _replyingTo = null;
       }
       _updateReadVisibility();
     }
@@ -199,18 +292,28 @@ class _TextChatPageState extends State<TextChatPage>
     WidgetsBinding.instance.removeObserver(this);
     _draftSaveTimer?.cancel();
     _voiceTimer?.cancel();
+    _highlightTimer?.cancel();
     unawaited(_voiceAmplitudeSubscription?.cancel());
     unawaited(_voiceRecorder.dispose());
     unawaited(_voicePlayer.dispose());
     unawaited(
-      widget.coordinator.setDraft(widget.conversation.id, _composer.text),
+      widget.coordinator.setDraft(
+        widget.conversation.id,
+        _editingMessage == null ? _composer.text : (_draftBeforeEdit ?? ''),
+      ),
     );
     widget.coordinator.deactivateConversation(widget.conversation.id);
+    _removeMentionOverlay();
+    _mentionController.removeListener(_syncMentionOverlay);
+    _mentionController.dispose();
+    _composer.removeListener(_updateMentionTrigger);
     _composer.removeListener(_scheduleDraftSave);
     _composerFocusNode.dispose();
     _composer.dispose();
     _scrollController.dispose();
     _mediaApi.close();
+    _contactsApi.close();
+    if (_ownsGroupsApi) _groupsApi.close();
     super.dispose();
   }
 
@@ -224,34 +327,69 @@ class _TextChatPageState extends State<TextChatPage>
             widget.conversation;
         final messages = widget.coordinator.messagesFor(conversation.id);
         final pending = widget.coordinator.pendingFor(conversation.id);
-        final body = ColoredBox(
-          color: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFF1D1D1D)
-              : DdColors.chatBackground,
-          child: SafeArea(
-            top: false,
-            child: Column(
-              children: [
-                if (widget.embedded) _desktopHeader(conversation),
-                if (widget.coordinator.errorMessage != null)
-                  _errorBar(widget.coordinator.errorMessage!),
-                Expanded(
-                  child: GestureDetector(
-                    key: const Key('chat-message-surface'),
-                    behavior: HitTestBehavior.translucent,
-                    onTap: _dismissKeyboard,
-                    child: messages.isEmpty && pending.isEmpty
-                        ? _emptyState(conversation)
-                        : _messageList(conversation, messages, pending),
-                  ),
-                ),
-                _composerBar(),
-              ],
+        final replyingTo = _replyingTo;
+        if (replyingTo != null &&
+            widget.coordinator.isMessageRecalled(
+              conversation.id,
+              replyingTo.id,
+            )) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _replyingTo?.id != replyingTo.id) return;
+            setState(() => _replyingTo = null);
+          });
+        }
+        final editingMessage = _editingMessage;
+        if (editingMessage != null &&
+            !messages.any((message) => message.id == editingMessage.id)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _editingMessage?.id != editingMessage.id) return;
+            final restore = _draftBeforeEdit ?? '';
+            setState(() {
+              _editingMessage = null;
+              _draftBeforeEdit = null;
+            });
+            _composer.text = restore;
+          });
+        }
+        final body = Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(
+              child: ChatWallpaperSurface(
+                store: _appearanceStore,
+                conversationId: conversation.id,
+              ),
             ),
-          ),
+            SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  if (widget.embedded) _desktopHeader(conversation),
+                  if (widget.coordinator.errorMessage != null)
+                    _errorBar(widget.coordinator.errorMessage!),
+                  if (_pinnedMessages.isNotEmpty) _pinnedMessageBar(),
+                  Expanded(
+                    child: GestureDetector(
+                      key: const Key('chat-message-surface'),
+                      behavior: HitTestBehavior.translucent,
+                      onTap: _dismissKeyboard,
+                      child: messages.isEmpty && pending.isEmpty
+                          ? _emptyState(conversation)
+                          : _messageList(conversation, messages, pending),
+                    ),
+                  ),
+                  _composerBar(conversation),
+                ],
+              ),
+            ),
+          ],
         );
 
-        if (widget.embedded) return body;
+        final interactiveBody = _desktopFileDropEnabled
+            ? _desktopDropTarget(body)
+            : body;
+
+        if (widget.embedded) return interactiveBody;
         return Scaffold(
           resizeToAvoidBottomInset: false,
           backgroundColor: Theme.of(context).brightness == Brightness.dark
@@ -261,64 +399,271 @@ class _TextChatPageState extends State<TextChatPage>
             titleSpacing: 0,
             title: _chatTitle(conversation),
             actions: [
+              if (!widget.savedMessagesMode && conversation.type != 'GROUP') ...[
+                IconButton(
+                  key: const Key('chat-audio-call-mobile'),
+                  tooltip: '语音通话',
+                  onPressed: () => _startCall(CallKind.audio),
+                  icon: const Icon(Icons.call_outlined, size: 21),
+                ),
+                IconButton(
+                  key: const Key('chat-video-call-mobile'),
+                  tooltip: '视频通话',
+                  onPressed: () => _startCall(CallKind.video),
+                  icon: const Icon(Icons.videocam_outlined, size: 23),
+                ),
+              ],
               IconButton(
-                key: const Key('chat-audio-call-mobile'),
-                tooltip: '语音通话',
-                onPressed: () => _startCall(CallKind.audio),
-                icon: const Icon(Icons.call_outlined, size: 21),
-              ),
-              IconButton(
-                key: const Key('chat-video-call-mobile'),
-                tooltip: '视频通话',
-                onPressed: () => _startCall(CallKind.video),
-                icon: const Icon(Icons.videocam_outlined, size: 23),
-              ),
-              IconButton(
-                key: const Key('chat-sync'),
-                tooltip: '更多',
-                onPressed: _sync,
+                key: const Key('chat-details'),
+                tooltip: '聊天详情',
+                onPressed: () => unawaited(_openChatDetails(conversation)),
                 icon: const Icon(Icons.more_horiz_rounded),
               ),
               const SizedBox(width: 4),
             ],
           ),
           body: defaultTargetPlatform == TargetPlatform.android
-              ? _AndroidKeyboardLift(child: body)
-              : body,
+              ? _AndroidKeyboardLift(child: interactiveBody)
+              : interactiveBody,
         );
       },
     );
   }
 
+  Widget _desktopDropTarget(Widget child) {
+    return DropTarget(
+      enable: widget.hostVisible,
+      onDragEntered: (_) {
+        if (!_dropHover && mounted) setState(() => _dropHover = true);
+      },
+      onDragExited: (_) {
+        if (_dropHover && mounted) setState(() => _dropHover = false);
+      },
+      onDragDone: (details) {
+        if (mounted) setState(() => _dropHover = false);
+        unawaited(_confirmDroppedItems(details.files));
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          if (_dropHover)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: Colors.black.withValues(alpha: 0.28),
+                  child: Center(
+                    child: Container(
+                      key: const Key('chat-file-drop-overlay'),
+                      width: 280,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 28,
+                        vertical: 30,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(DdRadii.sheet),
+                        border: Border.all(color: DdColors.green, width: 2),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x33000000),
+                            blurRadius: 22,
+                            offset: Offset(0, 10),
+                          ),
+                        ],
+                      ),
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.file_upload_outlined,
+                            size: 44,
+                            color: DdColors.green,
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            '松开选择发送方式',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            '图片会按图片消息发送，其他文件按原文件发送',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: DdColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmDroppedItems(List<DropItem> items) async {
+    final files = items.whereType<DropItemFile>().toList(growable: false);
+    if (files.isEmpty) {
+      if (mounted) _showImageError('暂不支持直接发送文件夹，请拖入文件。');
+      return;
+    }
+    final imageCount = files
+        .where((file) => _isImageFileName(file.name))
+        .length;
+    var totalBytes = 0;
+    for (final file in files) {
+      try {
+        totalBytes += await file.length();
+      } catch (_) {
+        // A file can disappear after the OS drop event. Upload will surface the
+        // actionable error later; confirmation should still remain usable.
+      }
+    }
+    if (!mounted) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          files.length == 1
+              ? '发送 ${files.first.name}'
+              : '发送 ${files.length} 个文件',
+        ),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 430),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (files.length > 1)
+                Text(
+                  files.take(5).map((file) => file.name).join('\n') +
+                      (files.length > 5 ? '\n…还有 ${files.length - 5} 个' : ''),
+                  maxLines: 7,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              if (files.length > 1) const SizedBox(height: 14),
+              Text(
+                '${files.length} 个文件 · ${_formatBytes(totalBytes)}',
+                key: const Key('drop-file-summary'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                imageCount > 0
+                    ? '检测到 $imageCount 张图片。可以按图片发送以显示缩略图，也可以全部按原文件发送。'
+                    : '确认后才会开始上传；取消不会产生消息。',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: DdColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          if (imageCount > 0)
+            OutlinedButton(
+              key: const Key('drop-send-as-files'),
+              onPressed: () => Navigator.pop(dialogContext, 'files'),
+              child: const Text('作为文件发送'),
+            ),
+          FilledButton(
+            key: const Key('drop-send-smart'),
+            onPressed: () => Navigator.pop(dialogContext, 'smart'),
+            child: Text(imageCount > 0 ? '发送' : '发送文件'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    await _sendDroppedItems(items, imagesAsFiles: choice == 'files');
+  }
+
+  bool _isImageFileName(String name) {
+    final lower = name.toLowerCase();
+    return lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.webp') ||
+        lower.endsWith('.bmp');
+  }
+
+  Future<void> _sendDroppedItems(
+    List<DropItem> items, {
+    bool imagesAsFiles = false,
+  }) async {
+    final files = items.whereType<DropItemFile>().toList(growable: false);
+    if (files.isEmpty) {
+      if (mounted) _showImageError('暂不支持直接发送文件夹，请拖入文件。');
+      return;
+    }
+    final images = <XFile>[];
+    final others = <XFile>[];
+    for (final file in files) {
+      if (!imagesAsFiles && _isImageFileName(file.name)) {
+        images.add(file);
+      } else {
+        others.add(file);
+      }
+    }
+    if (images.isNotEmpty) await _sendImageFiles(images);
+    for (final file in others) {
+      if (!mounted) return;
+      await _sendFile(file);
+    }
+  }
+
   Widget _desktopHeader(ConversationItem conversation) {
+    final brightness = Theme.of(context).brightness;
     return Container(
-      height: 64,
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      key: const Key('chat-desktop-header'),
+      height: DdDesktopTokens.chatHeaderHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 18),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: const Border(
-          bottom: BorderSide(color: DdColors.divider, width: 0.5),
+        color: DdDesktopTokens.titleBarSurface(brightness),
+        border: Border(
+          bottom: BorderSide(
+            color: DdDesktopTokens.borderSubtle(brightness),
+            width: 0.5,
+          ),
         ),
       ),
       child: Row(
         children: [
           Expanded(child: _chatTitle(conversation)),
+          if (!widget.savedMessagesMode && conversation.type != 'GROUP') ...[
+            IconButton(
+              key: const Key('chat-audio-call'),
+              tooltip: '语音通话',
+              onPressed: () => _startCall(CallKind.audio),
+              icon: const Icon(Icons.call_outlined, size: 20),
+            ),
+            IconButton(
+              key: const Key('chat-video-call'),
+              tooltip: '视频通话',
+              onPressed: () => _startCall(CallKind.video),
+              icon: const Icon(Icons.videocam_outlined, size: 22),
+            ),
+          ],
           IconButton(
-            key: const Key('chat-audio-call'),
-            tooltip: '语音通话',
-            onPressed: () => _startCall(CallKind.audio),
-            icon: const Icon(Icons.call_outlined, size: 20),
-          ),
-          IconButton(
-            key: const Key('chat-video-call'),
-            tooltip: '视频通话',
-            onPressed: () => _startCall(CallKind.video),
-            icon: const Icon(Icons.videocam_outlined, size: 22),
-          ),
-          IconButton(
-            key: const Key('chat-sync'),
-            tooltip: '更多',
-            onPressed: _sync,
+            key: const Key('chat-details'),
+            tooltip: '聊天详情',
+            onPressed: () => unawaited(_openChatDetails(conversation)),
             icon: const Icon(Icons.more_horiz_rounded),
           ),
         ],
@@ -327,6 +672,55 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _chatTitle(ConversationItem conversation) {
+    if (widget.savedMessagesMode) {
+      return const Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '我的收藏',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            '仅自己可见 · 跨设备同步',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              color: DdColors.textSecondary,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
+      );
+    }
+    if (conversation.type == 'GROUP') {
+      final group = conversation.group;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            group?.name ?? '群聊',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            '${group?.memberCount ?? 0} 位成员',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 11,
+              color: DdColors.textSecondary,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
+      );
+    }
     final peer = conversation.peer;
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -354,7 +748,46 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _emptyState(ConversationItem conversation) {
-    final name = conversation.peer?.displayName ?? '对方';
+    if (widget.savedMessagesMode) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 32,
+                backgroundColor: DdColors.green,
+                child: Icon(
+                  Icons.bookmark_rounded,
+                  size: 32,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(height: 14),
+              Text(
+                '我的收藏',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+              SizedBox(height: 7),
+              Text(
+                '给自己发送文字、图片、文件或语音，也可以从其他聊天收藏和转发到这里。',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.5,
+                  color: DdColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    final isGroup = conversation.type == 'GROUP';
+    final name = isGroup
+        ? conversation.group?.name ?? '群聊'
+        : conversation.peer?.displayName ?? '对方';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(28),
@@ -364,7 +797,7 @@ class _TextChatPageState extends State<TextChatPage>
             _peerAvatar(conversation, size: 58),
             const SizedBox(height: 14),
             Text(
-              '和 $name 开始聊天',
+              isGroup ? '在 $name 开始群聊' : '和 $name 开始聊天',
               style: const TextStyle(
                 fontSize: 15,
                 color: DdColors.textSecondary,
@@ -407,6 +840,203 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Widget _pinnedMessageBar() {
+    final item = _pinnedMessages.first;
+    final message = item.message;
+    final summary = _pinnedMessageSummary(message);
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        key: const Key('pinned-message-bar'),
+        onTap: () => unawaited(
+          _pinnedMessages.length > 1
+              ? _showPinnedMessageManager()
+              : _jumpToMessage(message.id),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: DdColors.divider, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: DdColors.greenPressed,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      _pinnedMessages.length == 1
+                          ? '置顶消息'
+                          : '置顶消息 · 1/${_pinnedMessages.length}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.greenPressed,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                _pinnedMessages.length > 1
+                    ? Icons.list_alt_rounded
+                    : Icons.chevron_right_rounded,
+                key: _pinnedMessages.length > 1
+                    ? const Key('pinned-message-manager-icon')
+                    : null,
+                size: 18,
+                color: DdColors.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _pinnedMessageSummary(ChatMessage message) {
+    if (message.isRecalled) return '';
+    return switch (message.type) {
+      'TEXT' => message.content?.text ?? '消息',
+      'IMAGE' => '[图片]',
+      'GIF' => '[GIF]',
+      'STICKER' => '[表情]',
+      'VOICE' => '[语音]',
+      'VIDEO' => '[视频]',
+      'FILE' => '[文件] ${message.content?.fileName ?? ''}',
+      _ => '[消息]',
+    };
+  }
+
+  String _formatMessageTime(DateTime time) {
+    final local = time.toLocal();
+    final now = DateTime.now();
+    final sameDay =
+        local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
+    final hhmm =
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    if (sameDay) return hhmm;
+    return '${local.month}/${local.day} $hhmm';
+  }
+
+  Future<void> _showPinnedMessageManager() async {
+    if (_pinnedMessages.isEmpty || !mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => FractionallySizedBox(
+        heightFactor: 0.68,
+        child: Column(
+          key: const Key('pinned-message-manager'),
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: DdColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                const SizedBox(width: 18),
+                const Expanded(
+                  child: Text(
+                    '置顶消息',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Text(
+                  '${_pinnedMessages.length} 条',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: DdColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(width: 18),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.separated(
+                itemCount: _pinnedMessages.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final item = _pinnedMessages[index];
+                  final message = item.message;
+                  return ListTile(
+                    key: Key('pinned-manager-message-${message.id}'),
+                    leading: CircleAvatar(
+                      radius: 18,
+                      backgroundColor: DdColors.green.withValues(alpha: 0.12),
+                      child: const Icon(
+                        Icons.push_pin_rounded,
+                        size: 18,
+                        color: DdColors.greenPressed,
+                      ),
+                    ),
+                    title: Text(
+                      _pinnedMessageSummary(message),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      _formatMessageTime(message.createdAt),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textTertiary,
+                      ),
+                    ),
+                    trailing: IconButton(
+                      key: Key('pinned-manager-unpin-${message.id}'),
+                      tooltip: '取消置顶',
+                      icon: const Icon(Icons.close_rounded, size: 20),
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        await widget.coordinator.unpinMessage(message);
+                        await _refreshPinnedMessages();
+                      },
+                    ),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      unawaited(_jumpToMessage(message.id));
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _messageList(
     ConversationItem conversation,
     List<ChatMessage> messages,
@@ -440,31 +1070,142 @@ class _TextChatPageState extends State<TextChatPage>
         }
         final contentIndex = index - offset;
         if (contentIndex < messages.length) {
-          return RepaintBoundary(
-            child: _messageRow(conversation, messages[contentIndex]),
+          final message = messages[contentIndex];
+          final previousTime = contentIndex == 0
+              ? null
+              : messages[contentIndex - 1].createdAt;
+          return _withDateSeparator(
+            message.createdAt,
+            previousTime: previousTime,
+            child: KeyedSubtree(
+              key: _messageAnchorKeys.putIfAbsent(message.id, GlobalKey.new),
+              child: RepaintBoundary(child: _messageRow(conversation, message)),
+            ),
           );
         }
-        return RepaintBoundary(
-          child: _pendingRow(pending[contentIndex - messages.length]),
+        final pendingIndex = contentIndex - messages.length;
+        final pendingMessage = pending[pendingIndex];
+        final previousTime = pendingIndex > 0
+            ? pending[pendingIndex - 1].createdAt
+            : (messages.isEmpty ? null : messages.last.createdAt);
+        return _withDateSeparator(
+          pendingMessage.createdAt,
+          previousTime: previousTime,
+          child: RepaintBoundary(child: _pendingRow(pendingMessage)),
         );
       },
     );
   }
 
-  Widget _messageRow(ConversationItem conversation, ChatMessage message) {
-    final mine = message.senderUserId == widget.currentUserId;
-    final bubble = _messageBubble(conversation, message, mine);
-    final row = Padding(
-      key: Key('message-${message.id}'),
+  Widget _withDateSeparator(
+    DateTime timestamp, {
+    required DateTime? previousTime,
+    required Widget child,
+  }) {
+    final currentLocal = timestamp.toLocal();
+    final previousLocal = previousTime?.toLocal();
+    final show =
+        previousLocal == null || !_sameLocalDay(currentLocal, previousLocal);
+    if (!show) return child;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [_dateSeparator(currentLocal), child],
+    );
+  }
+
+  bool _sameLocalDay(DateTime left, DateTime right) =>
+      left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
+
+  Widget _dateSeparator(DateTime local) {
+    final label = _dateSeparatorLabel(local);
+    return Padding(
       padding: const EdgeInsets.only(bottom: 14),
+      child: Center(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(DdRadii.pill),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11,
+                color: DdColors.textSecondary,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _dateSeparatorLabel(DateTime local) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final date = DateTime(local.year, local.month, local.day);
+    if (date == today) return '今天';
+    if (date == today.subtract(const Duration(days: 1))) return '昨天';
+    if (date.year == today.year) return '${date.month}月${date.day}日';
+    return '${date.year}年${date.month}月${date.day}日';
+  }
+
+  Widget _messageRow(ConversationItem conversation, ChatMessage message) {
+    if (message.isRecalled) return const SizedBox.shrink();
+    if (message.type == 'SYSTEM') {
+      return _systemMessageRow(message);
+    }
+    final mine = message.senderUserId == widget.currentUserId;
+    final senderMember = conversation.type == 'GROUP' && !mine
+        ? _groupMembers[message.senderUserId]
+        : null;
+    final bubble = _messageBubble(conversation, message, mine);
+    final row = AnimatedContainer(
+      key: Key('message-${message.id}'),
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.only(bottom: 14),
+      color: _highlightedMessageId == message.id
+          ? DdColors.green.withValues(alpha: 0.12)
+          : Colors.transparent,
       child: Row(
         mainAxisAlignment: mine
             ? MainAxisAlignment.end
             : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!mine) ...[_peerAvatar(conversation), const SizedBox(width: 9)],
-          Flexible(child: bubble),
+          if (!mine) ...[
+            _messageSenderAvatar(conversation, message, senderMember),
+            const SizedBox(width: 9),
+          ],
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: mine
+                  ? CrossAxisAlignment.end
+                  : CrossAxisAlignment.start,
+              children: [
+                if (senderMember != null) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 3),
+                    child: Text(
+                      senderMember.effectiveName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textSecondary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+                bubble,
+              ],
+            ),
+          ),
           if (mine) ...[
             const SizedBox(width: 9),
             _avatar(
@@ -479,10 +1220,12 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
 
-    final secondaryTap = GestureDetector(
+    final secondaryTap = Listener(
       behavior: HitTestBehavior.translucent,
-      onSecondaryTapDown: (details) =>
-          _showMessageMenuAt(message, mine, details.globalPosition),
+      onPointerDown: (event) {
+        if ((event.buttons & kSecondaryMouseButton) == 0) return;
+        unawaited(_showMessageMenuAt(message, mine, event.position));
+      },
       child: row,
     );
     final fastVoiceLongPress =
@@ -515,18 +1258,54 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Widget _systemMessageRow(ChatMessage message) {
+    final text = message.content?.text.trim();
+    return AnimatedContainer(
+      key: Key('message-${message.id}'),
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.fromLTRB(20, 2, 20, 16),
+      color: _highlightedMessageId == message.id
+          ? DdColors.green.withValues(alpha: 0.12)
+          : Colors.transparent,
+      alignment: Alignment.center,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0x19000000),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Text(
+            text == null || text.isEmpty ? '系统消息' : text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 12,
+              color: DdColors.textSecondary,
+              height: 1.3,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _messageBubble(
     ConversationItem conversation,
     ChatMessage message,
     bool mine,
   ) {
     final recalled = message.isRecalled;
-    final callSummary = recalled ? null : _parseCallSummary(message.content?.text);
-    final visualContent =
-        !recalled &&
+    if (recalled) return const SizedBox.shrink();
+    final callSummary = _parseCallSummary(message.content?.text);
+    final imageVisual =
         const {'IMAGE', 'GIF', 'STICKER'}.contains(message.type) &&
         message.content?.isImage == true;
-    final standaloneSticker = visualContent && message.type == 'STICKER';
+    final videoVisual =
+        message.type == 'VIDEO' &&
+        message.content?.hasMedia == true &&
+        message.content?.hasVideoPoster == true &&
+        message.content?.durationMs != null;
+    final standaloneVisual = imageVisual || videoVisual;
     final voiceContent =
         !recalled &&
         message.type == 'VOICE' &&
@@ -545,20 +1324,17 @@ class _TextChatPageState extends State<TextChatPage>
             : CrossAxisAlignment.start,
         children: [
           Container(
-            padding: recalled
-                ? const EdgeInsets.symmetric(horizontal: 8, vertical: 4)
-                : standaloneSticker
+            key: Key('message-bubble-surface-${message.id}'),
+            padding: standaloneVisual
                 ? EdgeInsets.zero
-                : visualContent
-                ? const EdgeInsets.all(3)
-                : const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-            decoration: recalled || standaloneSticker
+                : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: standaloneVisual
                 ? null
                 : BoxDecoration(
                     color: mine
                         ? DdColors.ownBubble
                         : Theme.of(context).colorScheme.surface,
-                    borderRadius: BorderRadius.circular(5),
+                    borderRadius: BorderRadius.circular(DdRadii.messageBubble),
                   ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -567,29 +1343,62 @@ class _TextChatPageState extends State<TextChatPage>
                   _replyReference(message.replyToMessageId!, mine),
                   const SizedBox(height: 6),
                 ],
+                if (widget.savedMessagesMode &&
+                    message.forwardedFromMessageId != null &&
+                    !recalled) ...[
+                  const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.bookmark_rounded,
+                        size: 13,
+                        color: DdColors.greenPressed,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        '收藏自原消息',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: DdColors.greenPressed,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                ],
                 if (callSummary != null)
                   _callSummaryBubble(callSummary)
-                else if (visualContent)
-                  _chatImage(message.content!)
+                else if (imageVisual)
+                  _chatImage(message)
+                else if (videoVisual)
+                  _chatVideo(message)
                 else if (voiceContent)
                   _voiceBubble(message, mine)
                 else if (fileContent)
                   _fileBubble(message, mine)
                 else
-                  Text(
-                    recalled
-                        ? '你${mine ? '' : '的好友'}撤回了一条消息'
-                        : (message.content?.text ?? '[${message.type}]'),
+                  MentionRichText(
+                    text: message.content?.text ?? '[${message.type}]',
+                    entities:
+                        message.content?.entities ?? const <MessageEntity>[],
                     style: TextStyle(
-                      fontSize: recalled ? 12 : 15,
+                      fontSize: 15,
                       height: 1.38,
-                      fontStyle: recalled ? FontStyle.italic : FontStyle.normal,
-                      color: recalled
-                          ? DdColors.textSecondary
-                          : (Theme.of(context).brightness == Brightness.dark
-                                ? Colors.white
-                                : DdColors.textPrimary),
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.white
+                          : DdColors.textPrimary,
                     ),
+                    mentionStyle: TextStyle(
+                      fontSize: 15,
+                      height: 1.38,
+                      fontWeight: FontWeight.w600,
+                      color: mine
+                          ? const Color(0xFF087443)
+                          : const Color(0xFF1687FF),
+                    ),
+                    onMentionTap: (userId) =>
+                        unawaited(_openMentionProfile(userId)),
                   ),
               ],
             ),
@@ -605,6 +1414,13 @@ class _TextChatPageState extends State<TextChatPage>
                   color: DdColors.textTertiary,
                 ),
               ),
+              if (message.isEdited) ...[
+                const SizedBox(width: 5),
+                const Text(
+                  '已更新',
+                  style: TextStyle(fontSize: 10, color: DdColors.textTertiary),
+                ),
+              ],
               if (mine && !recalled) ...[
                 const SizedBox(width: 5),
                 Text(
@@ -627,30 +1443,59 @@ class _TextChatPageState extends State<TextChatPage>
 
   ({bool video, String text})? _parseCallSummary(String? raw) {
     final text = raw?.trim() ?? '';
-    if (text.startsWith('语音通话 · 通话时长 ')) {
-      return (video: false, text: text.substring('语音通话 · '.length));
+    const audioPrefix = '语音通话 · ';
+    const videoPrefix = '视频通话 · ';
+    if (text.startsWith(audioPrefix)) {
+      final detail = text.substring(audioPrefix.length);
+      if (detail.startsWith('通话时长 ') || detail == '对方拒接') {
+        return (video: false, text: detail);
+      }
     }
-    if (text.startsWith('视频通话 · 通话时长 ')) {
-      return (video: true, text: text.substring('视频通话 · '.length));
+    if (text.startsWith(videoPrefix)) {
+      final detail = text.substring(videoPrefix.length);
+      if (detail.startsWith('通话时长 ') || detail == '对方拒接') {
+        return (video: true, text: detail);
+      }
     }
     return null;
   }
 
   Widget _callSummaryBubble(({bool video, String text}) summary) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          summary.video ? Icons.videocam_outlined : Icons.call_outlined,
-          size: 20,
-          color: DdColors.greenPressed,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        key: Key('call-summary-${summary.video ? 'video' : 'audio'}'),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        onTap: () =>
+            _startCall(summary.video ? CallKind.video : CallKind.audio),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                summary.video ? Icons.videocam_outlined : Icons.call_outlined,
+                size: 20,
+                color: DdColors.greenPressed,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                summary.text,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 16,
+                color: DdColors.textTertiary,
+              ),
+            ],
+          ),
         ),
-        const SizedBox(width: 8),
-        Text(
-          summary.text,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-        ),
-      ],
+      ),
     );
   }
 
@@ -671,7 +1516,7 @@ class _TextChatPageState extends State<TextChatPage>
     final downloading = _fileDownloadCancellations.containsKey(message.id);
     final progress = _fileDownloadProgress[message.id] ?? 0;
     return InkWell(
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(DdRadii.control),
       onTap: downloading
           ? () => _fileDownloadCancellations[message.id]?.cancel()
           : () => unawaited(_saveMediaFile(message)),
@@ -737,8 +1582,9 @@ class _TextChatPageState extends State<TextChatPage>
           if (!mounted || total == null || total <= 0) return;
           final next = (received / total).clamp(0.0, 1.0);
           if ((next - (_fileDownloadProgress[message.id] ?? 0)).abs() < 0.01 &&
-              next < 1)
+              next < 1) {
             return;
+          }
           setState(() => _fileDownloadProgress[message.id] = next);
         },
       );
@@ -778,8 +1624,7 @@ class _TextChatPageState extends State<TextChatPage>
     final durationSeconds = (durationMs / 1000).ceil();
     final width = (112.0 + durationSeconds * 2.4).clamp(126.0, 248.0);
     final playing =
-        _playingVoiceMessageId == message.id &&
-        _voicePlayer.state == PlayerState.playing;
+        _playingVoiceMessageId == message.id && _voicePlayer.isPlaying;
     final progress =
         _playingVoiceMessageId == message.id &&
             _voiceDuration.inMilliseconds > 0
@@ -792,7 +1637,7 @@ class _TextChatPageState extends State<TextChatPage>
     return SizedBox(
       width: width,
       child: InkWell(
-        borderRadius: BorderRadius.circular(5),
+        borderRadius: BorderRadius.circular(DdRadii.control),
         onTap: () => unawaited(_toggleVoicePlayback(message)),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 1),
@@ -843,7 +1688,7 @@ class _TextChatPageState extends State<TextChatPage>
               ],
               const SizedBox(width: 4),
               InkWell(
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(DdRadii.pill),
                 onTap: () => unawaited(_cycleVoicePlaybackRate(message)),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -871,16 +1716,15 @@ class _TextChatPageState extends State<TextChatPage>
     if (mediaId == null || mediaId.isEmpty) return;
     try {
       if (_playingVoiceMessageId == message.id) {
-        if (_voicePlayer.state == PlayerState.playing) {
+        if (_voicePlayer.isPlaying) {
           await _voicePlayer.pause();
         } else {
           await _voicePlayer.resume();
         }
         return;
       }
-      final grant = await _downloadGrantFor(mediaId);
+      final bytes = await _mediaBytesFor(mediaId);
       await _voicePlayer.stop();
-      await _voicePlayer.setPlaybackRate(_voicePlaybackRate);
       if (mounted) {
         setState(() {
           _playingVoiceMessageId = message.id;
@@ -889,8 +1733,21 @@ class _TextChatPageState extends State<TextChatPage>
         });
       }
       await widget.coordinator.markVoiceHeard(message.id);
-      await _voicePlayer.play(UrlSource(grant.url.toString()));
-    } catch (_) {
+      await _voicePlayer.play(
+        bytes: bytes,
+        namespace: widget.currentUserId,
+        mediaId: mediaId,
+        mimeType: message.content?.mimeType,
+        rate: _voicePlaybackRate,
+      );
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'Voice playback failed: message=${message.id} media=$mediaId mime=${message.content?.mimeType ?? ''}',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
       if (mounted) _showImageError('语音播放失败，请稍后重试。');
     }
   }
@@ -903,33 +1760,34 @@ class _TextChatPageState extends State<TextChatPage>
         : 1.0;
     setState(() => _voicePlaybackRate = next);
     if (_playingVoiceMessageId == message.id) {
-      await _voicePlayer.setPlaybackRate(next);
+      await _voicePlayer.setRate(next);
     }
   }
 
-  Widget _chatImage(TextMessageContent content) {
+  Widget _chatImage(ChatMessage message) {
+    final content = message.content!;
     final mediaId = content.mediaId!;
     final size = _chatImageDisplaySize(content.width!, content.height!);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(3),
+      borderRadius: BorderRadius.circular(DdRadii.media),
       child: SizedBox(
         width: size.width,
         height: size.height,
-        child: FutureBuilder<MediaDownloadGrant>(
-          future: _downloadGrantFor(mediaId),
+        child: FutureBuilder<Uint8List>(
+          future: _mediaBytesFor(mediaId),
           builder: (context, snapshot) {
             if (snapshot.hasData) {
-              final grant = snapshot.data!;
+              final bytes = snapshot.data!;
               return GestureDetector(
+                key: Key('chat-image-${message.id}'),
                 behavior: HitTestBehavior.opaque,
-                onTap: () => _openMediaPreview(grant),
-                child: Image.network(
-                  grant.url.toString(),
+                onTap: () => _openImageViewer(message, bytes),
+                child: Image.memory(
+                  bytes,
                   fit: BoxFit.cover,
+                  gaplessPlayback: true,
                   filterQuality: FilterQuality.medium,
                   errorBuilder: (_, _, _) => _imageLoadFailure(mediaId),
-                  loadingBuilder: (context, child, progress) =>
-                      progress == null ? child : _imageLoadingSurface(),
                 ),
               );
             }
@@ -941,49 +1799,197 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Future<void> _openMediaPreview(MediaDownloadGrant grant) async {
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.94),
-      builder: (dialogContext) => Dialog.fullscreen(
-        backgroundColor: Colors.black,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: InteractiveViewer(
-                minScale: 0.7,
-                maxScale: 5,
-                child: Center(
-                  child: Image.network(
-                    grant.url.toString(),
-                    fit: BoxFit.contain,
-                    filterQuality: FilterQuality.high,
-                    errorBuilder: (_, _, _) => const Center(
-                      child: Text(
-                        '媒体加载失败',
-                        style: TextStyle(color: Colors.white70),
+  Widget _chatVideo(ChatMessage message) {
+    final content = message.content!;
+    final posterMediaId = content.posterMediaId!;
+    final size = _chatImageDisplaySize(content.width!, content.height!);
+    final duration = Duration(milliseconds: content.durationMs!);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(DdRadii.media),
+      child: SizedBox(
+        width: size.width,
+        height: size.height,
+        child: FutureBuilder<Uint8List>(
+          future: _mediaBytesFor(posterMediaId),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              if (snapshot.hasError) return _imageLoadFailure(posterMediaId);
+              return _imageLoadingSurface();
+            }
+            return GestureDetector(
+              key: Key('chat-video-${message.id}'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => unawaited(_openVideoViewer(message)),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.memory(
+                    snapshot.data!,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                    filterQuality: FilterQuality.medium,
+                  ),
+                  const Center(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Color(0x99000000),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Icon(
+                          Icons.play_arrow_rounded,
+                          color: Colors.white,
+                          size: 34,
+                        ),
                       ),
                     ),
                   ),
-                ),
+                  Positioned(
+                    right: 8,
+                    bottom: 7,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Color(0x99000000),
+                        borderRadius: BorderRadius.all(
+                          Radius.circular(DdRadii.pill),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
+                        child: Text(
+                          _formatMediaDuration(duration),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-            Positioned(
-              top: 16,
-              right: 16,
-              child: SafeArea(
-                child: IconButton.filledTonal(
-                  tooltip: '关闭',
-                  onPressed: () => Navigator.pop(dialogContext),
-                  icon: const Icon(Icons.close_rounded),
-                ),
-              ),
-            ),
-          ],
+            );
+          },
         ),
       ),
     );
   }
+
+  Future<void> _openImageViewer(ChatMessage message, Uint8List bytes) async {
+    final content = message.content!;
+    final mimeType = (content.mimeType ?? '').trim().isEmpty
+        ? (message.type == 'GIF' ? 'image/gif' : 'image/jpeg')
+        : content.mimeType!.trim();
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'DD-${message.type.toLowerCase()}-${message.id}.${_imageExtension(mimeType)}'
+        : content.fileName!.trim();
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => ImageViewerPage(
+          bytes: bytes,
+          mimeType: mimeType,
+          suggestedName: fileName,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openVideoViewer(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId;
+    if (content == null || mediaId == null || mediaId.isEmpty) return;
+    try {
+      final expectedSizeBytes = content.sizeBytes ?? 0;
+      final cached = await _videoFileCache.cachedUri(
+        mediaId,
+        expectedSizeBytes: expectedSizeBytes,
+      );
+      final initialGrant = cached == null
+          ? await _downloadGrantFor(mediaId)
+          : null;
+      if (!mounted) return;
+      final fileName = (content.fileName ?? '').trim().isEmpty
+          ? 'DD-video-${message.id}.mp4'
+          : content.fileName!.trim();
+      final mimeType = (content.mimeType ?? '').trim().isEmpty
+          ? 'video/mp4'
+          : content.mimeType!.trim();
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => VideoViewerPage(
+            url: cached ?? initialGrant!.url,
+            fileName: fileName,
+            mimeType: mimeType,
+            remoteUrlResolver: () =>
+                _downloadGrantFor(mediaId).then((grant) => grant.url),
+            retryUrlResolver: () async {
+              _mediaDownloadGrants.clear(mediaId);
+              return (await _downloadGrantFor(mediaId)).url;
+            },
+            cacheInBackground: cached != null
+                ? null
+                : (onProgress) => _cacheVideoInBackground(
+                    mediaId,
+                    expectedSizeBytes: expectedSizeBytes,
+                    onProgress: onProgress,
+                  ),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) _showImageError('视频加载失败，请稍后重试。');
+    }
+  }
+
+  Future<void> _cacheVideoInBackground(
+    String mediaId, {
+    required int expectedSizeBytes,
+    required void Function(int received, int? total) onProgress,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final grant = await _downloadGrantFor(mediaId);
+      try {
+        await _videoFileCache.cacheFromUrl(
+          mediaId: mediaId,
+          url: grant.url,
+          expectedSizeBytes: expectedSizeBytes,
+          onProgress: onProgress,
+        );
+        return;
+      } on VideoFileCacheHttpException catch (error) {
+        if (attempt == 0 && const {401, 403, 410}.contains(error.statusCode)) {
+          _mediaDownloadGrants.clear(mediaId);
+          continue;
+        }
+        rethrow;
+      }
+    }
+  }
+
+  String _formatMediaDuration(Duration duration) {
+    final seconds = duration.inSeconds.clamp(0, 24 * 60 * 60 - 1);
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    final rest = seconds % 60;
+    if (hours > 0) {
+      return '$hours:${minutes.toString().padLeft(2, '0')}:${rest.toString().padLeft(2, '0')}';
+    }
+    return '$minutes:${rest.toString().padLeft(2, '0')}';
+  }
+
+  String _imageExtension(String mimeType) => switch (mimeType.toLowerCase()) {
+    'image/png' => 'png',
+    'image/webp' => 'webp',
+    'image/gif' => 'gif',
+    _ => 'jpg',
+  };
 
   Size _chatImageDisplaySize(int width, int height) {
     final maxWidth = widget.embedded ? 360.0 : 238.0;
@@ -1024,8 +2030,8 @@ class _TextChatPageState extends State<TextChatPage>
     color: const Color(0xFFE9E9E9),
     child: InkWell(
       onTap: () {
-        _mediaDownloadCache.remove(mediaId);
-        _mediaDownloadInflight.remove(mediaId);
+        _mediaDownloadGrants.clear(mediaId);
+        unawaited(_mediaCache.evict(mediaId));
         setState(() {});
       },
       child: const Center(
@@ -1041,29 +2047,33 @@ class _TextChatPageState extends State<TextChatPage>
     ),
   );
 
-  Future<MediaDownloadGrant> _downloadGrantFor(String mediaId) {
-    final cached = _mediaDownloadCache[mediaId];
-    final now = DateTime.now().toUtc();
-    if (cached != null &&
-        cached.expiresAt.isAfter(now.add(const Duration(seconds: 20)))) {
-      return Future.value(cached);
-    }
-    final inflight = _mediaDownloadInflight[mediaId];
-    if (inflight != null) return inflight;
-    final request = _mediaApi
-        .createDownloadUrl(
+  Future<Uint8List> _mediaBytesFor(String mediaId) => _mediaCache.resolve(
+    mediaId,
+    loader: () => downloadMediaWithGrantRefresh(
+      mediaId: mediaId,
+      grants: _mediaDownloadGrants,
+      grantLoader: () => widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.createDownloadUrl(
           origin: widget.coordinator.origin,
-          accessToken: widget.coordinator.accessToken,
+          accessToken: token,
           mediaId: mediaId,
-        )
-        .then((grant) {
-          _mediaDownloadCache[mediaId] = grant;
-          return grant;
-        })
-        .whenComplete(() => _mediaDownloadInflight.remove(mediaId));
-    _mediaDownloadInflight[mediaId] = request;
-    return request;
-  }
+        ),
+      ),
+      downloader: (url) => _mediaApi.downloadMedia(url: url),
+    ),
+  );
+
+  Future<MediaDownloadGrant> _downloadGrantFor(String mediaId) =>
+      _mediaDownloadGrants.resolve(
+        mediaId,
+        loader: () => widget.coordinator.withAuthorizedToken(
+          (token) => _mediaApi.createDownloadUrl(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            mediaId: mediaId,
+          ),
+        ),
+      );
 
   Widget _pendingRow(PendingTextMessage item) {
     final failed = item.lastError != null;
@@ -1091,14 +2101,17 @@ class _TextChatPageState extends State<TextChatPage>
                       color: failed
                           ? const Color(0xFFFFDCDC)
                           : DdColors.ownBubble,
-                      borderRadius: BorderRadius.circular(5),
+                      borderRadius: BorderRadius.circular(
+                        DdRadii.messageBubble,
+                      ),
                     ),
                     child:
                         item.isImage ||
                             item.isGif ||
                             item.isSticker ||
                             item.isVoice ||
-                            item.isFile
+                            item.isFile ||
+                            item.isVideo
                         ? SizedBox(
                             width: 150,
                             height: 116,
@@ -1115,6 +2128,8 @@ class _TextChatPageState extends State<TextChatPage>
                                         ? Icons.mic_none_rounded
                                         : item.isFile
                                         ? Icons.insert_drive_file_outlined
+                                        : item.isVideo
+                                        ? Icons.videocam_outlined
                                         : Icons.image_outlined,
                                     size: 30,
                                     color: failed
@@ -1192,14 +2207,91 @@ class _TextChatPageState extends State<TextChatPage>
     if (item.isSticker) return '表情';
     if (item.isVoice) return '语音';
     if (item.isFile) return '文件';
+    if (item.isVideo) return '视频';
     return '图片';
   }
 
+  Widget _messageSenderAvatar(
+    ConversationItem conversation,
+    ChatMessage message,
+    GroupMemberItem? member,
+  ) {
+    if (conversation.type != 'GROUP') return _peerAvatar(conversation);
+    final name = member?.effectiveName ?? '群成员';
+    final avatar = _avatar(message.senderUserId, name);
+    if (member == null || message.senderUserId.isEmpty) return avatar;
+    return Tooltip(
+      message: '查看 $name 的资料',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(_openGroupMemberProfile(member)),
+        child: avatar,
+      ),
+    );
+  }
+
+  Future<void> _openGroupMemberProfile(GroupMemberItem member) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PeerProfilePage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          userId: member.user.id,
+          handle: member.user.handle,
+          displayName: member.user.displayName,
+          onMessage: widget.onOpenDirectChat == null
+              ? null
+              : () => widget.onOpenDirectChat!(member.user.id),
+          onAudioCall: widget.onStartCall == null
+              ? null
+              : () => widget.onStartCall!(
+                  member.user.id,
+                  member.user.displayName,
+                  CallKind.audio,
+                ),
+          onVideoCall: widget.onStartCall == null
+              ? null
+              : () => widget.onStartCall!(
+                  member.user.id,
+                  member.user.displayName,
+                  CallKind.video,
+                ),
+        ),
+      ),
+    );
+  }
+
   Widget _peerAvatar(ConversationItem conversation, {double size = 38}) {
+    if (conversation.type == 'GROUP') {
+      final name = conversation.group?.name ?? '群聊';
+      final letter = name.trim().isEmpty ? '群' : name.trim().characters.first;
+      return Container(
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: const Color(0xFF5D8FB8),
+          borderRadius: BorderRadius.circular(size * 0.28),
+        ),
+        child: Text(
+          letter,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: size * 0.42,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      );
+    }
     final peer = conversation.peer;
     final name = peer?.displayName ?? '对方';
     final avatar = _avatar(peer?.id ?? '', name, size: size);
-    if (peer == null || peer.id.isEmpty || peer.handle.isEmpty) return avatar;
+    if (widget.savedMessagesMode ||
+        peer == null ||
+        peer.id.isEmpty ||
+        peer.handle.isEmpty) {
+      return avatar;
+    }
     return Tooltip(
       message: '查看 ${peer.displayName} 的资料',
       child: GestureDetector(
@@ -1224,7 +2316,7 @@ class _TextChatPageState extends State<TextChatPage>
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: mine ? const Color(0xFF6EBB5A) : const Color(0xFF6F9FCA),
-          borderRadius: BorderRadius.circular(5),
+          shape: BoxShape.circle,
         ),
         child: Text(
           letter,
@@ -1247,97 +2339,254 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Widget _composerBar() {
-    final replyingTo = _replyingTo;
-    final surface = Theme.of(context).colorScheme.surface;
+  Widget _restrictedComposer(ConversationItem conversation) {
     return Material(
-      color: surface,
-      child: Container(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: DdColors.divider, width: 0.5)),
-        ),
-        padding: EdgeInsets.fromLTRB(
-          widget.embedded ? 14 : 8,
-          8,
-          widget.embedded ? 14 : 8,
-          10,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (replyingTo != null) _replyPreview(replyingTo),
-            if (_imageSending) _imageUploadBanner(),
-            if (_fileSending) _fileUploadBanner(),
-            if (_voiceRecording) _voiceRecordingBanner(),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: InkWell(
+          key: const Key('restricted-blocked-conversation'),
+          onTap: () => unawaited(_openPeerProfile(conversation)),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 58),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: const BoxDecoration(
+              border: Border(
+                top: BorderSide(color: DdColors.divider, width: 0.5),
+              ),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _voiceControlButton(),
-                Expanded(
-                  child: _mobileHoldToTalk && _voiceMode
-                      ? _holdToTalkField()
-                      : _composerField(),
+                Icon(
+                  Icons.block_rounded,
+                  size: 17,
+                  color: DdColors.textSecondary,
                 ),
-                IconButton(
-                  key: const Key('chat-emoji'),
-                  tooltip: 'Emoji',
-                  onPressed: _showEmojiPicker,
-                  icon: const Icon(
-                    Icons.sentiment_satisfied_alt_rounded,
-                    size: 25,
+                SizedBox(width: 7),
+                Flexible(
+                  child: Text(
+                    '当前关系已被拉黑，无法发送消息。点击查看资料',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: DdColors.textSecondary,
+                    ),
                   ),
                 ),
-                ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: _composer,
-                  builder: (context, value, _) {
-                    final hasText = !_voiceMode && value.text.trim().isNotEmpty;
-                    if (hasText) {
-                      return Padding(
-                        padding: const EdgeInsets.only(left: 2, bottom: 3),
-                        child: SizedBox(
-                          height: 34,
-                          child: FilledButton(
-                            key: const Key('chat-send'),
-                            onPressed: _send,
-                            style: FilledButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                              ),
-                              minimumSize: const Size(0, 34),
-                            ),
-                            child: const Text(
-                              '发送',
-                              style: TextStyle(fontSize: 13),
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-                    return IconButton(
-                      key: const Key('chat-more'),
-                      tooltip: '更多',
-                      onPressed: _showMoreMenu,
-                      icon: const Icon(
-                        Icons.add_circle_outline_rounded,
-                        size: 26,
-                      ),
-                    );
-                  },
+                SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: DdColors.textTertiary,
                 ),
               ],
             ),
-            if (_keyboardSendEnabled && !_voiceMode)
-              const Padding(
-                padding: EdgeInsets.only(top: 3, right: 46),
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    'Enter 发送 · Shift+Enter 换行',
-                    style: TextStyle(fontSize: 9, color: DdColors.textTertiary),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _updateMentionTrigger() {
+    _mentionController.update(_composer.value);
+  }
+
+  void _syncMentionOverlay() {
+    if (!mounted) return;
+    if (!_mentionController.visible) {
+      _removeMentionOverlay();
+      return;
+    }
+    final existing = _mentionOverlayEntry;
+    if (existing != null) {
+      existing.markNeedsBuild();
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_mentionController.visible ||
+          _mentionOverlayEntry != null) {
+        return;
+      }
+      final overlay = Overlay.maybeOf(context, rootOverlay: true);
+      if (overlay == null || _mentionAnchorKey.currentContext == null) return;
+      final entry = OverlayEntry(builder: _buildMentionOverlayEntry);
+      _mentionOverlayEntry = entry;
+      overlay.insert(entry);
+    });
+  }
+
+  Widget _buildMentionOverlayEntry(BuildContext overlayContext) {
+    final renderObject = _mentionAnchorKey.currentContext?.findRenderObject();
+    final targetWidth = renderObject is RenderBox && renderObject.hasSize
+        ? renderObject.size.width
+        : MediaQuery.sizeOf(context).width;
+    return Positioned(
+      left: 0,
+      top: 0,
+      width: targetWidth,
+      child: CompositedTransformFollower(
+        link: _mentionLayerLink,
+        showWhenUnlinked: false,
+        targetAnchor: Alignment.topLeft,
+        followerAnchor: Alignment.bottomLeft,
+        child: MentionSuggestionOverlay(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          suggestions: _mentionController.suggestions,
+          selectedIndex: _mentionController.selectedIndex,
+          loading: _mentionController.loading,
+          width: targetWidth,
+          onSelect: _acceptMentionAt,
+        ),
+      ),
+    );
+  }
+
+  void _removeMentionOverlay() {
+    final entry = _mentionOverlayEntry;
+    if (entry == null) return;
+    _mentionOverlayEntry = null;
+    entry.remove();
+    entry.dispose();
+  }
+
+  bool _acceptSelectedMention() {
+    final suggestion = _mentionController.selectedSuggestion;
+    final trigger = _mentionController.trigger;
+    if (suggestion == null || trigger == null || !_mentionController.visible) {
+      return false;
+    }
+    _applyMention(trigger, suggestion);
+    return true;
+  }
+
+  void _acceptMentionAt(int index) {
+    _mentionController.selectIndex(index);
+    final suggestion = _mentionController.selectedSuggestion;
+    final trigger = _mentionController.trigger;
+    if (suggestion == null || trigger == null) return;
+    _applyMention(trigger, suggestion);
+  }
+
+  void _applyMention(
+    MentionTrigger trigger,
+    ContactMentionSuggestion suggestion,
+  ) {
+    final updated = applyMentionSuggestion(
+      value: _composer.value,
+      trigger: trigger,
+      suggestion: suggestion,
+    );
+    _mentionController.close();
+    _composer.value = updated;
+    _composerFocusNode.requestFocus();
+  }
+
+  void _moveMentionSelection(int delta) {
+    if (!_mentionController.visible) return;
+    _mentionController.moveSelection(delta);
+  }
+
+  void _closeMentionSuggestions() {
+    if (_mentionController.visible) _mentionController.close();
+  }
+
+  Widget _composerBar(ConversationItem conversation) {
+    if (!conversation.canWrite) {
+      return _restrictedComposer(conversation);
+    }
+    final replyingTo = _replyingTo;
+    final editingMessage = _editingMessage;
+    final surface = Theme.of(context).colorScheme.surface;
+    return CompositedTransformTarget(
+      key: _mentionAnchorKey,
+      link: _mentionLayerLink,
+      child: Material(
+        color: surface,
+        child: Container(
+          key: const Key('chat-composer-footer'),
+          decoration: const BoxDecoration(
+            border: Border(
+              top: BorderSide(color: DdColors.divider, width: 0.5),
+            ),
+          ),
+          padding: EdgeInsets.fromLTRB(
+            widget.embedded ? 14 : 8,
+            8,
+            widget.embedded ? 14 : 8,
+            10,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (editingMessage != null) _editPreview(editingMessage),
+              if (replyingTo != null && editingMessage == null)
+                _replyPreview(replyingTo),
+              if (_imageSending) _imageUploadBanner(),
+              if (_videoSending) _videoUploadBanner(),
+              if (_fileSending) _fileUploadBanner(),
+              if (_voiceRecording) _voiceRecordingBanner(),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  _voiceControlButton(),
+                  Expanded(
+                    child: _mobileHoldToTalk && _voiceMode
+                        ? _holdToTalkField()
+                        : _composerField(),
                   ),
-                ),
+                  IconButton(
+                    key: const Key('chat-emoji'),
+                    tooltip: '表情',
+                    onPressed: _showEmojiPicker,
+                    icon: const Icon(
+                      Icons.sentiment_satisfied_alt_rounded,
+                      size: 25,
+                    ),
+                  ),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _composer,
+                    builder: (context, value, _) {
+                      final hasText =
+                          !_voiceMode && value.text.trim().isNotEmpty;
+                      if (hasText) {
+                        return Padding(
+                          padding: const EdgeInsets.only(left: 2, bottom: 3),
+                          child: SizedBox(
+                            height: 34,
+                            child: FilledButton(
+                              key: const Key('chat-send'),
+                              onPressed: _send,
+                              style: FilledButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                ),
+                                minimumSize: const Size(0, 34),
+                              ),
+                              child: Text(
+                                editingMessage == null ? '发送' : '更新',
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      return IconButton(
+                        key: const Key('chat-more'),
+                        tooltip: '更多',
+                        onPressed: _showMoreMenu,
+                        icon: const Icon(
+                          Icons.add_circle_outline_rounded,
+                          size: 26,
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1345,15 +2594,15 @@ class _TextChatPageState extends State<TextChatPage>
 
   Widget _imageUploadBanner() {
     final percent = (_imageUploadProgress * 100).clamp(0, 100).round();
-    final batch = _imageBatchTotal > 1
-        ? ' · $_imageBatchCurrent/$_imageBatchTotal'
-        : '';
+    final title = _imageBatchTotal > 1
+        ? '正在发送 $_imageBatchCurrent / $_imageBatchTotal 张图片'
+        : '正在发送图片';
     return Container(
       margin: const EdgeInsets.only(bottom: 7),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: DdColors.ownBubble.withValues(alpha: 0.42),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(DdRadii.control),
       ),
       child: Row(
         children: [
@@ -1367,9 +2616,19 @@ class _TextChatPageState extends State<TextChatPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '正在发送图片$batch · $percent%',
-                  style: const TextStyle(fontSize: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(title, style: const TextStyle(fontSize: 12)),
+                    ),
+                    Text(
+                      '$percent%',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textSecondary,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 5),
                 LinearProgressIndicator(
@@ -1386,6 +2645,53 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Widget _videoUploadBanner() {
+    final percent = (_videoUploadProgress * 100).clamp(0, 100).round();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.videocam_outlined,
+            size: 18,
+            color: DdColors.greenPressed,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  percent < 100 ? '正在上传视频 · $percent%' : '正在生成视频缩略图…',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                const SizedBox(height: 5),
+                LinearProgressIndicator(
+                  value: _videoUploadProgress.clamp(0, 1),
+                  minHeight: 3,
+                  backgroundColor: DdColors.divider,
+                  color: DdColors.greenPressed,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            key: const Key('cancel-video-upload'),
+            tooltip: '取消视频上传',
+            visualDensity: VisualDensity.compact,
+            onPressed: _videoUploadCancellation?.cancel,
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _fileUploadBanner() {
     final percent = (_fileUploadProgress * 100).clamp(0, 100).round();
     return Container(
@@ -1393,7 +2699,7 @@ class _TextChatPageState extends State<TextChatPage>
       padding: const EdgeInsets.fromLTRB(10, 7, 6, 7),
       decoration: BoxDecoration(
         color: DdColors.ownBubble.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(DdRadii.control),
       ),
       child: Row(
         children: [
@@ -1449,7 +2755,7 @@ class _TextChatPageState extends State<TextChatPage>
         color: cancelling
             ? const Color(0xFFFFE5E5)
             : DdColors.ownBubble.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(DdRadii.surface),
       ),
       child: Row(
         children: [
@@ -1461,7 +2767,7 @@ class _TextChatPageState extends State<TextChatPage>
               color: cancelling
                   ? DdColors.danger
                   : Theme.of(context).colorScheme.surface,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(DdRadii.control),
             ),
             child: Icon(
               Icons.delete_outline_rounded,
@@ -1481,7 +2787,8 @@ class _TextChatPageState extends State<TextChatPage>
                     children: List<Widget>.generate(11, (index) {
                       final distance = (index - 5).abs();
                       final base = 5.0 + (5 - distance).clamp(0, 5) * 1.7;
-                      final energized = index < activeBars || index >= 11 - activeBars;
+                      final energized =
+                          index < activeBars || index >= 11 - activeBars;
                       return AnimatedContainer(
                         duration: const Duration(milliseconds: 80),
                         width: 3,
@@ -1627,12 +2934,10 @@ class _TextChatPageState extends State<TextChatPage>
                 : Theme.of(context).brightness == Brightness.dark
                 ? const Color(0xFF2B2B2B)
                 : const Color(0xFFF3F3F3),
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: BorderRadius.circular(DdRadii.pill),
           ),
           child: Text(
-            _voiceRecording
-                ? (_voiceCancelGesture ? '松手取消' : '松开发送')
-                : '按住说话',
+            _voiceRecording ? (_voiceCancelGesture ? '松手取消' : '松开发送') : '按住说话',
             style: TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w500,
@@ -1714,14 +3019,16 @@ class _TextChatPageState extends State<TextChatPage>
     if (mounted) setState(() => _voiceSending = true);
     try {
       final recorded = await _voiceRecorder.stop();
-      final grant = await _mediaApi.uploadMedia(
-        origin: widget.coordinator.origin,
-        accessToken: widget.coordinator.accessToken,
-        bytes: recorded.bytes,
-        fileName:
-            'voice-${DateTime.now().microsecondsSinceEpoch}.${recorded.fileExtension}',
-        mimeType: recorded.mimeType,
-        purpose: 'CHAT_VOICE',
+      final grant = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadMedia(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          bytes: recorded.bytes,
+          fileName:
+              'voice-${DateTime.now().microsecondsSinceEpoch}.${recorded.fileExtension}',
+          mimeType: recorded.mimeType,
+          purpose: 'CHAT_VOICE',
+        ),
       );
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) {
@@ -1754,8 +3061,7 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _composerField() {
-    final android =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    final android = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
     final field = TextField(
       key: const Key('chat-composer'),
       controller: _composer,
@@ -1774,15 +3080,129 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     if (!_keyboardSendEnabled) return field;
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator, VoidCallback>{
-        const SingleActivator(LogicalKeyboardKey.enter): _sendFromKeyboard,
-      },
+    return AnimatedBuilder(
+      animation: _mentionController,
       child: field,
+      builder: (context, child) => CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.enter): _sendFromKeyboard,
+          if (_mentionController.visible) ...{
+            const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
+                _moveMentionSelection(-1),
+            const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+                _moveMentionSelection(1),
+            const SingleActivator(LogicalKeyboardKey.escape):
+                _closeMentionSuggestions,
+          },
+        },
+        child: child!,
+      ),
     );
   }
 
+  Widget _editPreview(ChatMessage message) {
+    return Container(
+      key: const Key('chat-edit-preview'),
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF2C2C2C)
+            : const Color(0xFFF1F1F1),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 3,
+            height: 28,
+            decoration: BoxDecoration(
+              color: DdColors.greenPressed,
+              borderRadius: BorderRadius.circular(DdRadii.pill),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '正在编辑消息',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: DdColors.greenPressed,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  message.content?.text ?? '',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: DdColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            key: const Key('chat-cancel-edit'),
+            tooltip: '取消编辑',
+            visualDensity: VisualDensity.compact,
+            onPressed: _cancelEditing,
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _beginEditing(ChatMessage message) {
+    if (message.senderUserId != widget.currentUserId ||
+        message.type != 'TEXT' ||
+        message.isRecalled ||
+        message.content == null) {
+      return;
+    }
+    _draftSaveTimer?.cancel();
+    final originalDraft = _editingMessage == null
+        ? _composer.text
+        : (_draftBeforeEdit ?? '');
+    setState(() {
+      _draftBeforeEdit = originalDraft;
+      _editingMessage = message;
+      _replyingTo = null;
+      _voiceMode = false;
+    });
+    final text = message.content!.text;
+    _composer.text = text;
+    _composer.selection = TextSelection.collapsed(offset: text.length);
+    _composerFocusNode.requestFocus();
+  }
+
+  void _cancelEditing() {
+    if (_editingMessage == null) return;
+    final restore = _draftBeforeEdit ?? '';
+    setState(() {
+      _editingMessage = null;
+      _draftBeforeEdit = null;
+    });
+    _composer.text = restore;
+    _composer.selection = TextSelection.collapsed(offset: restore.length);
+    unawaited(
+      widget.coordinator.setDraft(
+        widget.conversation.id,
+        restore,
+        notify: false,
+      ),
+    );
+    _composerFocusNode.requestFocus();
+  }
+
   Widget _replyPreview(ChatMessage message) {
+    if (message.isRecalled) return const SizedBox.shrink();
     return Container(
       key: const Key('chat-reply-preview'),
       margin: const EdgeInsets.only(bottom: 6),
@@ -1791,7 +3211,7 @@ class _TextChatPageState extends State<TextChatPage>
         color: Theme.of(context).brightness == Brightness.dark
             ? const Color(0xFF2C2C2C)
             : const Color(0xFFF1F1F1),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(DdRadii.control),
       ),
       child: Row(
         children: [
@@ -1799,9 +3219,7 @@ class _TextChatPageState extends State<TextChatPage>
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              message.isRecalled
-                  ? '回复：该消息已撤回'
-                  : '回复：${message.content?.text ?? '[${message.type}]'}',
+              '回复：${message.content?.text ?? '[${message.type}]'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -1857,6 +3275,30 @@ class _TextChatPageState extends State<TextChatPage>
     if (_composerFocusNode.hasFocus) _composerFocusNode.unfocus();
   }
 
+  Future<void> _openMentionProfile(String userId) async {
+    final normalized = userId.trim();
+    if (normalized.isEmpty || !mounted) return;
+    widget.coordinator.deactivateConversation(widget.conversation.id);
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PeerProfilePage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          userId: normalized,
+          handle: '',
+          displayName: '用户',
+          onMessage: widget.onOpenDirectChat == null
+              ? null
+              : () async {
+                  if (mounted) Navigator.of(context).pop();
+                  await widget.onOpenDirectChat!(normalized);
+                },
+        ),
+      ),
+    );
+    if (mounted) _updateReadVisibility();
+  }
+
   Future<void> _openPeerProfile(ConversationItem conversation) async {
     final peer = conversation.peer;
     if (peer == null || peer.id.isEmpty || peer.handle.isEmpty || !mounted) {
@@ -1871,6 +3313,21 @@ class _TextChatPageState extends State<TextChatPage>
           userId: peer.id,
           handle: peer.handle,
           displayName: peer.displayName,
+          onMessage: () async {
+            if (mounted) Navigator.of(context).pop();
+          },
+          onAudioCall: widget.onStartCall == null
+              ? null
+              : () async {
+                  if (mounted) Navigator.of(context).pop();
+                  await _startCall(CallKind.audio);
+                },
+          onVideoCall: widget.onStartCall == null
+              ? null
+              : () async {
+                  if (mounted) Navigator.of(context).pop();
+                  await _startCall(CallKind.video);
+                },
         ),
       ),
     );
@@ -1879,12 +3336,25 @@ class _TextChatPageState extends State<TextChatPage>
 
   Future<void> _load() async {
     try {
+      if (widget.conversation.type == 'GROUP') {
+        await _loadGroupMembers();
+      }
       await widget.coordinator.loadMessages(
         widget.conversation.id,
         markRead: false,
       );
+      final pinned = await widget.coordinator.listPinnedMessages(
+        widget.conversation.id,
+      );
+      if (mounted) setState(() => _pinnedMessages = pinned);
       await _markLatestReadIfVisible();
-      _scrollToBottom(immediate: true);
+      if (widget.initialMessageId case final messageId?
+          when messageId.isNotEmpty) {
+        await WidgetsBinding.instance.endOfFrame;
+        await _jumpToMessage(messageId);
+      } else {
+        _scrollToBottom(immediate: true);
+      }
     } catch (_) {
       // Coordinator/API state already carries the actionable error.
     }
@@ -1894,15 +3364,78 @@ class _TextChatPageState extends State<TextChatPage>
     await widget.coordinator.loadOlder(widget.conversation.id);
   }
 
-  Future<void> _sync() async {
-    await widget.coordinator.flushPending();
-    await widget.coordinator.syncNow();
-    await widget.coordinator.loadMessages(
-      widget.conversation.id,
-      markRead: false,
+  Future<void> _loadGroupMembers() async {
+    if (widget.conversation.type != 'GROUP') return;
+    final members = await widget.coordinator.withAuthorizedToken(
+      (token) => _groupsApi.listMembers(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        groupId: widget.conversation.id,
+      ),
     );
-    await _markLatestReadIfVisible();
-    _scrollToBottom();
+    if (!mounted) return;
+    setState(() {
+      _groupMembers = {
+        for (final member in members) member.user.id: member,
+      };
+    });
+  }
+
+  Future<void> _openChatDetails(ConversationItem conversation) async {
+    if (!mounted || widget.savedMessagesMode) return;
+    widget.coordinator.deactivateConversation(widget.conversation.id);
+    if (conversation.type == 'GROUP') {
+      final result = await Navigator.of(context).push<GroupDetailsResult>(
+        MaterialPageRoute<GroupDetailsResult>(
+          builder: (_) => GroupDetailsPage(
+            coordinator: widget.coordinator,
+            groupId: conversation.id,
+            currentUserId: widget.currentUserId,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (result?.membershipEnded == true) {
+        await Navigator.of(context).maybePop();
+        return;
+      }
+      await widget.coordinator.refreshConversations();
+      try {
+        await _loadGroupMembers();
+      } catch (_) {
+        // Membership refresh is best-effort here; the next realtime/sync or
+        // page refresh will retry without hiding the chat itself.
+      }
+      _updateReadVisibility();
+      return;
+    }
+    final result = await Navigator.of(context).push<ChatDetailsResult>(
+      MaterialPageRoute<ChatDetailsResult>(
+        builder: (_) => ChatDetailsPage(
+          coordinator: widget.coordinator,
+          conversation: conversation,
+          onOpenProfile: () => _openPeerProfile(conversation),
+          onChangeBackground: () => Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => ChatBackgroundSettingsPage(
+                store: _appearanceStore,
+                conversationId: conversation.id,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (result?.conversationHidden == true) {
+      await Navigator.of(context).maybePop();
+      return;
+    }
+    _updateReadVisibility();
+    final messageId = result?.messageId;
+    if (messageId != null && messageId.isNotEmpty) {
+      await _jumpToMessage(messageId);
+    }
   }
 
   Future<void> _startCall(CallKind kind) async {
@@ -1925,12 +3458,47 @@ class _TextChatPageState extends State<TextChatPage>
   void _sendFromKeyboard() {
     final composing = _composer.value.composing;
     if (composing.isValid && !composing.isCollapsed) return;
+    if (_acceptSelectedMention()) return;
     unawaited(_send());
   }
 
   Future<void> _send() async {
     final text = _composer.text;
     if (text.trim().isEmpty) return;
+    final editing = _editingMessage;
+    if (editing != null) {
+      try {
+        await widget.coordinator.editMessage(editing, text);
+        if (!mounted) return;
+        final restore = _draftBeforeEdit ?? '';
+        setState(() {
+          _editingMessage = null;
+          _draftBeforeEdit = null;
+        });
+        _composer.text = restore;
+        _composer.selection = TextSelection.collapsed(offset: restore.length);
+        unawaited(
+          widget.coordinator.setDraft(
+            widget.conversation.id,
+            restore,
+            notify: false,
+          ),
+        );
+        _composerFocusNode.requestFocus();
+      } on FormatException catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('消息更新失败，请稍后重试。')));
+      }
+      return;
+    }
+
     final replyToMessageId = _replyingTo?.id;
     if (_replyingTo != null) {
       setState(() => _replyingTo = null);
@@ -1954,89 +3522,29 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _showEmojiPicker() async {
-    final recent = widget.coordinator.recentEmoji;
-    final selected = await showModalBottomSheet<String>(
+    final selected = await showModalBottomSheet<StickerPanelResult>(
       context: context,
-      constraints: const BoxConstraints(maxWidth: 520),
-      builder: (context) => SafeArea(
-        child: SizedBox(
-          height: recent.isEmpty ? 280 : 356,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
-                child: Text(
-                  'Emoji',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-              ),
-              if (recent.isNotEmpty) ...[
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
-                  child: Text(
-                    '最近使用',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: DdColors.textSecondary,
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  height: 54,
-                  child: ListView.separated(
-                    key: const Key('chat-emoji-recent'),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    scrollDirection: Axis.horizontal,
-                    itemCount: recent.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 2),
-                    itemBuilder: (_, index) => InkWell(
-                      borderRadius: BorderRadius.circular(4),
-                      onTap: () => Navigator.pop(context, recent[index]),
-                      child: SizedBox(
-                        width: 46,
-                        child: Center(
-                          child: Text(
-                            recent[index],
-                            style: const TextStyle(fontSize: 25),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const Divider(height: 1),
-              ],
-              Expanded(
-                child: GridView.builder(
-                  key: const Key('chat-emoji-all'),
-                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 16),
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 52,
-                    mainAxisExtent: 48,
-                  ),
-                  itemCount: _emoji.length,
-                  itemBuilder: (_, index) => InkWell(
-                    borderRadius: BorderRadius.circular(4),
-                    onTap: () => Navigator.pop(context, _emoji[index]),
-                    child: Center(
-                      child: Text(
-                        _emoji[index],
-                        style: const TextStyle(fontSize: 25),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 560),
+      builder: (_) => StickerLibrarySheet(
+        origin: widget.coordinator.origin,
+        accessToken: widget.coordinator.accessToken,
+        emoji: _emoji,
+        recentEmoji: widget.coordinator.recentEmoji,
+        mediaBytesLoader: _mediaBytesFor,
+        onAddCustomSticker: _pickAndCreateCustomSticker,
+        gateway: widget.stickerGateway,
       ),
     );
     if (selected == null || !mounted) return;
-    _insertAtSelection(selected);
-    unawaited(widget.coordinator.rememberRecentEmoji(selected));
-    _composerFocusNode.requestFocus();
+    switch (selected) {
+      case EmojiPanelResult(:final emoji):
+        _insertAtSelection(emoji);
+        unawaited(widget.coordinator.rememberRecentEmoji(emoji));
+      case StickerAssetPanelResult(:final asset):
+        await _sendStickerAsset(asset);
+    }
+    if (mounted) _composerFocusNode.requestFocus();
   }
 
   void _insertAtSelection(String text) {
@@ -2060,38 +3568,31 @@ class _TextChatPageState extends State<TextChatPage>
       builder: (sheetContext) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-          child: Row(
+          child: GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 4,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 0.86,
             children: [
               _ComposerAction(
-                icon: Icons.image_outlined,
-                label: _imageSending ? '处理中…' : '图片',
-                enabled: !_imageSending,
+                icon: Icons.photo_library_outlined,
+                label: (_imageSending || _gifSending || _videoSending)
+                    ? '处理中…'
+                    : '相册',
+                enabled: !_imageSending && !_gifSending && !_videoSending,
                 onTap: () {
                   Navigator.pop(sheetContext);
-                  unawaited(_pickAndSendImage());
+                  unawaited(_pickAndSendAlbum());
                 },
               ),
-              const SizedBox(width: 14),
               _ComposerAction(
-                icon: Icons.gif_box_outlined,
-                label: _gifSending ? '处理中…' : 'GIF',
-                enabled: !_gifSending,
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  unawaited(_pickAndSendGif());
-                },
+                icon: Icons.photo_camera_outlined,
+                label: '拍摄',
+                enabled: false,
+                onTap: () {},
               ),
-              const SizedBox(width: 10),
-              _ComposerAction(
-                icon: Icons.auto_awesome_outlined,
-                label: _stickerSending ? '处理中…' : '表情',
-                enabled: !_stickerSending,
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  unawaited(_pickAndSendSticker());
-                },
-              ),
-              const SizedBox(width: 10),
               _ComposerAction(
                 icon: _fileSending
                     ? Icons.close_rounded
@@ -2116,14 +3617,59 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Future<void> _pickAndSendImage() async {
-    if (_imageSending) return;
+  Future<void> _pickAndSendAlbum() async {
+    if (_imageSending || _gifSending || _videoSending) return;
     const typeGroup = XTypeGroup(
-      label: '图片',
-      extensions: <String>['jpg', 'jpeg', 'png', 'webp', 'bmp'],
+      label: '相册',
+      extensions: <String>[
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'bmp',
+        'gif',
+        'mp4',
+        'webm',
+        'mov',
+        'mkv',
+      ],
+      mimeTypes: <String>[
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/bmp',
+        'image/gif',
+        'video/mp4',
+        'video/webm',
+        'video/quicktime',
+        'video/x-matroska',
+      ],
     );
     final files = await openFiles(acceptedTypeGroups: const [typeGroup]);
     if (files.isEmpty || !mounted) return;
+    if (files.length > 30) {
+      _showImageError('一次最多从相册发送 30 个媒体文件。');
+      return;
+    }
+    for (final file in files) {
+      if (!mounted) return;
+      final lower = file.name.toLowerCase();
+      if (lower.endsWith('.gif')) {
+        await _sendGif(file);
+      } else if (_videoMimeType(lower) != null) {
+        await _sendVideo(file);
+      } else if (_isImageFileName(lower)) {
+        await _sendImageFiles(<XFile>[file]);
+      } else {
+        _showImageError(
+          '${file.name.isEmpty ? '所选媒体' : file.name} 的格式不受支持，已跳过。',
+        );
+      }
+    }
+  }
+
+  Future<void> _sendImageFiles(List<XFile> files) async {
+    if (_imageSending || files.isEmpty || !mounted) return;
     if (files.length > 30) {
       _showImageError('一次最多发送 30 张图片。');
       return;
@@ -2155,17 +3701,21 @@ class _TextChatPageState extends State<TextChatPage>
         }
         final source = await file.readAsBytes();
         final processed = await processChatImage(source);
-        final grant = await _mediaApi.uploadChatImage(
-          origin: widget.coordinator.origin,
-          accessToken: widget.coordinator.accessToken,
-          bytes: processed.bytes,
-          fileName: '${DateTime.now().microsecondsSinceEpoch}-$index.jpg',
-          onProgress: (sent, total) {
-            if (!mounted || total <= 0) return;
-            final next = (sent / total).clamp(0.0, 1.0);
-            if ((next - _imageUploadProgress).abs() < 0.02 && next < 1) return;
-            setState(() => _imageUploadProgress = next);
-          },
+        final grant = await widget.coordinator.withAuthorizedToken(
+          (token) => _mediaApi.uploadChatImage(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            bytes: processed.bytes,
+            fileName: '${DateTime.now().microsecondsSinceEpoch}-$index.jpg',
+            onProgress: (sent, total) {
+              if (!mounted || total <= 0) return;
+              final next = (sent / total).clamp(0.0, 1.0);
+              if ((next - _imageUploadProgress).abs() < 0.02 && next < 1) {
+                return;
+              }
+              setState(() => _imageUploadProgress = next);
+            },
+          ),
         );
         await widget.coordinator.sendImage(
           widget.conversation.id,
@@ -2196,51 +3746,86 @@ class _TextChatPageState extends State<TextChatPage>
     }
   }
 
-  Future<void> _pickAndSendSticker() async {
-    if (_stickerSending) return;
+  Future<CustomStickerItem?> _pickAndCreateCustomSticker(
+    StickerGateway gateway,
+  ) async {
+    if (_stickerSending) return null;
     const typeGroup = XTypeGroup(
-      label: '图片表情',
+      label: '自定义表情',
       extensions: <String>['png', 'webp', 'gif'],
+      mimeTypes: <String>['image/png', 'image/webp', 'image/gif'],
     );
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
-    if (file == null || !mounted) return;
+    if (file == null || !mounted) return null;
     final sourceLength = await file.length();
-    if (!mounted) return;
-    if (sourceLength > 10 * 1024 * 1024) {
-      _showImageError('图片表情超过 10 MiB，暂时无法发送。');
-      return;
+    if (!mounted) return null;
+    if (sourceLength <= 0 || sourceLength > 10 * 1024 * 1024) {
+      _showImageError('自定义表情必须小于 10 MiB 且不能为空。');
+      return null;
     }
     setState(() => _stickerSending = true);
     try {
       final source = await file.readAsBytes();
       final metadata = await inspectChatVisual(source);
+      if (metadata.width > 4096 || metadata.height > 4096) {
+        throw const FormatException('自定义表情最大支持 4096×4096。');
+      }
       final lowerName = file.name.toLowerCase();
       final mimeType = lowerName.endsWith('.gif')
           ? 'image/gif'
           : lowerName.endsWith('.webp')
           ? 'image/webp'
-          : 'image/png';
-      final grant = await _mediaApi.uploadMedia(
-        origin: widget.coordinator.origin,
-        accessToken: widget.coordinator.accessToken,
-        bytes: source,
-        fileName: file.name.isEmpty ? 'sticker.png' : file.name,
-        mimeType: mimeType,
-        purpose: 'STICKER',
-      );
-      final replyToMessageId = _replyingTo?.id;
-      if (_replyingTo != null && mounted) {
-        setState(() => _replyingTo = null);
+          : lowerName.endsWith('.png')
+          ? 'image/png'
+          : '';
+      if (mimeType.isEmpty) {
+        throw const FormatException('自定义表情只支持 PNG、WebP、GIF。');
       }
+      final grant = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadMedia(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          bytes: source,
+          fileName: file.name.isEmpty ? 'custom-sticker.webp' : file.name,
+          mimeType: mimeType,
+          purpose: 'STICKER',
+        ),
+      );
+      return await widget.coordinator.withAuthorizedToken(
+        (token) => gateway.createCustomSticker(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          mediaId: grant.mediaId,
+          width: metadata.width,
+          height: metadata.height,
+        ),
+      );
+    } on StickerApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } on MessagingApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } on FormatException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('自定义表情添加失败，请稍后重试。');
+    } finally {
+      if (mounted) setState(() => _stickerSending = false);
+    }
+    return null;
+  }
+
+  Future<void> _sendStickerAsset(StickerAsset asset) async {
+    if (_stickerSending || !mounted) return;
+    setState(() => _stickerSending = true);
+    try {
+      final replyToMessageId = _replyingTo?.id;
+      if (_replyingTo != null) setState(() => _replyingTo = null);
       await widget.coordinator.sendMedia(
         widget.conversation.id,
         type: 'STICKER',
-        mediaId: grant.mediaId,
-        width: metadata.width,
-        height: metadata.height,
-        fileName: file.name,
-        mimeType: mimeType,
-        sizeBytes: source.length,
+        mediaId: asset.mediaId,
+        width: asset.width,
+        height: asset.height,
         replyToMessageId: replyToMessageId,
       );
       if (mounted) _scrollToBottom();
@@ -2249,17 +3834,14 @@ class _TextChatPageState extends State<TextChatPage>
     } on FormatException catch (error) {
       if (mounted) _showImageError(error.message);
     } catch (_) {
-      if (mounted) _showImageError('图片表情发送失败，请稍后重试。');
+      if (mounted) _showImageError('表情发送失败，请稍后重试。');
     } finally {
       if (mounted) setState(() => _stickerSending = false);
     }
   }
 
-  Future<void> _pickAndSendGif() async {
-    if (_gifSending) return;
-    const typeGroup = XTypeGroup(label: 'GIF', extensions: <String>['gif']);
-    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
-    if (file == null || !mounted) return;
+  Future<void> _sendGif(XFile file) async {
+    if (_gifSending || !mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;
     if (sourceLength > 50 * 1024 * 1024) {
@@ -2270,13 +3852,15 @@ class _TextChatPageState extends State<TextChatPage>
     try {
       final source = await file.readAsBytes();
       final metadata = await inspectChatVisual(source);
-      final grant = await _mediaApi.uploadMedia(
-        origin: widget.coordinator.origin,
-        accessToken: widget.coordinator.accessToken,
-        bytes: source,
-        fileName: file.name.isEmpty ? 'animation.gif' : file.name,
-        mimeType: 'image/gif',
-        purpose: 'GIF',
+      final grant = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadMedia(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          bytes: source,
+          fileName: file.name.isEmpty ? 'animation.gif' : file.name,
+          mimeType: 'image/gif',
+          purpose: 'GIF',
+        ),
       );
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) {
@@ -2305,10 +3889,117 @@ class _TextChatPageState extends State<TextChatPage>
     }
   }
 
+  Future<void> _sendVideo(XFile file) async {
+    if (_videoSending || !mounted) return;
+    final sourceLength = await file.length();
+    if (!mounted) return;
+    if (sourceLength <= 0) {
+      _showImageError('不能发送空视频。');
+      return;
+    }
+    if (sourceLength > 2 * 1024 * 1024 * 1024) {
+      _showImageError('视频超过 2 GiB，当前实例拒绝上传。');
+      return;
+    }
+    final mimeType = _videoMimeType(file.name);
+    if (mimeType == null) {
+      _showImageError('当前只支持 MP4、WebM、MOV、MKV 视频。');
+      return;
+    }
+    final cancellation = MediaUploadCancellation();
+    _videoUploadCancellation = cancellation;
+    setState(() {
+      _videoSending = true;
+      _videoUploadProgress = 0;
+    });
+    try {
+      final metadata = await const VideoMediaProbe().probeFile(file);
+      if (cancellation.isCancelled) throw const MediaUploadCancelled();
+
+      final primary = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadStream(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          streamFactory: file.openRead,
+          size: sourceLength,
+          fileName: file.name.isEmpty ? 'video.mp4' : file.name,
+          mimeType: mimeType,
+          purpose: 'CHAT_VIDEO',
+          cancellation: cancellation,
+          onProgress: (sent, total) {
+            if (!mounted || total <= 0) return;
+            final next = (sent / total).clamp(0.0, 1.0);
+            if ((next - _videoUploadProgress).abs() < 0.01 && next < 1) return;
+            setState(() => _videoUploadProgress = next);
+          },
+        ),
+      );
+      if (cancellation.isCancelled) throw const MediaUploadCancelled();
+      if (mounted) setState(() => _videoUploadProgress = 1);
+
+      final poster = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadChatImage(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          bytes: metadata.posterJpeg,
+          fileName: 'video-poster-${DateTime.now().microsecondsSinceEpoch}.jpg',
+        ),
+      );
+      final replyToMessageId = _replyingTo?.id;
+      if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
+      await widget.coordinator.sendMedia(
+        widget.conversation.id,
+        type: 'VIDEO',
+        mediaId: primary.mediaId,
+        posterMediaId: poster.mediaId,
+        width: metadata.width,
+        height: metadata.height,
+        durationMs: metadata.durationMs,
+        fileName: file.name,
+        mimeType: mimeType,
+        sizeBytes: sourceLength,
+        replyToMessageId: replyToMessageId,
+      );
+      if (mounted) _scrollToBottom();
+    } on MediaUploadCancelled {
+      if (mounted) _showImageError('已取消视频发送。');
+    } on MessagingApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } on FormatException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('视频发送失败，请确认文件可正常播放后重试。');
+    } finally {
+      if (identical(_videoUploadCancellation, cancellation)) {
+        _videoUploadCancellation = null;
+      }
+      if (mounted) {
+        setState(() {
+          _videoSending = false;
+          _videoUploadProgress = 0;
+        });
+      }
+    }
+  }
+
+  String? _videoMimeType(String name) {
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.mkv')) return 'video/x-matroska';
+    return null;
+  }
+
   Future<void> _pickAndSendFile() async {
     if (_fileSending) return;
     final file = await openFile();
     if (file == null || !mounted) return;
+    await _sendFile(file);
+  }
+
+  Future<void> _sendFile(XFile file) async {
+    if (_fileSending || !mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;
     if (sourceLength <= 0) {
@@ -2327,22 +4018,25 @@ class _TextChatPageState extends State<TextChatPage>
     });
     try {
       final mimeType = _fileMimeType(file.name);
-      final grant = await _mediaApi.uploadStream(
-        origin: widget.coordinator.origin,
-        accessToken: widget.coordinator.accessToken,
-        streamFactory: file.openRead,
-        size: sourceLength,
-        fileName: file.name.isEmpty ? 'file.bin' : file.name,
-        mimeType: mimeType,
-        purpose: 'CHAT_FILE',
-        cancellation: cancellation,
-        onProgress: (sent, total) {
-          if (!mounted || total <= 0) return;
-          final progress = sent / total;
-          if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1)
-            return;
-          setState(() => _fileUploadProgress = progress.clamp(0, 1));
-        },
+      final grant = await widget.coordinator.withAuthorizedToken(
+        (token) => _mediaApi.uploadStream(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          streamFactory: file.openRead,
+          size: sourceLength,
+          fileName: file.name.isEmpty ? 'file.bin' : file.name,
+          mimeType: mimeType,
+          purpose: 'CHAT_FILE',
+          cancellation: cancellation,
+          onProgress: (sent, total) {
+            if (!mounted || total <= 0) return;
+            final progress = sent / total;
+            if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1) {
+              return;
+            }
+            setState(() => _fileUploadProgress = progress.clamp(0, 1));
+          },
+        ),
       );
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
@@ -2393,6 +4087,7 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   void _showImageError(String message) {
+    unawaited(ClientLog.error('Chat media: $message'));
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
@@ -2459,11 +4154,37 @@ class _TextChatPageState extends State<TextChatPage>
             icon: Icons.reply_rounded,
             label: '回复',
           ),
-        if (!message.isRecalled && message.content?.text.isNotEmpty == true)
+        if (_canCopyMessage(message))
           const DdActionSheetItem(
             value: 'copy',
             icon: Icons.content_copy_rounded,
-            label: '复制文字',
+            label: '复制',
+          ),
+        if (!message.isRecalled) ...[
+          const DdActionSheetItem(
+            value: 'forward',
+            icon: Icons.forward_rounded,
+            label: '转发',
+          ),
+          if (!widget.savedMessagesMode)
+            const DdActionSheetItem(
+              value: 'save',
+              icon: Icons.bookmark_border_rounded,
+              label: '收藏',
+            ),
+          DdActionSheetItem(
+            value: _isMessagePinned(message) ? 'unpin-message' : 'pin-message',
+            icon: _isMessagePinned(message)
+                ? Icons.push_pin_outlined
+                : Icons.push_pin_rounded,
+            label: _isMessagePinned(message) ? '取消置顶消息' : '置顶消息',
+          ),
+        ],
+        if (mine && !message.isRecalled && message.type == 'TEXT')
+          const DdActionSheetItem(
+            value: 'edit',
+            icon: Icons.edit_outlined,
+            label: '编辑',
           ),
         if (mine && !message.isRecalled)
           const DdActionSheetItem(
@@ -2495,12 +4216,34 @@ class _TextChatPageState extends State<TextChatPage>
           icon: Icons.reply_rounded,
           label: '回复',
         ),
-      if (!message.isRecalled && message.content?.text.isNotEmpty == true)
+      if (_canCopyMessage(message))
         _contextMenuItem(
           value: 'copy',
           icon: Icons.content_copy_rounded,
-          label: '复制文字',
+          label: '复制',
         ),
+      if (!message.isRecalled) ...[
+        _contextMenuItem(
+          value: 'forward',
+          icon: Icons.forward_rounded,
+          label: '转发',
+        ),
+        if (!widget.savedMessagesMode)
+          _contextMenuItem(
+            value: 'save',
+            icon: Icons.bookmark_border_rounded,
+            label: '收藏',
+          ),
+        _contextMenuItem(
+          value: _isMessagePinned(message) ? 'unpin-message' : 'pin-message',
+          icon: _isMessagePinned(message)
+              ? Icons.push_pin_outlined
+              : Icons.push_pin_rounded,
+          label: _isMessagePinned(message) ? '取消置顶消息' : '置顶消息',
+        ),
+      ],
+      if (mine && !message.isRecalled && message.type == 'TEXT')
+        _contextMenuItem(value: 'edit', icon: Icons.edit_outlined, label: '编辑'),
       if (mine && !message.isRecalled)
         _contextMenuItem(
           value: 'recall',
@@ -2519,9 +4262,17 @@ class _TextChatPageState extends State<TextChatPage>
     await _applyMessageAction(message, action);
   }
 
+  bool _canCopyMessage(ChatMessage message) =>
+      !message.isRecalled &&
+      message.type == 'TEXT' &&
+      (message.content?.text.trim().isNotEmpty ?? false);
+
   Future<void> _applyMessageAction(ChatMessage message, String? action) async {
     if (action == 'reply') {
+      if (_editingMessage != null) _cancelEditing();
       setState(() => _replyingTo = message);
+    } else if (action == 'edit') {
+      _beginEditing(message);
     } else if (action == 'copy') {
       await Clipboard.setData(ClipboardData(text: message.content?.text ?? ''));
       if (mounted) {
@@ -2529,10 +4280,143 @@ class _TextChatPageState extends State<TextChatPage>
           context,
         ).showSnackBar(const SnackBar(content: Text('已复制')));
       }
+    } else if (action == 'forward') {
+      await _forwardMessage(message);
+    } else if (action == 'save') {
+      await widget.coordinator.saveMessage(message);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已收藏')));
+      }
+    } else if (action == 'pin-message') {
+      await widget.coordinator.pinMessage(message);
+      await _refreshPinnedMessages();
+    } else if (action == 'unpin-message') {
+      await widget.coordinator.unpinMessage(message);
+      await _refreshPinnedMessages();
     } else if (action == 'recall') {
       await widget.coordinator.recall(message);
+      await _refreshPinnedMessages();
     } else if (action == 'delete') {
       await widget.coordinator.deleteLocally(message);
+    }
+  }
+
+  bool _isMessagePinned(ChatMessage message) =>
+      _pinnedMessages.any((item) => item.message.id == message.id);
+
+  Future<void> _refreshPinnedMessages() async {
+    try {
+      final items = await widget.coordinator.listPinnedMessages(
+        widget.conversation.id,
+      );
+      if (mounted) setState(() => _pinnedMessages = items);
+    } catch (_) {
+      // The coordinator/API surface already carries the actionable error.
+    }
+  }
+
+  Future<void> _forwardMessage(ChatMessage message) async {
+    final conversations = widget.coordinator.conversations
+        .where(
+          (conversation) =>
+              conversation.type != 'SELF' &&
+              !conversation.preferences.isArchived,
+        )
+        .toList(growable: false);
+    final target = await showModalBottomSheet<Object>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => FractionallySizedBox(
+        heightFactor: 0.72,
+        child: Column(
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: DdColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              '选择转发对象',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 10),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView.builder(
+                itemCount: conversations.length + 1,
+                itemBuilder: (_, index) {
+                  if (index == 0) {
+                    return ListTile(
+                      key: const Key('forward-target-saved'),
+                      leading: const CircleAvatar(
+                        backgroundColor: Color(0xFF4E9BEA),
+                        child: Icon(
+                          Icons.bookmark_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      title: const Text('我的收藏'),
+                      subtitle: const Text('保存到自己的收藏'),
+                      trailing: const Icon(
+                        Icons.push_pin_rounded,
+                        size: 16,
+                        color: DdColors.textTertiary,
+                      ),
+                      onTap: () => Navigator.pop(sheetContext, 'saved'),
+                    );
+                  }
+                  final conversation = conversations[index - 1];
+                  final peer = conversation.peer;
+                  return ListTile(
+                    key: Key('forward-target-${conversation.id}'),
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0xFF6F9FCA),
+                      child: Icon(Icons.person_rounded, color: Colors.white),
+                    ),
+                    title: Text(peer?.displayName ?? '会话'),
+                    subtitle: peer?.handle.isNotEmpty == true
+                        ? Text('DDID：${peer!.handle}')
+                        : null,
+                    onTap: () => Navigator.pop(sheetContext, conversation),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (target == null || !mounted) return;
+    try {
+      if (target == 'saved') {
+        await widget.coordinator.saveMessage(message);
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已保存到我的收藏')));
+        return;
+      }
+      final conversation = target as ConversationItem;
+      await widget.coordinator.forwardMessage(message, conversation.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已转发给 ${conversation.peer?.displayName ?? '目标会话'}'),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('转发失败：$error')));
     }
   }
 
@@ -2571,7 +4455,9 @@ class _TextChatPageState extends State<TextChatPage>
       color: Theme.of(context).colorScheme.surface,
       elevation: 10,
       shadowColor: Colors.black.withValues(alpha: 0.22),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(DdRadii.surface),
+      ),
       menuPadding: const EdgeInsets.symmetric(vertical: 5),
       constraints: const BoxConstraints(minWidth: 180, maxWidth: 224),
       position: RelativeRect.fromRect(
@@ -2583,19 +4469,30 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _replyReference(String messageId, bool mine) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-      decoration: BoxDecoration(
-        color: mine
-            ? Colors.white.withValues(alpha: 0.35)
-            : const Color(0xFFF3F3F3),
-        borderRadius: BorderRadius.circular(3),
-      ),
-      child: Text(
-        _replyLabel(messageId),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 11, color: DdColors.textSecondary),
+    if (widget.coordinator.isMessageRecalled(
+      widget.conversation.id,
+      messageId,
+    )) {
+      return const SizedBox.shrink();
+    }
+    return Material(
+      color: mine
+          ? Colors.white.withValues(alpha: 0.35)
+          : const Color(0xFFF3F3F3),
+      borderRadius: BorderRadius.circular(DdRadii.control),
+      child: InkWell(
+        key: Key('reply-reference-$messageId'),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        onTap: () => unawaited(_jumpToMessage(messageId)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+          child: Text(
+            _replyLabel(messageId),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11, color: DdColors.textSecondary),
+          ),
+        ),
       ),
     );
   }
@@ -2604,16 +4501,71 @@ class _TextChatPageState extends State<TextChatPage>
     final messages = widget.coordinator.messagesFor(widget.conversation.id);
     for (final message in messages) {
       if (message.id != messageId) continue;
-      if (message.isRecalled) return '该消息已撤回';
       final text = message.content?.text;
       if (text != null && text.isNotEmpty) return text;
-      return '[${message.type}]';
+      return switch (message.type) {
+        'IMAGE' => '[图片]',
+        'GIF' => '[GIF]',
+        'STICKER' => '[表情]',
+        'VOICE' => '[语音]',
+        'FILE' => '[文件]',
+        _ => '引用消息',
+      };
     }
     return '引用消息';
   }
 
+  Future<void> _jumpToMessage(String messageId) async {
+    var found = widget.coordinator
+        .messagesFor(widget.conversation.id)
+        .any((message) => message.id == messageId);
+    var pages = 0;
+    while (!found &&
+        widget.coordinator.canLoadOlder(widget.conversation.id) &&
+        pages < 40) {
+      await widget.coordinator.loadOlder(widget.conversation.id);
+      pages++;
+      if (!mounted) return;
+      await WidgetsBinding.instance.endOfFrame;
+      found = widget.coordinator
+          .messagesFor(widget.conversation.id)
+          .any((message) => message.id == messageId);
+    }
+    if (!mounted) return;
+    if (!found) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('原消息已不可见或不在当前历史中。')));
+      return;
+    }
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    final targetContext = _messageAnchorKeys[messageId]?.currentContext;
+    if (targetContext == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('正在定位原消息，请再试一次。')));
+      return;
+    }
+    if (!targetContext.mounted) return;
+    await Scrollable.ensureVisible(
+      targetContext,
+      alignment: 0.45,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+    );
+    _highlightTimer?.cancel();
+    setState(() => _highlightedMessageId = messageId);
+    _highlightTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted && _highlightedMessageId == messageId) {
+        setState(() => _highlightedMessageId = null);
+      }
+    });
+  }
+
   void _scheduleDraftSave() {
     _draftSaveTimer?.cancel();
+    if (_editingMessage != null) return;
     _draftSaveTimer = Timer(const Duration(milliseconds: 700), () {
       unawaited(
         widget.coordinator.setDraft(
@@ -2710,73 +4662,32 @@ class _ComposerAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(7),
-        onTap: enabled ? onTap : null,
-        child: Opacity(
-          opacity: enabled ? 1 : 0.45,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child: Icon(icon, size: 25),
-                ),
-                const SizedBox(height: 7),
-                Text(label, style: const TextStyle(fontSize: 12)),
-                const SizedBox(height: 11),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DisabledComposerAction extends StatelessWidget {
-  const _DisabledComposerAction({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
+    return InkWell(
+      borderRadius: BorderRadius.circular(DdRadii.control),
+      onTap: enabled ? onTap : null,
       child: Opacity(
-        opacity: 0.42,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 52,
-              height: 52,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(5),
+        opacity: enabled ? 1 : 0.42,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 56,
+                height: 56,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? const Color(0xFF303030)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(DdRadii.surface),
+                ),
+                child: Icon(icon, size: 25),
               ),
-              child: Icon(icon, size: 25),
-            ),
-            const SizedBox(height: 7),
-            Text(label, style: const TextStyle(fontSize: 12)),
-            const SizedBox(height: 2),
-            const Text(
-              '开发中',
-              style: TextStyle(fontSize: 9, color: DdColors.textTertiary),
-            ),
-          ],
+              const SizedBox(height: 7),
+              Text(label, style: const TextStyle(fontSize: 12)),
+            ],
+          ),
         ),
       ),
     );

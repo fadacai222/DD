@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../core/sound/app_sound_service.dart';
 import '../../../theme/app_theme.dart';
+import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../domain/call_session.dart';
 import 'call_debug_controller.dart';
 import 'two_party_call_controller.dart';
@@ -16,13 +18,21 @@ class ChatCallPage extends StatefulWidget {
     required this.controller,
     required this.mediaController,
     required this.peerName,
+    required this.peerId,
+    required this.origin,
+    required this.accessToken,
     this.onFinished,
+    this.soundService,
   });
 
   final TwoPartyCallController controller;
   final CallDebugController mediaController;
   final String peerName;
+  final String peerId;
+  final Uri origin;
+  final String accessToken;
   final Future<void> Function(CallSession call, Duration duration)? onFinished;
+  final AppSoundService? soundService;
 
   @override
   State<ChatCallPage> createState() => _ChatCallPageState();
@@ -33,6 +43,9 @@ class _ChatCallPageState extends State<ChatCallPage> {
   Timer? _autoCloseTimer;
   Duration _elapsed = Duration.zero;
   String? _finishedCallId;
+  String? _lastSoundSignature;
+
+  AppSoundService get _sounds => widget.soundService ?? AppSoundService.shared;
 
   bool get _android =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -57,8 +70,11 @@ class _ChatCallPageState extends State<ChatCallPage> {
     widget.controller.removeListener(_handleCallState);
     _durationTimer?.cancel();
     _autoCloseTimer?.cancel();
+    unawaited(_sounds.stopCallSounds());
     if (_android) {
-      unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]));
+      unawaited(
+        SystemChrome.setPreferredOrientations(const <DeviceOrientation>[]),
+      );
     }
     super.dispose();
   }
@@ -66,6 +82,7 @@ class _ChatCallPageState extends State<ChatCallPage> {
   void _handleCallState() {
     if (!mounted) return;
     final call = widget.controller.currentCall;
+    _syncCallSounds(call);
     if (call?.status == CallSessionStatus.accepted) {
       _ensureDurationTimer();
       _updateElapsed(call!);
@@ -80,6 +97,29 @@ class _ChatCallPageState extends State<ChatCallPage> {
       _scheduleFinished(call);
     }
     setState(() {});
+  }
+
+  void _syncCallSounds(CallSession? call) {
+    final signature = call == null ? 'none' : '${call.id}:${call.status.name}';
+    if (_lastSoundSignature == signature) return;
+    _lastSoundSignature = signature;
+    if (call == null) {
+      unawaited(_sounds.stopCallSounds());
+      return;
+    }
+    switch (call.status) {
+      case CallSessionStatus.ringing:
+        if (call.isIncomingFor(widget.controller.identity)) {
+          unawaited(_sounds.playIncomingRingtone());
+        } else {
+          unawaited(_sounds.playOutgoingRingback());
+        }
+      case CallSessionStatus.accepted:
+        unawaited(_sounds.playCallConnected());
+      case CallSessionStatus.rejected:
+      case CallSessionStatus.ended:
+        unawaited(_sounds.playCallEnded());
+    }
   }
 
   void _ensureDurationTimer() {
@@ -135,6 +175,9 @@ class _ChatCallPageState extends State<ChatCallPage> {
                 else
                   _AudioCallBody(
                     peerName: widget.peerName,
+                    peerId: widget.peerId,
+                    origin: widget.origin,
+                    accessToken: widget.accessToken,
                     status: _statusLabel(call),
                     error: widget.controller.errorMessage,
                     elapsed: accepted ? _formatDuration(_elapsed) : null,
@@ -201,9 +244,7 @@ class _ChatCallPageState extends State<ChatCallPage> {
       return widget.controller.errorMessage!;
     }
     if (call == null) {
-      return widget.controller.signalingConnected
-          ? '正在建立通话…'
-          : '正在连接通话服务…';
+      return widget.controller.signalingConnected ? '正在建立通话…' : '正在连接通话服务…';
     }
     return switch (call.status) {
       CallSessionStatus.ringing =>
@@ -212,7 +253,8 @@ class _ChatCallPageState extends State<ChatCallPage> {
             : '正在等待对方接听…',
       CallSessionStatus.accepted =>
         call.kind == CallKind.video ? '视频通话中' : '语音通话中',
-      CallSessionStatus.rejected => '对方已拒绝',
+      CallSessionStatus.rejected =>
+        call.isIncomingFor(widget.controller.identity) ? '已拒绝' : '对方已拒绝',
       CallSessionStatus.ended => '通话已结束',
     };
   }
@@ -228,12 +270,18 @@ class _ChatCallPageState extends State<ChatCallPage> {
 class _AudioCallBody extends StatelessWidget {
   const _AudioCallBody({
     required this.peerName,
+    required this.peerId,
+    required this.origin,
+    required this.accessToken,
     required this.status,
     required this.error,
     required this.elapsed,
   });
 
   final String peerName;
+  final String peerId;
+  final Uri origin;
+  final String accessToken;
   final String status;
   final String? error;
   final String? elapsed;
@@ -249,14 +297,9 @@ class _AudioCallBody extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 104,
-              height: 104,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: const Color(0xFF445B72),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: const [
+            DecoratedBox(
+              decoration: const BoxDecoration(
+                boxShadow: [
                   BoxShadow(
                     color: Color(0x33000000),
                     blurRadius: 24,
@@ -264,12 +307,14 @@ class _AudioCallBody extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Text(
-                letter,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 42,
-                  fontWeight: FontWeight.w600,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: ProfileAvatar(
+                  origin: origin,
+                  accessToken: accessToken,
+                  userId: peerId,
+                  displayName: peerName.isEmpty ? letter : peerName,
+                  size: 104,
                 ),
               ),
             ),

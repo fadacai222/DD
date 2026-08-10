@@ -13,6 +13,7 @@ import (
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
+	"example.com/selfhosted-im/server/internal/stickers"
 )
 
 var version = "dev"
@@ -44,6 +45,11 @@ func main() {
 	messagingService, err := messaging.NewService(messaging.Config{Pool: pool})
 	if err != nil {
 		logger.Error("worker messaging initialization failed", "error", err)
+		os.Exit(2)
+	}
+	stickerService, err := stickers.NewService(stickers.Config{Pool: pool})
+	if err != nil {
+		logger.Error("worker sticker initialization failed", "error", err)
 		os.Exit(2)
 	}
 
@@ -100,18 +106,37 @@ func main() {
 				logger.Info("outbox batch dispatched", "service", "dd-worker", "events", processed)
 			}
 		case <-mediaCleanupTicker.C:
-			if mediaService == nil {
-				continue
-			}
 			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
-			removed, cleanupErr := mediaService.CleanupExpiredUploads(cleanupContext, 100)
+			packRemoved, cleanupErr := stickerService.CleanupUnusedPacks(
+				cleanupContext,
+				50,
+				30*24*time.Hour,
+			)
+			mediaRemoved := 0
+			if cleanupErr == nil && mediaService != nil {
+				mediaRemoved, cleanupErr = mediaService.CleanupExpiredUploads(cleanupContext, 100)
+			}
+			if cleanupErr == nil && mediaService != nil {
+				var managedRemoved int
+				managedRemoved, cleanupErr = mediaService.CleanupOrphanedChatMedia(
+					cleanupContext,
+					50,
+					30*24*time.Hour,
+				)
+				mediaRemoved += managedRemoved
+			}
 			cleanupCancel()
 			if cleanupErr != nil {
-				logger.Error("expired media cleanup failed", "service", "dd-worker", "error", cleanupErr)
+				logger.Error("sticker/media cleanup failed", "service", "dd-worker", "error", cleanupErr)
 				continue
 			}
-			if removed > 0 {
-				logger.Info("expired media cleaned", "service", "dd-worker", "objects", removed)
+			if packRemoved > 0 || mediaRemoved > 0 {
+				logger.Info(
+					"sticker/media cleanup completed",
+					"service", "dd-worker",
+					"sticker_packs", packRemoved,
+					"media_objects", mediaRemoved,
+				)
 			}
 		}
 	}

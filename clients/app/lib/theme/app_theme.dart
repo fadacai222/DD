@@ -11,8 +11,99 @@ abstract final class DdColors {
   static const Color textSecondary = Color(0xFF888888);
   static const Color textTertiary = Color(0xFFB2B2B2);
   static const Color ownBubble = Color(0xFF95EC69);
-  static const Color desktopRail = Color(0xFF2E2E2E);
   static const Color danger = Color(0xFFFA5151);
+}
+
+abstract final class DdRadii {
+  static const double pill = 999;
+  static const double messageBubble = 20;
+  static const double media = 16;
+  static const double surface = 18;
+  static const double sheet = 22;
+  static const double control = 12;
+}
+
+abstract final class DdDesktopTokens {
+  static const double navigationWidth = 66;
+  static const double sidebarWidth = 264;
+  static const double titleBarHeight = 30;
+  static const double listRowHeight = 68;
+  static const double chatHeaderHeight = 58;
+  static const double compactControlHeight = 34;
+  static const double navigationItemExtent = 46;
+
+  static Color navigationSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF1F2224)
+      : const Color(0xFFF4F6F7);
+
+  static Color sidebarSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF202326)
+      : const Color(0xFFF9FAFB);
+
+  static Color contentSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF191B1D)
+      : const Color(0xFFF2F4F5);
+
+  static Color hoverSurface(Brightness brightness) => brightness == Brightness.dark
+      ? const Color(0xFF2A2E31)
+      : const Color(0xFFE9EEF0);
+
+  static Color selectedSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF193529)
+      : const Color(0xFFE2F4E9);
+
+  static Color borderSubtle(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF303437)
+      : const Color(0xFFDDE2E4);
+
+  static Color titleBarSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF202326)
+      : const Color(0xFFF7F9FA);
+
+  static Color navigationIcon(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFFAEB6BA)
+      : const Color(0xFF667077);
+
+  static Color activeIndicator(Brightness brightness) => DdColors.green;
+}
+
+abstract final class DdFloatingNavigationTokens {
+  static const double height = 70;
+  static const double horizontalMargin = 12;
+  static const double topGap = 6;
+  static const double bottomGap = 8;
+  static const double outerRadius = 34;
+  static const double itemRadius = 25;
+  static const Duration animationDuration = Duration(milliseconds: 180);
+
+  static Color surface(Brightness brightness) => brightness == Brightness.dark
+      ? const Color(0xFF242424)
+      : const Color(0xFFFCFCFC);
+
+  static Color selectedSurface(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFF153D28)
+      : const Color(0xFFE1F6E9);
+
+  static Color border(Brightness brightness) => brightness == Brightness.dark
+      ? const Color(0xFF383838)
+      : const Color(0x14000000);
+
+  static Color unselected(Brightness brightness) =>
+      brightness == Brightness.dark
+      ? const Color(0xFFAAAAAA)
+      : const Color(0xFF737373);
+
+  static Color shadow(Brightness brightness) => brightness == Brightness.dark
+      ? Colors.black.withValues(alpha: 0.28)
+      : Colors.black.withValues(alpha: 0.11);
 }
 
 abstract final class AppTheme {
@@ -76,7 +167,9 @@ abstract final class AppTheme {
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(DdRadii.surface),
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -87,15 +180,15 @@ abstract final class AppTheme {
           vertical: 11,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(5),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(5),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
           borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(5),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
           borderSide: const BorderSide(color: DdColors.green, width: 1),
         ),
       ),
@@ -113,7 +206,9 @@ abstract final class AppTheme {
           foregroundColor: const WidgetStatePropertyAll(Colors.white),
           elevation: const WidgetStatePropertyAll(0),
           shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(DdRadii.pill),
+            ),
           ),
         ),
       ),
@@ -165,14 +260,18 @@ abstract final class AppTheme {
         color: surface,
         surfaceTintColor: Colors.transparent,
         elevation: 8,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(DdRadii.surface),
+        ),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: surface,
         surfaceTintColor: Colors.transparent,
         showDragHandle: false,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(DdRadii.sheet),
+          ),
         ),
       ),
       snackBarTheme: SnackBarThemeData(
@@ -181,7 +280,9 @@ abstract final class AppTheme {
             ? const Color(0xFF333333)
             : const Color(0xFF333333),
         contentTextStyle: const TextStyle(color: Colors.white),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(DdRadii.control),
+        ),
       ),
     );
   }

@@ -21,10 +21,16 @@ type fakeMessagingService struct {
 	sendPrincipal    account.Principal
 	sendConversation uuid.UUID
 	sendErr          error
+	editInput        messaging.EditMessageInput
+	editMessageID    uuid.UUID
+	editErr          error
 }
 
 func (f *fakeMessagingService) EnsureDirectConversation(_ context.Context, _ account.Principal, target uuid.UUID) (messaging.Conversation, error) {
 	return messaging.Conversation{ID: uuid.NewString(), Type: "DIRECT", Peer: &messaging.UserPreview{ID: target.String()}}, nil
+}
+func (f *fakeMessagingService) EnsureSavedConversation(_ context.Context, principal account.Principal) (messaging.Conversation, error) {
+	return messaging.Conversation{ID: uuid.NewString(), Type: "SELF", Peer: &messaging.UserPreview{ID: principal.UserID.String()}, CanWrite: true}, nil
 }
 func (f *fakeMessagingService) ListConversations(context.Context, account.Principal, int) ([]messaging.Conversation, error) {
 	return []messaging.Conversation{}, nil
@@ -34,6 +40,9 @@ func (f *fakeMessagingService) GetConversation(_ context.Context, _ account.Prin
 }
 func (f *fakeMessagingService) UpdatePreferences(_ context.Context, _ account.Principal, id uuid.UUID, _ messaging.UpdatePreferencesInput) (messaging.Conversation, error) {
 	return messaging.Conversation{ID: id.String(), Type: "DIRECT"}, nil
+}
+func (f *fakeMessagingService) HideConversation(_ context.Context, _ account.Principal, _ uuid.UUID) error {
+	return nil
 }
 func (f *fakeMessagingService) MarkRead(_ context.Context, _ account.Principal, id uuid.UUID, sequence int64) (messaging.MarkReadResult, []uuid.UUID, error) {
 	return messaging.MarkReadResult{ConversationID: id.String(), LastReadSequence: sequence}, nil, nil
@@ -48,11 +57,49 @@ func (f *fakeMessagingService) ListMessages(context.Context, account.Principal, 
 func (f *fakeMessagingService) GetMessage(_ context.Context, _ account.Principal, id uuid.UUID) (messaging.Message, error) {
 	return messaging.Message{ID: id.String()}, nil
 }
+func (f *fakeMessagingService) EditMessage(_ context.Context, principal account.Principal, id uuid.UUID, input messaging.EditMessageInput) (messaging.SendResult, error) {
+	f.editMessageID, f.editInput = id, input
+	if f.editErr != nil {
+		return messaging.SendResult{}, f.editErr
+	}
+	now := time.Now().UTC()
+	return messaging.SendResult{
+		Message: messaging.Message{
+			ID: id.String(), SenderUserID: principal.UserID.String(), Type: "TEXT",
+			Content: &messaging.TextContent{Text: input.Text}, EditedAt: &now, EditVersion: input.ExpectedEditVersion + 1,
+		},
+		NotifyUserIDs: []uuid.UUID{principal.UserID},
+	}, nil
+}
 func (f *fakeMessagingService) RecallMessage(_ context.Context, _ account.Principal, id uuid.UUID) (messaging.SendResult, error) {
 	return messaging.SendResult{Message: messaging.Message{ID: id.String()}}, nil
 }
 func (f *fakeMessagingService) DeleteMessageLocally(context.Context, account.Principal, uuid.UUID) error {
 	return nil
+}
+func (f *fakeMessagingService) SaveMessage(_ context.Context, _ account.Principal, id uuid.UUID) (messaging.SavedMessage, error) {
+	return messaging.SavedMessage{Message: messaging.Message{ID: id.String()}, SavedAt: time.Now().UTC()}, nil
+}
+func (f *fakeMessagingService) UnsaveMessage(context.Context, account.Principal, uuid.UUID) error {
+	return nil
+}
+func (f *fakeMessagingService) ListSavedMessages(context.Context, account.Principal, int) ([]messaging.SavedMessage, error) {
+	return []messaging.SavedMessage{}, nil
+}
+func (f *fakeMessagingService) PinMessage(_ context.Context, principal account.Principal, id uuid.UUID) (messaging.PinnedMessage, []uuid.UUID, error) {
+	return messaging.PinnedMessage{Message: messaging.Message{ID: id.String()}, PinnedByUserID: principal.UserID.String(), PinnedAt: time.Now().UTC()}, []uuid.UUID{principal.UserID}, nil
+}
+func (f *fakeMessagingService) UnpinMessage(_ context.Context, principal account.Principal, _ uuid.UUID) ([]uuid.UUID, error) {
+	return []uuid.UUID{principal.UserID}, nil
+}
+func (f *fakeMessagingService) ListPinnedMessages(context.Context, account.Principal, uuid.UUID, int) ([]messaging.PinnedMessage, error) {
+	return []messaging.PinnedMessage{}, nil
+}
+func (f *fakeMessagingService) SearchMessages(context.Context, account.Principal, string, *uuid.UUID, int) ([]messaging.MessageSearchHit, error) {
+	return []messaging.MessageSearchHit{}, nil
+}
+func (f *fakeMessagingService) ForwardMessage(_ context.Context, principal account.Principal, _ uuid.UUID, input messaging.ForwardMessageInput) (messaging.SendResult, error) {
+	return messaging.SendResult{Message: messaging.Message{ID: uuid.NewString(), ConversationID: input.TargetConversationID, SenderUserID: principal.UserID.String(), ClientMessageID: input.ClientMessageID, Type: "TEXT"}}, nil
 }
 func (f *fakeMessagingService) Sync(_ context.Context, _ account.Principal, cursor int64, _ int) (messaging.SyncPage, error) {
 	return messaging.SyncPage{Items: []messaging.SyncEvent{}, NextCursor: cursor}, nil
@@ -129,6 +176,52 @@ func TestSendMessageRejectsClientSenderIdentityAndUsesPrincipal(t *testing.T) {
 	}
 	if messages.sendPrincipal != principal || messages.sendConversation != conversationID || messages.sendInput.ClientMessageID != "client-00000002" {
 		t.Fatalf("trusted principal/message mismatch: principal=%#v conversation=%s input=%#v", messages.sendPrincipal, messages.sendConversation, messages.sendInput)
+	}
+}
+
+func TestEditMessagePATCHAndConflictError(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	auth := &stablePrincipalAuthService{principal: principal}
+	messages := &fakeMessagingService{}
+	handler := NewHandler(Config{AuthService: auth, MessagingService: messages})
+	messageID := uuid.New()
+
+	body := `{"text":"updated body","expectedEditVersion":2}`
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/messages/"+messageID.String(), strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer valid")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("edit status=%d body=%s", response.Code, response.Body.String())
+	}
+	if messages.editMessageID != messageID || messages.editInput.Text != "updated body" || messages.editInput.ExpectedEditVersion != 2 {
+		t.Fatalf("edit input mismatch id=%s input=%#v", messages.editMessageID, messages.editInput)
+	}
+
+	messages.editErr = messaging.ErrEditConflict
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/messages/"+messageID.String(), strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer valid")
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "MESSAGE_EDIT_CONFLICT") {
+		t.Fatalf("conflict status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestWriteJSONEncodingFailureReturnsStructuredServerError(t *testing.T) {
+	response := httptest.NewRecorder()
+	response.Header().Set(requestIDHeader, "req-json-encode-test")
+	writeJSON(response, http.StatusOK, map[string]any{
+		"badTime": time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "RESPONSE_ENCODING_FAILED") ||
+		!strings.Contains(response.Body.String(), "req-json-encode-test") {
+		t.Fatalf("unexpected encoding failure body=%q", response.Body.String())
 	}
 }
 

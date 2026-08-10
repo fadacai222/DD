@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
+import '../../../theme/app_theme.dart';
 import '../domain/call_session.dart';
 import 'call_debug_controller.dart';
 import 'two_party_call_controller.dart';
@@ -533,7 +534,7 @@ class _TwoPartyCallPageState extends State<TwoPartyCallPage> {
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: colors.errorContainer,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(DdRadii.control),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Row(

@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../data/contacts_api_client.dart';
 import '../domain/contact_models.dart';
+import 'contact_tags_page.dart';
+import 'peer_profile_page.dart';
 
 class ContactsPage extends StatefulWidget {
   const ContactsPage({
@@ -13,6 +17,13 @@ class ContactsPage extends StatefulWidget {
     required this.currentUserId,
     this.gateway,
     this.embedded = false,
+    this.rootRequestToken = 0,
+    this.addFriendRequestToken = 0,
+    this.refreshRequestToken = 0,
+    this.onUnauthorized,
+    this.onOpenDirectChat,
+    this.onStartAudioCall,
+    this.onStartVideoCall,
   });
 
   final Uri origin;
@@ -20,6 +31,13 @@ class ContactsPage extends StatefulWidget {
   final String currentUserId;
   final ContactsGateway? gateway;
   final bool embedded;
+  final int rootRequestToken;
+  final int addFriendRequestToken;
+  final int refreshRequestToken;
+  final Future<String?> Function()? onUnauthorized;
+  final Future<void> Function(String peerId, String peerName)? onOpenDirectChat;
+  final Future<void> Function(String peerId, String peerName)? onStartAudioCall;
+  final Future<void> Function(String peerId, String peerName)? onStartVideoCall;
 
   @override
   State<ContactsPage> createState() => _ContactsPageState();
@@ -31,15 +49,12 @@ class _ContactsPageState extends State<ContactsPage>
   late final bool _ownsGateway;
   late final TabController _tabs;
   late final TextEditingController _searchHandle;
-  late final TextEditingController _requestMessage;
   late final TextEditingController _directorySearch;
 
   bool _busy = false;
   String? _message;
   bool _messageIsError = false;
   ContactSearchResult? _searchResult;
-  List<ContactRequestItem> _incoming = const [];
-  List<ContactRequestItem> _outgoing = const [];
   List<ContactItem> _contacts = const [];
   List<BlockedUserItem> _blocks = const [];
   String _directoryQuery = '';
@@ -51,20 +66,45 @@ class _ContactsPageState extends State<ContactsPage>
     super.initState();
     _ownsGateway = widget.gateway == null;
     _gateway = widget.gateway ?? ContactsApiClient();
-    // Mobile should land on the actual address book. "添加朋友" is an
-    // action, not the primary contacts destination.
-    _tabs = TabController(length: 4, initialIndex: 2, vsync: this);
+    // Mobile should land on the actual address book. Adding a contact is an
+    // optional local address-book action, not a prerequisite for chatting.
+    _tabs = TabController(length: 3, initialIndex: 1, vsync: this);
     _searchHandle = TextEditingController();
-    _requestMessage = TextEditingController();
     _directorySearch = TextEditingController();
     _loadAll();
+  }
+
+  @override
+  void didUpdateWidget(covariant ContactsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.rootRequestToken != widget.rootRequestToken) {
+      _openContactsRoot();
+    } else if (oldWidget.addFriendRequestToken !=
+        widget.addFriendRequestToken) {
+      _openAddFriend();
+    } else if (oldWidget.refreshRequestToken != widget.refreshRequestToken) {
+      unawaited(_loadAll());
+    }
+  }
+
+  void _openContactsRoot() {
+    _tabs.index = 1;
+    _desktopSection = 'contacts';
+    _selectedContactId = null;
+    if (mounted) setState(() {});
+    unawaited(_loadAll());
+  }
+
+  void _openAddFriend() {
+    _tabs.index = 0;
+    _desktopSection = 'add';
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _tabs.dispose();
     _searchHandle.dispose();
-    _requestMessage.dispose();
     _directorySearch.dispose();
     if (_ownsGateway) _gateway.close();
     super.dispose();
@@ -82,11 +122,7 @@ class _ContactsPageState extends State<ContactsPage>
             child: Column(
               children: [
                 _embeddedHeader(),
-                Material(
-                  color: Theme.of(context).colorScheme.surface,
-                  child: _tabBar(),
-                ),
-                Expanded(child: body),
+                Expanded(child: _mobileEmbeddedBody()),
               ],
             ),
           );
@@ -114,11 +150,12 @@ class _ContactsPageState extends State<ContactsPage>
     return Row(
       children: [
         SizedBox(
-          width: 248,
+          key: const Key('desktop-contacts-sidebar'),
+          width: DdDesktopTokens.sidebarWidth,
           child: ColoredBox(
-            color: Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xFF262626)
-                : const Color(0xFFF4F4F4),
+            color: DdDesktopTokens.sidebarSurface(
+              Theme.of(context).brightness,
+            ),
             child: Column(
               children: [
                 _desktopDirectoryHeader(),
@@ -128,10 +165,14 @@ class _ContactsPageState extends State<ContactsPage>
             ),
           ),
         ),
-        const VerticalDivider(width: 1, thickness: 0.5),
+        VerticalDivider(
+          width: 1,
+          thickness: 0.5,
+          color: DdDesktopTokens.borderSubtle(Theme.of(context).brightness),
+        ),
         Expanded(
           child: ColoredBox(
-            color: Theme.of(context).colorScheme.surface,
+            color: DdDesktopTokens.contentSurface(Theme.of(context).brightness),
             child: _desktopContactContent(),
           ),
         ),
@@ -146,7 +187,7 @@ class _ContactsPageState extends State<ContactsPage>
         children: [
           Expanded(
             child: SizedBox(
-              height: 34,
+              height: DdDesktopTokens.compactControlHeight,
               child: TextField(
                 key: const Key('contacts-directory-search'),
                 controller: _directorySearch,
@@ -197,20 +238,20 @@ class _ContactsPageState extends State<ContactsPage>
                   children: [
                     Icon(Icons.person_add_alt_1_outlined, size: 18),
                     SizedBox(width: 10),
-                    Text('添加朋友'),
+                    Text('添加联系人'),
                   ],
                 ),
               ),
             ],
             child: Container(
-              width: 34,
-              height: 34,
+              width: DdDesktopTokens.compactControlHeight,
+              height: DdDesktopTokens.compactControlHeight,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF333333)
-                    : const Color(0xFFE4E4E4),
-                borderRadius: BorderRadius.circular(5),
+                color: DdDesktopTokens.hoverSurface(
+                  Theme.of(context).brightness,
+                ),
+                borderRadius: BorderRadius.circular(DdRadii.control),
               ),
               child: const Icon(Icons.add_rounded, size: 21),
             ),
@@ -246,13 +287,6 @@ class _ContactsPageState extends State<ContactsPage>
         ),
         const SizedBox(height: 6),
         _DirectoryAction(
-          icon: Icons.person_add_alt_1_outlined,
-          label: '新的朋友',
-          count: _incoming.where((item) => item.status == 'PENDING').length,
-          selected: _desktopSection == 'requests',
-          onTap: () => setState(() => _desktopSection = 'requests'),
-        ),
-        _DirectoryAction(
           icon: Icons.block_outlined,
           label: '黑名单',
           count: _blocks.length,
@@ -284,13 +318,15 @@ class _ContactsPageState extends State<ContactsPage>
     final title = contact.remark.isEmpty
         ? contact.user.displayName
         : contact.remark;
+    final brightness = Theme.of(context).brightness;
     return Material(
       color: selected
-          ? (Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xFF363636)
-                : const Color(0xFFE1E1E1))
+          ? DdDesktopTokens.selectedSurface(brightness)
           : Colors.transparent,
       child: InkWell(
+        hoverColor: DdDesktopTokens.hoverSurface(brightness),
+        splashColor: Colors.transparent,
+        key: Key('desktop-contact-${contact.user.id}'),
         onTap: () => setState(() {
           _desktopSection = 'contact';
           _selectedContactId = contact.user.id;
@@ -321,8 +357,7 @@ class _ContactsPageState extends State<ContactsPage>
 
   Widget _desktopContactContent() {
     return switch (_desktopSection) {
-      'add' => _desktopPane('添加朋友', _buildSearchTab()),
-      'requests' => _desktopPane('新的朋友', _buildRequestsTab()),
+      'add' => _desktopPane('添加联系人', _buildSearchTab()),
       'blocks' => _desktopPane('黑名单', _buildBlocksTab()),
       'manage' => _desktopPane('通讯录管理', _buildContactsTab()),
       'contact' => _selectedContactDetail(),
@@ -416,6 +451,43 @@ class _ContactsPageState extends State<ContactsPage>
                 runSpacing: 10,
                 alignment: WrapAlignment.center,
                 children: [
+                  if (widget.onOpenDirectChat != null)
+                    FilledButton.icon(
+                      key: const Key('desktop-contact-message'),
+                      onPressed: _busy
+                          ? null
+                          : () => widget.onOpenDirectChat!(
+                              contact.user.id,
+                              title,
+                            ),
+                      icon: const Icon(
+                        Icons.chat_bubble_outline_rounded,
+                        size: 18,
+                      ),
+                      label: const Text('发消息'),
+                    ),
+                  if (widget.onStartAudioCall != null)
+                    OutlinedButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () => widget.onStartAudioCall!(
+                              contact.user.id,
+                              title,
+                            ),
+                      icon: const Icon(Icons.call_outlined, size: 18),
+                      label: const Text('语音通话'),
+                    ),
+                  if (widget.onStartVideoCall != null)
+                    OutlinedButton.icon(
+                      onPressed: _busy
+                          ? null
+                          : () => widget.onStartVideoCall!(
+                              contact.user.id,
+                              title,
+                            ),
+                      icon: const Icon(Icons.videocam_outlined, size: 18),
+                      label: const Text('视频通话'),
+                    ),
                   OutlinedButton.icon(
                     onPressed: _busy ? null : () => _editContact(contact),
                     icon: const Icon(Icons.edit_outlined, size: 18),
@@ -444,31 +516,400 @@ class _ContactsPageState extends State<ContactsPage>
   }
 
   Widget _embeddedHeader() {
+    final root = _tabs.index == 1;
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: SizedBox(
+        width: double.infinity,
         height: 52,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
-          child: Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  '联系人',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Text(
+              switch (_tabs.index) {
+                0 => '添加联系人',
+                2 => '黑名单',
+                _ => '联系人',
+              },
+              key: const Key('contacts-mobile-title'),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            if (!root)
+              Positioned(
+                left: 4,
+                child: IconButton(
+                  key: const Key('contacts-back-to-root'),
+                  tooltip: '返回联系人',
+                  onPressed: () => _selectMobileTab(1),
+                  icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 19),
                 ),
               ),
-              IconButton(
-                key: const Key('contacts-refresh'),
-                tooltip: '刷新',
-                onPressed: _busy ? null : _loadAll,
-                icon: const Icon(Icons.refresh_rounded, size: 21),
+            if (root)
+              Positioned(
+                right: 6,
+                child: IconButton(
+                  key: const Key('contacts-add-friend'),
+                  tooltip: '添加联系人',
+                  onPressed: () => _selectMobileTab(0),
+                  icon: const Icon(Icons.add_rounded, size: 27),
+                ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _mobileEmbeddedBody() {
+    if (_tabs.index == 1) return _mobileWechatContacts();
+    final content = switch (_tabs.index) {
+      0 => _buildSearchTab(),
+      2 => _buildBlocksTab(),
+      _ => _buildContactsTab(),
+    };
+    return Column(
+      children: [
+        if (_message != null) _buildMessageBar(),
+        if (_busy) const LinearProgressIndicator(minHeight: 1),
+        Expanded(child: content),
+      ],
+    );
+  }
+
+  Widget _mobileWechatContacts() {
+    final contacts =
+        _contacts
+            .where((contact) {
+              if (_directoryQuery.isEmpty) return true;
+              final display = contact.remark.isEmpty
+                  ? contact.user.displayName
+                  : contact.remark;
+              return display.toLowerCase().contains(_directoryQuery) ||
+                  contact.user.handle.toLowerCase().contains(_directoryQuery);
+            })
+            .toList(growable: false)
+          ..sort((a, b) {
+            final left = a.remark.isEmpty ? a.user.displayName : a.remark;
+            final right = b.remark.isEmpty ? b.user.displayName : b.remark;
+            return left.toLowerCase().compareTo(right.toLowerCase());
+          });
+    final groupedContacts = <String, List<ContactItem>>{};
+    for (final contact in contacts) {
+      groupedContacts
+          .putIfAbsent(_contactSectionKey(contact), () => <ContactItem>[])
+          .add(contact);
+    }
+    final sectionKeys = groupedContacts.keys.toList(growable: false)
+      ..sort((a, b) {
+        if (a == '#') return 1;
+        if (b == '#') return -1;
+        return a.compareTo(b);
+      });
+
+    return Column(
+      children: [
+        if (_message != null) _buildMessageBar(),
+        if (_busy) const LinearProgressIndicator(minHeight: 1),
+        Material(
+          color: Theme.of(context).colorScheme.surface,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+            child: SizedBox(
+              height: 36,
+              child: TextField(
+                key: const Key('contacts-mobile-search'),
+                controller: _directorySearch,
+                textAlign: TextAlign.center,
+                onChanged: (value) => setState(
+                  () => _directoryQuery = value.trim().toLowerCase(),
+                ),
+                decoration: const InputDecoration(
+                  hintText: '搜索',
+                  hintStyle: TextStyle(
+                    fontSize: 14,
+                    color: DdColors.textSecondary,
+                  ),
+                  prefixIcon: Icon(
+                    Icons.search_rounded,
+                    size: 18,
+                    color: DdColors.textSecondary,
+                  ),
+                  prefixIconConstraints: BoxConstraints(minWidth: 36),
+                  suffixIcon: SizedBox(width: 36),
+                  contentPadding: EdgeInsets.symmetric(vertical: 8),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            children: [
+              _mobileDirectoryAction(
+                icon: Icons.group_rounded,
+                iconColor: const Color(0xFF07C160),
+                label: '群聊',
+                onTap: () => _showUnavailable('群聊'),
+              ),
+              _mobileDirectoryAction(
+                icon: Icons.sell_rounded,
+                iconColor: const Color(0xFF2787F5),
+                label: '标签',
+                onTap: _openContactTags,
+              ),
+              _mobileDirectoryAction(
+                icon: Icons.shield_outlined,
+                iconColor: const Color(0xFF576B95),
+                label: '黑名单',
+                onTap: () => _selectMobileTab(2),
+              ),
+              Container(
+                height: 28,
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                color: Theme.of(context).scaffoldBackgroundColor,
+                child: const Text(
+                  '联系人',
+                  style: TextStyle(fontSize: 12, color: DdColors.textSecondary),
+                ),
+              ),
+              if (contacts.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 42),
+                  child: Center(
+                    child: Text(
+                      '暂无联系人',
+                      style: TextStyle(color: DdColors.textTertiary),
+                    ),
+                  ),
+                )
+              else
+                for (final section in sectionKeys) ...[
+                  Container(
+                    key: Key('contact-section-$section'),
+                    height: 24,
+                    alignment: Alignment.centerLeft,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    child: Text(
+                      section,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DdColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                  for (final contact in groupedContacts[section]!)
+                    _mobileContactRow(contact),
+                ],
+              if (contacts.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Center(
+                    child: Text(
+                      '${contacts.length} 位联系人',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: DdColors.textTertiary,
+                      ),
+                    ),
+                  ),
+                ),
             ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _mobileDirectoryAction({
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required VoidCallback onTap,
+    int count = 0,
+  }) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        onTap: onTap,
+        child: SizedBox(
+          height: 58,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: iconColor,
+                    borderRadius: BorderRadius.circular(DdRadii.control),
+                  ),
+                  child: Icon(icon, size: 23, color: Colors.white),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Text(label, style: const TextStyle(fontSize: 16)),
+                ),
+                if (count > 0)
+                  Container(
+                    key: Key('directory-badge-$label'),
+                    height: 20,
+                    constraints: const BoxConstraints(minWidth: 20),
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: DdColors.danger,
+                      borderRadius: BorderRadius.circular(DdRadii.pill),
+                    ),
+                    child: Text(
+                      '$count',
+                      style: const TextStyle(color: Colors.white, fontSize: 11),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  String _contactSectionKey(ContactItem contact) {
+    final display =
+        (contact.remark.isEmpty ? contact.user.displayName : contact.remark)
+            .trim();
+    if (display.isEmpty) return '#';
+    final first = display.characters.first.toUpperCase();
+    return RegExp(r'^[A-Z]$').hasMatch(first) ? first : '#';
+  }
+
+  Widget _mobileContactRow(ContactItem contact) {
+    final title = contact.remark.isEmpty
+        ? contact.user.displayName
+        : contact.remark;
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        key: Key('contact-${contact.user.id}'),
+        onTap: () => _openMobileContact(contact),
+        child: SizedBox(
+          height: 58,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 0, 0),
+            child: Row(
+              children: [
+                _contactAvatar(contact.user, size: 36),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Container(
+                    height: 58,
+                    alignment: Alignment.centerLeft,
+                    decoration: const BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(color: DdColors.divider, width: 0.5),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        if (contact.isStarred) ...[
+                          const Icon(
+                            Icons.star_rounded,
+                            size: 15,
+                            color: Color(0xFFFFA928),
+                          ),
+                          const SizedBox(width: 4),
+                        ],
+                        Expanded(
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _selectMobileTab(int index) {
+    _tabs.index = index;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openContactTags() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ContactTagsPage(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+          contacts: _contacts,
+          onOpenContact: _openMobileContact,
+        ),
+      ),
+    );
+  }
+
+  void _showUnavailable(String label) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$label功能正在接入。')));
+  }
+
+  Future<void> _openMobileContact(ContactItem contact) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PeerProfilePage(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+          userId: contact.user.id,
+          handle: contact.user.handle,
+          displayName: contact.remark.isEmpty
+              ? contact.user.displayName
+              : contact.remark,
+          contact: contact,
+          onMessage: widget.onOpenDirectChat == null
+              ? null
+              : () async {
+                  final navigator = Navigator.of(context);
+                  if (navigator.canPop()) navigator.pop();
+                  await widget.onOpenDirectChat!(
+                    contact.user.id,
+                    contact.remark.isEmpty
+                        ? contact.user.displayName
+                        : contact.remark,
+                  );
+                },
+          onAudioCall: widget.onStartAudioCall == null
+              ? null
+              : () => widget.onStartAudioCall!(
+                  contact.user.id,
+                  contact.remark.isEmpty
+                      ? contact.user.displayName
+                      : contact.remark,
+                ),
+          onVideoCall: widget.onStartVideoCall == null
+              ? null
+              : () => widget.onStartVideoCall!(
+                  contact.user.id,
+                  contact.remark.isEmpty
+                      ? contact.user.displayName
+                      : contact.remark,
+                ),
+        ),
+      ),
+    );
+    if (mounted) await _loadAll();
   }
 
   TabBar _tabBar() {
@@ -481,8 +922,7 @@ class _ContactsPageState extends State<ContactsPage>
       unselectedLabelColor: DdColors.textSecondary,
       tabAlignment: TabAlignment.start,
       tabs: const [
-        Tab(text: '添加朋友'),
-        Tab(text: '新的朋友'),
+        Tab(text: '添加联系人'),
         Tab(text: '联系人'),
         Tab(text: '黑名单'),
       ],
@@ -499,7 +939,6 @@ class _ContactsPageState extends State<ContactsPage>
             controller: _tabs,
             children: [
               _buildSearchTab(),
-              _buildRequestsTab(),
               _buildContactsTab(),
               _buildBlocksTab(),
             ],
@@ -561,8 +1000,8 @@ class _ContactsPageState extends State<ContactsPage>
           textInputAction: TextInputAction.search,
           onSubmitted: (_) => _search(),
           decoration: InputDecoration(
-            labelText: '精确账号短号',
-            hintText: 'alice_01',
+            labelText: 'DDID',
+            hintText: '例如 alice_01',
             prefixIcon: const Icon(Icons.alternate_email_rounded),
             suffixIcon: IconButton(
               key: const Key('contacts-search-button'),
@@ -570,27 +1009,29 @@ class _ContactsPageState extends State<ContactsPage>
               onPressed: _busy ? null : _search,
               icon: const Icon(Icons.search_rounded),
             ),
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          key: const Key('contacts-request-message'),
-          controller: _requestMessage,
-          enabled: !_busy,
-          maxLength: 200,
-          maxLines: 2,
-          decoration: const InputDecoration(
-            labelText: '申请理由（可选）',
-            hintText: '你好，我是……',
-            border: OutlineInputBorder(),
+            filled: true,
+            fillColor: Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF2F2F2F)
+                : const Color(0xFFF1F1F1),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(26),
+              borderSide: BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(26),
+              borderSide: BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(26),
+              borderSide: const BorderSide(color: DdColors.green, width: 1.2),
+            ),
           ),
         ),
         const SizedBox(height: 14),
         if (result == null)
           const _EmptyState(
             icon: Icons.person_search_rounded,
-            title: '输入完整账号短号搜索',
+            title: '输入完整 DDID 搜索',
             description: '这里不做无上限昵称模糊搜索，也不会暴露邮箱。',
           )
         else
@@ -607,65 +1048,24 @@ class _ContactsPageState extends State<ContactsPage>
   Widget? _searchAction(ContactSearchResult result) {
     switch (result.relationship) {
       case 'NONE':
-        return FilledButton.icon(
-          key: const Key('contacts-send-request'),
-          onPressed: _busy ? null : _sendRequest,
-          icon: const Icon(Icons.person_add_alt_1_rounded),
-          label: const Text('加好友'),
-        );
       case 'PENDING_INCOMING':
-        return FilledButton.tonal(
-          onPressed: () {
-            _tabs.animateTo(1);
-          },
-          child: const Text('去处理'),
+      case 'PENDING_OUTGOING':
+        return FilledButton.icon(
+          key: const Key('contacts-add-contact'),
+          onPressed: _busy ? null : () => _addContact(result),
+          icon: const Icon(Icons.person_add_alt_1_rounded),
+          label: const Text('添加到联系人'),
         );
+      case 'BLOCKED_BY_PEER':
+        return const Text(
+          '您无法添加',
+          style: TextStyle(color: DdColors.textSecondary),
+        );
+      case 'BLOCKED_BY_ME':
+        return const Text('已拉黑', style: TextStyle(color: DdColors.danger));
       default:
         return null;
     }
-  }
-
-  Widget _buildRequestsTab() {
-    return _scrollBody(
-      children: [
-        _SectionTitle(title: '收到的申请', count: _incoming.length),
-        if (_incoming.isEmpty)
-          const _EmptyLine(text: '暂无收到的申请')
-        else
-          for (final request in _incoming) ...[
-            _RequestCard(
-              request: request,
-              incoming: true,
-              leading: _contactAvatar(request.sender),
-              busy: _busy,
-              onAccept: request.status == 'PENDING'
-                  ? () => _accept(request)
-                  : null,
-              onReject: request.status == 'PENDING'
-                  ? () => _reject(request)
-                  : null,
-            ),
-            const SizedBox(height: 10),
-          ],
-        const SizedBox(height: 20),
-        _SectionTitle(title: '发出的申请', count: _outgoing.length),
-        if (_outgoing.isEmpty)
-          const _EmptyLine(text: '暂无发出的申请')
-        else
-          for (final request in _outgoing) ...[
-            _RequestCard(
-              request: request,
-              incoming: false,
-              leading: _contactAvatar(request.receiver),
-              busy: _busy,
-              onCancel: request.status == 'PENDING'
-                  ? () => _cancel(request)
-                  : null,
-            ),
-            const SizedBox(height: 10),
-          ],
-      ],
-    );
   }
 
   Widget _buildContactsTab() {
@@ -675,8 +1075,8 @@ class _ContactsPageState extends State<ContactsPage>
         if (_contacts.isEmpty)
           const _EmptyState(
             icon: Icons.people_outline_rounded,
-            title: '还没有好友',
-            description: '从“搜索”页按账号短号添加好友。',
+            title: '还没有联系人',
+            description: '搜索 DDID 后可以直接聊天，也可以一键添加到自己的联系人。',
           )
         else
           for (final contact in _contacts) ...[
@@ -710,8 +1110,8 @@ class _ContactsPageState extends State<ContactsPage>
                   onSelected: (value) => _contactAction(contact, value),
                   itemBuilder: (_) => const [
                     PopupMenuItem(value: 'edit', child: Text('备注 / 标签 / 星标')),
-                    PopupMenuItem(value: 'delete', child: Text('删除好友')),
-                    PopupMenuItem(value: 'block', child: Text('拉黑并删除好友')),
+                    PopupMenuItem(value: 'delete', child: Text('删除联系人')),
+                    PopupMenuItem(value: 'block', child: Text('拉黑')),
                   ],
                 ),
               ),
@@ -730,7 +1130,7 @@ class _ContactsPageState extends State<ContactsPage>
           const _EmptyState(
             icon: Icons.shield_outlined,
             title: '黑名单为空',
-            description: '拉黑会立即删除双方好友关系并取消待处理申请。',
+            description: '拉黑后双方不能继续发送消息；解除拉黑后即可恢复聊天。',
           )
         else
           for (final blocked in _blocks) ...[
@@ -781,16 +1181,6 @@ class _ContactsPageState extends State<ContactsPage>
 
   Future<void> _loadAll() => _run(() async {
     final results = await Future.wait([
-      _gateway.listRequests(
-        origin: widget.origin,
-        accessToken: widget.accessToken,
-        direction: 'incoming',
-      ),
-      _gateway.listRequests(
-        origin: widget.origin,
-        accessToken: widget.accessToken,
-        direction: 'outgoing',
-      ),
       _gateway.listContacts(
         origin: widget.origin,
         accessToken: widget.accessToken,
@@ -802,16 +1192,14 @@ class _ContactsPageState extends State<ContactsPage>
     ]);
     if (!mounted) return;
     setState(() {
-      _incoming = (results[0] as RelationshipPage<ContactRequestItem>).items;
-      _outgoing = (results[1] as RelationshipPage<ContactRequestItem>).items;
-      _contacts = (results[2] as RelationshipPage<ContactItem>).items;
-      _blocks = (results[3] as RelationshipPage<BlockedUserItem>).items;
+      _contacts = (results[0] as RelationshipPage<ContactItem>).items;
+      _blocks = (results[1] as RelationshipPage<BlockedUserItem>).items;
     });
   }, showSuccess: false);
 
   Future<void> _search() => _run(() async {
     final handle = _searchHandle.text.trim();
-    if (handle.isEmpty) throw const FormatException('请输入完整账号短号。');
+    if (handle.isEmpty) throw const FormatException('请输入完整 DDID。');
     final result = await _gateway.searchByHandle(
       origin: widget.origin,
       accessToken: widget.accessToken,
@@ -821,66 +1209,11 @@ class _ContactsPageState extends State<ContactsPage>
     setState(() => _searchResult = result);
   }, success: '搜索完成。');
 
-  Future<void> _sendRequest() => _run(() async {
-    final result = await _gateway.sendRequest(
+  Future<void> _addContact(ContactSearchResult result) => _run(() async {
+    await _gateway.addContact(
       origin: widget.origin,
       accessToken: widget.accessToken,
-      targetHandle: _searchHandle.text.trim(),
-      message: _requestMessage.text,
-    );
-    _requestMessage.clear();
-    await _reloadRelationshipLists();
-    if (!mounted) return;
-    setState(() {
-      final current = _searchResult;
-      if (current != null) {
-        _searchResult = ContactSearchResult(
-          user: current.user,
-          relationship: result.status == 'ACCEPTED'
-              ? 'CONTACT'
-              : 'PENDING_OUTGOING',
-        );
-      }
-    });
-  }, success: '好友申请已处理。');
-
-  Future<void> _accept(ContactRequestItem request) => _run(() async {
-    await _gateway.acceptRequest(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      requestId: request.id,
-    );
-    await _reloadRelationshipLists();
-  }, success: '已接受好友申请。');
-
-  Future<void> _reject(ContactRequestItem request) => _run(() async {
-    await _gateway.rejectRequest(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      requestId: request.id,
-    );
-    await _reloadRelationshipLists();
-  }, success: '已拒绝好友申请。');
-
-  Future<void> _cancel(ContactRequestItem request) => _run(() async {
-    await _gateway.cancelRequest(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      requestId: request.id,
-    );
-    await _reloadRelationshipLists();
-  }, success: '已撤销好友申请。');
-
-  Future<void> _reloadRelationshipLists() async {
-    final incoming = await _gateway.listRequests(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      direction: 'incoming',
-    );
-    final outgoing = await _gateway.listRequests(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      direction: 'outgoing',
+      userId: result.user.id,
     );
     final contacts = await _gateway.listContacts(
       origin: widget.origin,
@@ -888,11 +1221,13 @@ class _ContactsPageState extends State<ContactsPage>
     );
     if (!mounted) return;
     setState(() {
-      _incoming = incoming.items;
-      _outgoing = outgoing.items;
       _contacts = contacts.items;
+      _searchResult = ContactSearchResult(
+        user: result.user,
+        relationship: 'CONTACT',
+      );
     });
-  }
+  }, success: '已添加到联系人。');
 
   Future<void> _contactAction(ContactItem contact, String action) async {
     switch (action) {
@@ -900,8 +1235,8 @@ class _ContactsPageState extends State<ContactsPage>
         await _editContact(contact);
       case 'delete':
         if (await _confirm(
-          title: '删除好友？',
-          content: '会删除双方好友关系，但保留历史会话数据。',
+          title: '删除联系人？',
+          content: '只从你的通讯录中移除，不会删除历史聊天，也不会阻止对方继续给你发消息。',
           confirmLabel: '删除',
         )) {
           await _run(() async {
@@ -910,13 +1245,17 @@ class _ContactsPageState extends State<ContactsPage>
               accessToken: widget.accessToken,
               userId: contact.user.id,
             );
-            await _reloadRelationshipLists();
-          }, success: '好友关系已删除。');
+            final contacts = await _gateway.listContacts(
+              origin: widget.origin,
+              accessToken: widget.accessToken,
+            );
+            if (mounted) setState(() => _contacts = contacts.items);
+          }, success: '已从联系人中删除，历史聊天仍保留。');
         }
       case 'block':
         if (await _confirm(
           title: '拉黑这个用户？',
-          content: '拉黑会立即删除双方好友关系，并取消双方尚未处理的好友申请。',
+          content: '拉黑后双方不能继续发送消息，同时会从联系人中移除。',
           confirmLabel: '拉黑',
         )) {
           await _run(() async {
@@ -926,7 +1265,7 @@ class _ContactsPageState extends State<ContactsPage>
               userId: contact.user.id,
             );
             await _loadListsAfterBlockChange();
-          }, success: '已拉黑并删除好友关系。');
+          }, success: '已拉黑。');
         }
     }
   }
@@ -962,7 +1301,7 @@ class _ContactsPageState extends State<ContactsPage>
                   contentPadding: EdgeInsets.zero,
                   value: starred,
                   onChanged: (value) => setDialogState(() => starred = value),
-                  title: const Text('星标好友'),
+                  title: const Text('星标联系人'),
                 ),
               ],
             ),
@@ -1030,22 +1369,10 @@ class _ContactsPageState extends State<ContactsPage>
       origin: widget.origin,
       accessToken: widget.accessToken,
     );
-    final incoming = await _gateway.listRequests(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      direction: 'incoming',
-    );
-    final outgoing = await _gateway.listRequests(
-      origin: widget.origin,
-      accessToken: widget.accessToken,
-      direction: 'outgoing',
-    );
     if (!mounted) return;
     setState(() {
       _contacts = contacts.items;
       _blocks = blocks.items;
-      _incoming = incoming.items;
-      _outgoing = outgoing.items;
     });
   }
 
@@ -1085,7 +1412,22 @@ class _ContactsPageState extends State<ContactsPage>
       _message = null;
     });
     try {
-      await action();
+      try {
+        await action();
+      } on ContactsApiException catch (error) {
+        if (error.statusCode != 401 || widget.onUnauthorized == null) rethrow;
+        final refreshedToken = await widget.onUnauthorized!.call();
+        if (refreshedToken == null ||
+            refreshedToken.trim().isEmpty ||
+            !mounted) {
+          rethrow;
+        }
+        // MainShell keeps this ContactsPage state alive across token rotation,
+        // so widget.accessToken is refreshed before the retry runs.
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+        await action();
+      }
       if (showSuccess && success != null) _setMessage(success);
     } catch (error) {
       _setMessage(_friendlyError(error), error: true);
@@ -1105,19 +1447,21 @@ class _ContactsPageState extends State<ContactsPage>
   static String _relationshipText(String relationship) =>
       switch (relationship) {
         'SELF' => '这是你自己',
-        'CONTACT' => '已经是好友',
-        'PENDING_OUTGOING' => '好友申请已发送',
-        'PENDING_INCOMING' => '对方已经向你发送好友申请',
-        _ => '尚未添加好友',
+        'CONTACT' => '已在联系人中',
+        'BLOCKED_BY_ME' => '你已将对方拉黑',
+        'BLOCKED_BY_PEER' => '对方已将你拉黑',
+        'PENDING_OUTGOING' || 'PENDING_INCOMING' => '可直接聊天，也可以添加到联系人',
+        _ => '可直接聊天',
       };
 
   static String _friendlyError(Object error) {
     if (error is ContactsApiException) {
       return switch (error.code) {
         'NOT_FOUND' => '没有找到这个用户，或当前关系不可见。',
-        'ALREADY_CONTACT' => '你们已经是好友。',
-        'RELATIONSHIP_UNAVAILABLE' => '当前关系状态不允许执行这个操作。',
-        'RELATIONSHIP_STATE_CONFLICT' => '这个好友申请已经被处理或状态已变化，请刷新。',
+        'ALREADY_CONTACT' => '已经在联系人中。',
+        'BLOCKED' => '您无法添加。',
+        'RELATIONSHIP_UNAVAILABLE' => '您无法添加。',
+        'RELATIONSHIP_STATE_CONFLICT' => '联系人状态已变化，请刷新。',
         'CONTACTS_RATE_LIMITED' => '操作过于频繁，请稍后再试。',
         'UNAUTHORIZED' => '登录会话已失效，请重新登录。',
         'FORBIDDEN' => '你没有权限操作这条关系记录。',
@@ -1184,16 +1528,21 @@ class _DirectoryAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: selected
-          ? (Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xFF363636)
-                : const Color(0xFFE1E1E1))
-          : Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: SizedBox(
-          height: 42,
+    final brightness = Theme.of(context).brightness;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      child: Material(
+        color: selected
+            ? DdDesktopTokens.selectedSurface(brightness)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          hoverColor: DdDesktopTokens.hoverSurface(brightness),
+          splashColor: Colors.transparent,
+          child: SizedBox(
+            height: 42,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
@@ -1212,6 +1561,7 @@ class _DirectoryAction extends StatelessWidget {
                     ),
                   ),
               ],
+            ),
             ),
           ),
         ),
@@ -1261,87 +1611,6 @@ class _UserCard extends StatelessWidget {
   }
 }
 
-class _RequestCard extends StatelessWidget {
-  const _RequestCard({
-    required this.request,
-    required this.incoming,
-    required this.leading,
-    required this.busy,
-    this.onAccept,
-    this.onReject,
-    this.onCancel,
-  });
-
-  final ContactRequestItem request;
-  final bool incoming;
-  final Widget leading;
-  final bool busy;
-  final VoidCallback? onAccept;
-  final VoidCallback? onReject;
-  final VoidCallback? onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    final user = incoming ? request.sender : request.receiver;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                leading,
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        user.displayName,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      Text('@${user.handle} · ${request.status}'),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            if (request.message.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(request.message),
-            ],
-            if (onAccept != null || onReject != null || onCancel != null) ...[
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (onAccept != null)
-                    FilledButton(
-                      onPressed: busy ? null : onAccept,
-                      child: const Text('接受'),
-                    ),
-                  if (onReject != null)
-                    OutlinedButton(
-                      onPressed: busy ? null : onReject,
-                      child: const Text('拒绝'),
-                    ),
-                  if (onCancel != null)
-                    OutlinedButton(
-                      onPressed: busy ? null : onCancel,
-                      child: const Text('撤销申请'),
-                    ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _EmptyState extends StatelessWidget {
   const _EmptyState({
     required this.icon,
@@ -1365,23 +1634,6 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 6),
           Text(description, textAlign: TextAlign.center),
         ],
-      ),
-    );
-  }
-}
-
-class _EmptyLine extends StatelessWidget {
-  const _EmptyLine({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Text(
-        text,
-        style: TextStyle(color: Theme.of(context).colorScheme.outline),
       ),
     );
   }

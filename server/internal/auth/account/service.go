@@ -396,6 +396,52 @@ func (service *Service) Login(ctx context.Context, raw LoginInput) (AuthSession,
 	return buildSession(userID, email, handle, displayName, deviceID, device, access, refresh), nil
 }
 
+func (service *Service) CreateTrustedSessionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID uuid.UUID,
+	rawDevice registration.DeviceInput,
+) (AuthSession, error) {
+	device, err := registration.ValidateDeviceInput(rawDevice)
+	if err != nil {
+		return AuthSession{}, err
+	}
+	var email, handle, displayName string
+	if err := tx.QueryRow(ctx, `
+		SELECT email_normalized,handle_normalized,display_name
+		FROM users
+		WHERE id=$1 AND status='ACTIVE'
+	`, userID).Scan(&email, &handle, &displayName); errors.Is(err, pgx.ErrNoRows) {
+		return AuthSession{}, ErrUnauthorized
+	} else if err != nil {
+		return AuthSession{}, fmt.Errorf("load trusted session user: %w", err)
+	}
+	now := service.now().UTC()
+	var deviceID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO devices(user_id,name,platform,app_version,created_at,last_seen_at)
+		VALUES($1,$2,$3,$4,$5,$5)
+		RETURNING id
+	`, userID, device.Name, device.Platform, device.AppVersion, now).Scan(&deviceID); err != nil {
+		return AuthSession{}, fmt.Errorf("create trusted session device: %w", err)
+	}
+	access, refresh, err := service.newTokenPair(userID, deviceID, uuid.Nil)
+	if err != nil {
+		return AuthSession{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO refresh_tokens(user_id,device_id,family_id,token_hash,issued_at,expires_at)
+		VALUES($1,$2,$3,$4,$5,$6)
+	`, userID, deviceID, refresh.FamilyID, refresh.Hash, now, refresh.ExpiresAt); err != nil {
+		return AuthSession{}, fmt.Errorf("store trusted session refresh token: %w", err)
+	}
+	return buildSession(userID, email, handle, displayName, deviceID, device, access, refresh), nil
+}
+
+func (service *Service) AuditTrustedSession(ctx context.Context, userID, deviceID uuid.UUID, eventType string) {
+	service.audit(ctx, userID, deviceID, eventType, `{}`)
+}
+
 func (service *Service) Refresh(ctx context.Context, rawRefreshToken string) (AuthSession, error) {
 	hash, err := session.HashRefreshToken(strings.TrimSpace(rawRefreshToken))
 	if err != nil {

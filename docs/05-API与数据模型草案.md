@@ -1,981 +1,1207 @@
-# API 与数据模型草案
+# DD API 与数据模型｜当前实现合同
 
-## 1. 设计原则
+> 更新时间：2026-08-11 03:36（runtime/OpenAPI/migration 全量复核）
+>
+> **重要：本文以当前 runtime handler + migration 为事实源。** `server/openapi/openapi.json` 已由 `TestOpenAPIFormalRuntimeSurface` 锁定正式 path/method，新增正式 HTTP 路由必须同步合同；WebSocket/兼容实验面仍单独说明。
 
-- REST API 统一使用 `/api/v1`。
-- 请求和响应字段使用 `camelCase`。
-- 数据库字段使用 `snake_case`。
-- ID 使用 UUIDv7 或等价有序高熵 ID，不使用可枚举自增 ID 暴露给客户端。
-- 所有写接口支持幂等、乐观锁或明确冲突语义。
-- 列表接口使用游标分页，消息历史不使用易漂移的页码分页。
-- 错误响应统一格式。
-- API 合同以 OpenAPI 为准，客户端代码从合同生成或严格校验。
-- WebSocket 事件只用于实时通知，权威状态仍由同步 API 提供。
+---
 
-## 2. 通用响应
+# 1. API 基础约定
 
-### 成功
-
-```json
-{
-  "data": {},
-  "requestId": "req_01..."
-}
-```
-
-### 错误
-
-```json
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "请求参数无效",
-    "details": {
-      "field": "email"
-    },
-    "requestId": "req_01..."
-  }
-}
-```
-
-### 游标分页
-
-```json
-{
-  "data": [],
-  "pagination": {
-    "nextCursor": "cursor_xxx",
-    "hasMore": true
-  },
-  "requestId": "req_01..."
-}
-```
-
-## 3. 核心 API 草案
-
-## 3.1 实例发现
+正式业务前缀：
 
 ```text
-GET  /.well-known/openimx/client
-GET  /api/v1/instance
-GET  /api/v1/instance/registration-policy
+/api/v1
 ```
 
-用途：客户端输入实例域名后读取 API、WebSocket、媒体、LiveKit 和功能开关。
+正式 Calls 已使用：
+
+```text
+/api/v1/calls
+```
+
+旧 `/api/calls...` 只保留历史/兼容语义，不再作为新客户端合同。
+
+Realtime：
+
+```text
+/api/v1/realtime     正式鉴权 WebSocket
+/ws                  历史兼容 PoC WebSocket
+```
+
+默认开发 API 端口：
+
+```text
+18473
+```
+
+---
+
+# 2. HTTP 通用约定
+
+## 2.1 Content-Type
+
+写操作 JSON：
+
+```http
+Content-Type: application/json
+```
+
+上传对象本体不经过普通 JSON API，而走 presigned object storage PUT。
+
+## 2.2 鉴权
+
+正式用户 API 使用 Access Token。
+
+服务端从 Token 构造 Principal：
+
+```text
+userId
+deviceId
+```
+
+客户端请求体中的 userId 不能替代 Principal。
+
+## 2.3 错误
+
+业务错误返回稳定 code + message。
+
+隐私边界允许使用 404 隐藏“存在但不可见”的资源，例如 block 关系中的公开用户资料。
+
+---
+
+# 3. 当前 runtime 路由总表
+
+以下来自当前 `server/internal/httpapi/server.go` 与对应 handler。
+
+## 3.1 Discovery / Health
+
+| Method | Path | 状态 | 说明 |
+|---|---|---|---|
+| GET | `/.well-known/openimx/client` | 正式基础 | 客户端发现 |
+| GET | `/api/v1/instance` | 正式 | 实例元数据 |
+| GET | `/api/v1/system/live` | 正式 | 进程存活 |
+| GET | `/api/v1/system/ready` | 正式 | 依赖 readiness |
+| GET | `/api/v1/system/version` | 正式 | 版本 |
+| GET | `/health` `/live` `/ready` `/version` | 兼容 | 历史别名 |
 
 ## 3.2 Auth
 
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/v1/auth/register/email/send-code` | 发送注册验证码 |
+| POST | `/api/v1/auth/register` | 注册 |
+| POST | `/api/v1/auth/login` | 登录 |
+| POST | `/api/v1/auth/token/refresh` | Refresh rotation |
+| POST | `/api/v1/auth/password/reset/send-code` | 密码重置验证码 |
+| POST | `/api/v1/auth/password/reset` | 重置密码 |
+| POST | `/api/v1/auth/logout-all` | 全部设备退出 |
+
+## 3.3 Me / Device
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/me` | 当前账号资料 |
+| PATCH | `/api/v1/me` | 修改资料 |
+| POST | `/api/v1/me/email/send-code` | 新邮箱验证码 |
+| PATCH | `/api/v1/me/email` | 邮箱改绑 |
+| PUT | `/api/v1/me/avatar` | 上传/替换头像 |
+| DELETE | `/api/v1/me/avatar` | 删除头像 |
+| GET | `/api/v1/avatars/{userId}` | 读取可见头像 |
+| GET | `/api/v1/devices` | 设备列表 |
+| DELETE | `/api/v1/devices/{deviceId}` | 撤销设备 |
+
+## 3.4 User / Contacts
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/users/by-handle/{handle}` | DDID 精确查询 |
+| GET | `/api/v1/users/{userId}` | stable userId 公开资料 + relationship |
+| GET | `/api/v1/users/mention-suggestions` | Mention 建议 |
+| GET | `/api/v1/contact-requests` | 收/发好友申请分页 |
+| POST | `/api/v1/contact-requests` | 发送好友申请 |
+| POST | `/api/v1/contact-requests/{requestId}/accept` | 同意 |
+| POST | `/api/v1/contact-requests/{requestId}/reject` | 拒绝 |
+| DELETE | `/api/v1/contact-requests/{requestId}` | 取消自己的申请 |
+| GET | `/api/v1/contacts` | 联系人分页 |
+| PUT | `/api/v1/contacts/{userId}` | 直接添加联系人业务入口（受状态约束） |
+| PATCH | `/api/v1/contacts/{userId}` | 备注/标签/星标 |
+| DELETE | `/api/v1/contacts/{userId}` | 删除联系人 |
+| GET | `/api/v1/blocks` | 黑名单 |
+| POST | `/api/v1/blocks` | 拉黑 |
+| DELETE | `/api/v1/blocks/{userId}` | 解除拉黑 |
+
+## 3.4.1 Group
+
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/v1/groups` | 创建群聊并邀请初始联系人 |
+| GET | `/api/v1/groups/{groupId}` | 群资料 |
+| PATCH | `/api/v1/groups/{groupId}` | 群名称/公告/入群策略 |
+| DELETE | `/api/v1/groups/{groupId}` | 群主解散群聊 |
+| GET | `/api/v1/groups/{groupId}/members` | 活跃成员列表 |
+| POST | `/api/v1/groups/{groupId}/members` | Owner/Admin 邀请联系人 |
+| PATCH | `/api/v1/groups/{groupId}/members/{userId}` | 管理员角色或本人群昵称 |
+| DELETE | `/api/v1/groups/{groupId}/members/{userId}` | 移出成员 |
+| POST | `/api/v1/groups/{groupId}/leave` | 非群主退出 |
+| POST | `/api/v1/groups/{groupId}/transfer` | 群主转让 |
+| GET/POST | `/api/v1/groups/{groupId}/join-requests` | 审批列表/申请入群 |
+| POST | `/api/v1/groups/{groupId}/join-requests/{requestId}/approve` | 通过申请 |
+| POST | `/api/v1/groups/{groupId}/join-requests/{requestId}/reject` | 拒绝申请 |
+
+`groupId == conversationId`。群聊消息不另建平行协议，继续复用 Messaging/Outbox/Sync/read/unread/media/sticker/mention；成员 `status != ACTIVE` 后服务端消息读写授权立即失效。
+
+## 3.5 Conversation / Messaging
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/conversations` | 会话列表 |
+| POST | `/api/v1/conversations/direct` | 确保 DIRECT 会话 |
+| GET | `/api/v1/conversations/{conversationId}` | 会话详情 |
+| DELETE | `/api/v1/conversations/{conversationId}` | 当前用户本地隐藏会话 |
+| GET | `/api/v1/conversations/{conversationId}/messages` | 历史消息 |
+| POST | `/api/v1/conversations/{conversationId}/messages` | 发送消息 |
+| POST | `/api/v1/conversations/{conversationId}/read` | 标记已读 |
+| PATCH | `/api/v1/conversations/{conversationId}/preferences` | pin/mute/archive 等偏好 |
+| GET | `/api/v1/conversations/{conversationId}/pinned-messages` | 会话置顶消息 |
+| GET | `/api/v1/messages/{messageId}` | 单条消息 |
+| PATCH | `/api/v1/messages/{messageId}` | 编辑 TEXT |
+| POST | `/api/v1/messages/{messageId}/recall` | 撤回 |
+| DELETE | `/api/v1/messages/{messageId}/local` | 仅本地删除 |
+| PUT | `/api/v1/messages/{messageId}/save` | 收藏 |
+| DELETE | `/api/v1/messages/{messageId}/save` | 取消收藏 |
+| PUT | `/api/v1/messages/{messageId}/pin` | 置顶消息 |
+| DELETE | `/api/v1/messages/{messageId}/pin` | 取消置顶 |
+| POST | `/api/v1/messages/{messageId}/forward` | 转发 |
+| GET | `/api/v1/messages/search` | 消息搜索 |
+| PUT | `/api/v1/saved-messages/conversation` | 确保 SELF 会话 |
+| GET | `/api/v1/saved-messages` | 传统收藏列表 |
+| GET | `/api/v1/sync` | cursor sync |
+
+## 3.6 Media
+
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/v1/media/uploads` | reserve 上传 |
+| POST | `/api/v1/media/uploads/{uploadId}/complete` | 完成确认 |
+| GET | `/api/v1/media/{mediaId}` | 媒体 metadata |
+| POST | `/api/v1/media/{mediaId}/download-url` | 授权并签短期下载 URL |
+
+## 3.7 Sticker
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/stickers/custom` | 自定义 Sticker 列表 |
+| POST | `/api/v1/stickers/custom` | 把 READY media 加入个人库 |
+| DELETE | `/api/v1/stickers/custom` | 删除个人库项（请求体指定 IDs） |
+| PUT | `/api/v1/stickers/custom/order` | 重排 |
+| GET | `/api/v1/stickers/packs` | 已订阅 Telegram packs |
+| POST | `/api/v1/stickers/packs/telegram` | import/subscribe setName |
+| DELETE | `/api/v1/stickers/packs/{packId}` | unsubscribe |
+
+## 3.8 Moments
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/moments` | 当前用户可见 Feed |
+| POST | `/api/v1/moments` | 发布文字/最多 9 图/单视频 Moment |
+| GET | `/api/v1/moments/{momentId}` | 读取当前仍可见的单条动态 |
+| DELETE | `/api/v1/moments/{momentId}` | 作者删除动态 |
+| PUT/DELETE | `/api/v1/moments/{momentId}/like` | 点赞/取消点赞 |
+| POST | `/api/v1/moments/{momentId}/comments` | 评论/回复 |
+| DELETE | `/api/v1/moments/{momentId}/comments/{commentId}` | 删除有权删除的评论 |
+| GET | `/api/v1/moment-preferences` | 长期朋友圈关系隐私偏好 |
+| PATCH | `/api/v1/moment-preferences/{userId}` | 设置/清除“不看他/不让他看” |
+
+可见性由服务端重新计算好友关系、Block、relationship preference 与单条 `ALL_CONTACTS/PRIVATE/EXCLUDE`，客户端隐藏不构成安全边界。
+
+## 3.9 QR
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/qr/me` | 当前账号实例绑定个人 QR payload |
+| POST | `/api/v1/group-qr-invites` | Owner/Admin 创建群邀请二维码 |
+| DELETE | `/api/v1/group-qr-invites/{inviteId}` | 撤销群邀请二维码 |
+| POST | `/api/v1/group-qr/redeem` | 当前账号消费群邀请码 |
+| POST | `/api/v1/qr-login` | PC/Web 创建短期登录 challenge |
+| POST | `/api/v1/qr-login/status` | 按 nonce 查询 challenge 状态 |
+| POST | `/api/v1/qr-login/scan` | 已登录移动设备扫描并绑定 scanner |
+| POST | `/api/v1/qr-login/confirm` | scanner 设备确认/拒绝 |
+| POST | `/api/v1/qr-login/consume` | 目标设备一次消费并获取新 Session |
+
+QR secret 通过 POST body 传输；登录 nonce 数据库只存 SHA-256。群 invite redeem 与 `use_count` 更新同事务；登录 Session 创建与 challenge consume 同事务。
+
+## 3.10 Realtime
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET Upgrade | `/api/v1/realtime` | 正式鉴权 WebSocket |
+| GET Upgrade | `/ws` | 历史 PoC 兼容 |
+
+## 3.11 Calls（正式）
+
+| Method | Path | 说明 |
+|---|---|---|
+| POST | `/api/v1/calls` | Bearer Principal 发起一对一 audio/video call |
+| GET | `/api/v1/calls/active` | 当前 authenticated device 恢复 active call |
+| POST | `/api/v1/calls/{callId}/actions` | accept/reject/cancel/end 等状态动作 |
+| POST | `/api/v1/calls/{callId}/token` | 胜出/有权控制设备获取 scoped LiveKit token |
+
+正式语义：caller identity/device 由 Access Token Principal 决定；callee 必须是联系人且双方未 Block；状态持久化 PostgreSQL；callee 多设备第一台 accept 后独占媒体控制。旧 `/api/calls...` 只属于兼容/历史实验面。
+
+---
+
+# 4. OpenAPI 当前状态
+
+R16 之后合同继续随 P6-P9 扩展：`TestOpenAPIFormalRuntimeSurface` 当前锁定 Groups、Moments、Formal Calls、Group QR 与 QR Login 等正式 path + method；Redocly `recommended-strict` 最近复核通过。
+
+显式不纳入正式 OpenAPI 的主要是：
+
+- 兼容 health alias；
+- WebSocket upgrade 入口；
+- 旧 `/api/calls...` 兼容/历史实验面。
+
+P10 Push 目前没有正式 runtime API，因此 `000022_push.up.sql` 里的表不能被误写成“已有 Push API”。
+
+---
+
+# 5. 核心数据模型
+
+以下按 migration 当前最终状态描述。
+
+---
+
+## 5.1 `users`
+
+核心字段：
+
 ```text
-POST /api/v1/auth/register/email/send-code
-POST /api/v1/auth/register
-POST /api/v1/auth/login
-POST /api/v1/auth/token/refresh
-POST /api/v1/auth/logout
-POST /api/v1/auth/logout-all
-POST /api/v1/auth/password/forgot
-POST /api/v1/auth/password/reset
-POST /api/v1/auth/totp/setup
-POST /api/v1/auth/totp/verify
-DELETE /api/v1/auth/totp
+id uuid PK
+email_normalized
+email_verified_at
+handle_normalized
+display_name
+avatar_media_id
+bio
+status
+created_at
+updated_at
+deleted_at
 ```
 
-注册请求：
+约束：
+
+```text
+handle_normalized ~ ^[a-z][a-z0-9_]{2,31}$
+status IN ACTIVE/SUSPENDED/DELETING/DELETED
+```
+
+外部产品名称统一叫 DDID；底层字段仍可保留 `handle`。
+
+---
+
+## 5.2 `user_privacy_settings`
+
+一用户一行。
+
+未来承载：
+
+- 通过 DDID 查找开关。
+- 陌生人消息策略。
+- 通知预览。
+- 朋友圈可见策略等。
+
+当前具体字段以 migration 为准。
+
+---
+
+## 5.3 `auth_passwords`
+
+```text
+user_id PK/FK
+password_hash
+updated_at
+```
+
+密码只存 Argon2id hash。
+
+---
+
+## 5.4 `devices`
+
+平台：
+
+```text
+ANDROID
+IOS
+WINDOWS
+MACOS
+LINUX
+WEB
+```
+
+记录：
+
+- user owner。
+- device name/platform。
+- last seen。
+- revoked state。
+- future identity key columns。
+
+---
+
+## 5.5 `refresh_tokens`
+
+核心：
+
+```text
+id
+user_id
+device_id
+token_hash
+parent_token_id
+family_id
+issued_at
+expires_at
+revoked_at
+revocation_reason
+```
+
+支持 rotation 与 family replay response。
+
+---
+
+## 5.6 `email_codes`
+
+purpose：
+
+```text
+REGISTER
+PASSWORD_RESET
+CHANGE_EMAIL
+```
+
+记录 hash、attempts、expires、consumed。
+
+---
+
+## 5.7 Auth security tables
+
+```text
+auth_login_attempts
+auth_audit_events
+```
+
+用于登录限流与认证操作审计。
+
+---
+
+# 6. 联系人数据
+
+## 6.1 `contact_requests`
+
+```text
+sender_user_id
+receiver_user_id
+status
+message
+created_at
+expires_at
+resolved_at
+```
+
+状态：
+
+```text
+PENDING
+ACCEPTED
+REJECTED
+CANCELLED
+EXPIRED
+```
+
+禁止 self request。
+
+## 6.2 `contacts`
+
+有方向记录：
+
+```text
+owner_user_id
+contact_user_id
+remark
+starred
+created_at
+updated_at
+```
+
+好友建立时通常生成双方两行。
+
+## 6.3 `contact_tags`
+
+复合 FK 到 owner/contact pair。
+
+## 6.4 `blocks`
+
+```text
+owner_user_id
+blocked_user_id
+created_at
+```
+
+禁止 self block。
+
+## 6.5 `relationship_rate_events`
+
+当前 scope 至少：
+
+```text
+HANDLE_SEARCH
+CONTACT_REQUEST
+```
+
+Mention suggestion 当前也有服务层 rate limiting；如其持久化 scope 与 migration 不一致，后续应统一 migration/实现。
+
+---
+
+# 7. Conversation 数据
+
+## 7.1 `conversations`
+
+当前 type：
+
+```text
+DIRECT
+GROUP
+SELF
+```
+
+关键：
+
+```text
+id
+type
+direct_pair_key
+last_sequence
+last_message_id
+created_at
+updated_at
+```
+
+`GROUP` 已由 P6 正式实现：`groups` 元数据与 `conversation_members` 共同构成群生命周期；正式 Messaging 直接把 GROUP 当 conversation 授权和同步，不另造第二套消息系统。
+
+## 7.2 `conversation_members`
+
+关键：
+
+```text
+conversation_id
+user_id
+role
+status
+joined_at
+left_at
+last_read_sequence
+muted_until
+is_pinned
+archived_at
+hidden_through_sequence
+```
+
+角色：
+
+```text
+MEMBER
+ADMIN
+OWNER
+```
+
+状态：
+
+```text
+ACTIVE
+LEFT
+REMOVED
+```
+
+---
+
+## 7.3 Group 元数据（migration `000017_groups`）
+
+### `groups`
+
+```text
+conversation_id PK/FK -> conversations.id
+name
+announcement
+join_mode = INVITE_ONLY | APPROVAL
+created_by_user_id
+status = ACTIVE | DISSOLVED
+created_at / updated_at / dissolved_at
+```
+
+### `group_member_profiles`
+
+```text
+conversation_id + user_id PK/FK -> conversation_members
+nickname
+updated_at
+```
+
+群昵称只允许成员修改自己的值；角色继续以 `conversation_members.role` 为唯一权威来源。
+
+### `group_join_requests`
+
+```text
+id
+conversation_id
+requester_user_id
+message
+status = PENDING | APPROVED | REJECTED | CANCELLED
+created_at / resolved_at / resolved_by_user_id
+```
+
+每用户每群最多 1 个 PENDING；审批时重新验证 requester 仍 ACTIVE、容量未超限、与当前群主不存在 block，避免申请后状态变化产生 TOCTOU 绕过。
+
+# 8. Message 数据
+
+## 8.1 `messages`
+
+最终 message type：
+
+```text
+TEXT
+IMAGE
+GIF
+STICKER
+FILE
+VOICE
+VIDEO
+SYSTEM
+ENCRYPTED
+```
+
+核心字段：
+
+```text
+id
+conversation_id
+sequence
+sender_user_id
+sender_device_id
+client_message_id
+type
+content_json
+ciphertext
+reply_to_message_id
+forwarded_from_message_id
+created_at
+edited_at
+edit_version
+recalled_at
+deleted_at
+```
+
+### `client_message_id`
+
+按发送设备形成幂等键，不能随 retry 改变业务语义。
+
+### `sequence`
+
+每会话单调递增，已读、历史分页、Sync 都依赖它。
+
+### `edited_at/edit_version`
+
+`000014_message_editing` 新增。
+
+---
+
+## 8.2 `message_media`
+
+```text
+message_id
+media_id
+role
+```
+
+角色：
+
+```text
+PRIMARY
+THUMBNAIL
+```
+
+---
+
+## 8.3 `message_local_deletions`
+
+```text
+user_id
+message_id
+```
+
+只影响单用户可见性。
+
+---
+
+# 9. Messaging Productivity
+
+## 9.1 `saved_messages`
+
+传统 bookmark 表：
+
+```text
+user_id
+message_id
+saved_at
+migrated_message_id
+```
+
+`000013` 后增加 `migrated_message_id`，用于向 SELF Saved Messages 体验迁移。
+
+## 9.2 SELF conversation
+
+`000013` 增加 `SELF` conversation type。
+
+SELF 是真正可写会话，不只是收藏索引。
+
+## 9.3 `conversation_pinned_messages`
+
+```text
+conversation_id
+message_id
+pinned_by_user_id
+pinned_at
+```
+
+## 9.4 `forwarded_from_message_id`
+
+`messages` 上的自引用，源消息删除后 `SET NULL`。
+
+---
+
+# 10. Outbox 与 Sync
+
+## 10.1 `outbox_events`
+
+aggregate type 当前：
+
+```text
+MESSAGE
+CONVERSATION
+RELATIONSHIP
+```
+
+核心字段：
+
+```text
+aggregate_type
+aggregate_id
+conversation_id
+target_user_id
+sequence
+payload
+available_at
+attempts
+published_at
+```
+
+## 10.2 `sync_events`
+
+每用户一份可按 cursor 增量读取的事件。
+
+核心：
+
+```text
+cursor
+user_id
+source_outbox_id
+conversation_id
+sequence
+event_type
+payload
+created_at
+```
+
+---
+
+# 11. 媒体数据
+
+## 11.1 `media_objects`
+
+核心：
+
+```text
+id
+owner_user_id (000016 后可 NULL，provider shared media 使用)
+purpose
+original_name
+mime_type
+size_bytes
+sha256
+storage_key
+status
+encryption_mode
+created_at
+ready_at
+```
+
+purpose 当前：
+
+```text
+CHAT_IMAGE
+CHAT_FILE
+CHAT_VOICE
+CHAT_VIDEO
+STICKER
+GIF
+```
+
+status：
+
+```text
+UPLOADING
+READY
+QUARANTINED
+FAILED
+DELETED
+```
+
+encryption mode：
+
+```text
+NONE
+E2EE
+```
+
+`E2EE` 只是媒体协议预留。
+
+## 11.2 `media_uploads`
+
+保存 reservation：
+
+```text
+media_id
+owner_user_id
+expected_size
+expected_sha256
+expires_at
+completed_at
+```
+
+## 11.3 `media_variants`
+
+为 thumbnail/transcode 等变体预留；当前视频 Poster 主链更多通过独立 media + `message_media.THUMBNAIL` 表达。
+
+---
+
+# 12. Sticker 数据
+
+由 `000016_stickers` 引入。
+
+## 12.1 `custom_stickers`
+
+```text
+id
+owner_user_id
+media_id
+width
+height
+mime_type
+size_bytes
+sort_order
+created_at
+```
+
+MIME：
+
+```text
+image/png
+image/webp
+image/gif
+```
+
+## 12.2 `telegram_sticker_packs`
+
+```text
+id
+set_name
+title
+cover_media_id
+supported_sticker_count
+unsupported_sticker_count
+...
+```
+
+`set_name`：
+
+```text
+^[A-Za-z0-9_]{1,64}$
+```
+
+## 12.3 `telegram_sticker_items`
+
+当前正式缓存只接受：
+
+```text
+image/webp
+```
+
+每 item 保存 provider source identity、DD mediaId、尺寸、size、sort。
+
+## 12.4 `user_sticker_packs`
+
+用户订阅与全局 pack metadata 分离。
+
+## 12.5 `sticker_rate_events`
+
+当前 scope：
+
+```text
+TELEGRAM_IMPORT
+```
+
+---
+
+# 13. P7 Calls 数据（migrations `000018_calls` + `000020_calls_conversation`）
+
+### `calls`
+
+核心字段：
+
+```text
+id
+caller_user_id
+callee_user_id
+caller_device_id
+answered_device_id
+conversation_id
+room_name
+kind = audio | video
+status = ringing | accepted | rejected | ended
+created_at
+ring_expires_at
+accepted_at
+ended_at
+end_reason
+version
+```
+
+重要约束：
+
+- caller/callee 不能相同；
+- caller device 固定；
+- accepted 必须有 `answered_device_id`；
+- 终态必须有 `ended_at/end_reason`；
+- `conversation_id` 在 `000020` 中回填并设为 NOT NULL；
+- 历史没有 DIRECT conversation 的 Call pair 只补 conversation 容器，不凭空制造联系人关系。
+
+---
+
+# 14. P8 Moments 数据（migration `000019_moments`）
+
+正式表：
+
+```text
+moments
+moment_media
+moment_visibility_users
+moment_likes
+moment_comments
+moment_relationship_preferences
+```
+
+`moments.visibility`：
+
+```text
+ALL_CONTACTS
+PRIVATE
+EXCLUDE
+```
+
+`moment_media.sort_order` 限 0..8，即一条 Moment 最多 9 个媒体引用；当前产品约束为最多 9 图或单视频。媒体 purpose 已扩展 `MOMENT_IMAGE/MOMENT_VIDEO`。
+
+Feed/单条读取不能只按表存在返回，必须重新计算 contact、Block、长期 preference 和单条 audience。
+
+---
+
+# 15. P9 QR 数据（migration `000021_qr`）
+
+### `qr_login_sessions`
+
+```text
+id
+nonce_hash          bytea(32) unique
+target_origin
+requested_device_name
+requested_platform
+requested_app_version
+status = PENDING | SCANNED | CONFIRMED | REJECTED | CONSUMED | EXPIRED
+scanned_user_id
+scanned_device_id
+created_at/expires_at/scanned_at/confirmed_at/consumed_at
+```
+
+原始登录 nonce 不落库，只保存 SHA-256。确认用户/设备与扫码时绑定；消费后不可再次签发 Session。
+
+### `group_qr_invites`
+
+```text
+id
+group_id
+created_by_user_id
+nonce_hash          bytea(32) unique
+created_at/expires_at/revoked_at
+use_count
+max_uses
+```
+
+群邀请码消费必须在事务内同时完成 invite 状态/次数检查、Group 成员写入、Group Outbox 和 `use_count`。
+
+---
+
+# 16. P10 Push 数据（`000022_push.up.sql`，IN-PROGRESS）
+
+当前已出现 **up/down 成对 migration，但仍处于 P10 开发阶段**：
+
+```text
+user_notification_preferences
+device_push_endpoints
+push_jobs
+```
+
+### `user_notification_preferences`
+
+```text
+push_enabled
+preview_mode = FULL | SENDER_ONLY | HIDDEN
+```
+
+### `device_push_endpoints`
+
+```text
+device_id
+provider = FCM | APNS | UNIFIEDPUSH
+endpoint
+endpoint_hash
+app_id
+environment = PRODUCTION | SANDBOX
+status = ACTIVE | INVALID | DISABLED
+failure_count
+last_success_at/last_failure_at/last_failure_code
+```
+
+### `push_jobs`
+
+```text
+recipient_user_id
+event_type
+resource_id
+conversation_id
+actor_user_id
+dedupe_key
+payload_json
+status = PENDING | SENT | DROPPED
+attempts
+available_at
+last_error
+created_at/sent_at
+```
+
+当前 `000022_push.up.sql` / `000022_push.down.sql` 已形成 migration 对，但尚无 Push domain/API/Worker/provider，因此这里只记录进行中的 schema，不是正式稳定合同。
+
+---
+
+# 17. Avatar 数据
+
+当前头像表：
+
+```text
+profile_avatars
+```
+
+当前仍保存头像 bytes 与 MIME/size 等到 PostgreSQL。
+
+这是过渡实现；长期目标迁入统一媒体对象存储，避免 DB 大量 bytea。
+
+迁移前必须保证：
+
+- 旧头像 URL/API 兼容。
+- 用户资料和通知头像不失效。
+- 原子切换与回滚。
+
+---
+
+# 18. 典型 Message JSON
+
+以下是概念级合同，字段以实际 models/OpenAPI 为准。
+
+## 18.1 TEXT
 
 ```json
 {
-  "email": "user@example.com",
-  "code": "123456",
-  "password": "strong-password",
-  "handle": "liang",
-  "displayName": "良",
-  "inviteCode": null,
-  "device": {
-    "name": "DD Windows",
-    "platform": "WINDOWS",
-    "appVersion": "0.5.0"
-  }
-}
-```
-
-登录响应：
-
-```json
-{
-  "data": {
-    "user": {},
-    "device": {},
-    "tokens": {
-      "accessToken": "short-lived-token",
-      "accessExpiresAt": "2026-08-08T02:00:00Z",
-      "refreshToken": "native-client-only",
-      "refreshExpiresAt": "2026-09-07T02:00:00Z"
-    }
-  },
-  "requestId": "req_01..."
-}
-```
-
-Web 客户端 Refresh Token 不返回 JSON，使用 `HttpOnly + SameSite=Lax` Cookie；正式 HTTPS 部署同时启用 `Secure`。浏览器客户端请求使用 credentials，CORS 只对实例白名单 Origin 返回 `Access-Control-Allow-Credentials: true`。
-
-> 2026-08-08 实现状态：`register/email/send-code`、`register`、`login`、`token/refresh`、密码找回、设备管理、`logout-all`、资料/隐私和头像链均已进入正式 `/api/v1` 合同；注册事务、Argon2id、Access Token、Refresh Token 轮换与 Token Family 重放撤销已落地。TOTP / 2FA 仍属于后续 P2。
-
-## 3.3 Devices
-
-```text
-GET    /api/v1/devices
-GET    /api/v1/devices/{deviceId}
-PATCH  /api/v1/devices/{deviceId}
-DELETE /api/v1/devices/{deviceId}
-POST   /api/v1/devices/{deviceId}/verify
-POST   /api/v1/devices/push-token
-POST   /api/v1/devices/keys/prekeys
-GET    /api/v1/users/{userId}/devices/keys
-```
-
-## 3.4 Users
-
-```text
-GET    /api/v1/me
-PATCH  /api/v1/me
-PUT    /api/v1/me/avatar
-DELETE /api/v1/me/avatar
-GET    /api/v1/avatars/{userId}
-GET    /api/v1/users/by-handle/{handle}
-POST   /api/v1/me/export
-POST  /api/v1/me/deletion-request
-DELETE /api/v1/me/deletion-request
-```
-
-搜索不提供无上限 `GET /users?q=`，避免账号枚举。模糊搜索需单独权限、限流和最小查询长度。
-
-头像当前阶段采用 `000006_profile_avatars`：原图直接存 PostgreSQL `bytea`，单文件最大 2 MiB，仅允许 JPEG / PNG / WebP，并同时检查 `Content-Type`、文件格式与画布尺寸；最大 2048×2048 且约 4MP，SVG、伪造 MIME 和超大像素图片拒绝。`GET /api/v1/avatars/{userId}` 需要登录并返回私有缓存 ETag。该实现用于在 P5 对象存储/缩略图/EXIF 清理正式管线完成前提供可用头像能力；P5 落地后应迁移存量头像资源，但保持客户端头像读取接口兼容。
-
-## 3.5 Contacts
-
-```text
-GET    /api/v1/users/by-handle/{handle}
-GET    /api/v1/contacts?page=1&pageSize=50
-GET    /api/v1/contact-requests?direction=incoming|outgoing&page=1&pageSize=50
-POST   /api/v1/contact-requests
-POST   /api/v1/contact-requests/{requestId}/accept
-POST   /api/v1/contact-requests/{requestId}/reject
-DELETE /api/v1/contact-requests/{requestId}
-PATCH  /api/v1/contacts/{userId}
-DELETE /api/v1/contacts/{userId}
-POST   /api/v1/blocks
-DELETE /api/v1/blocks/{userId}
-GET    /api/v1/blocks?page=1&pageSize=50
-```
-
-当前正式实现规则：
-
-- Handle 只做精确搜索；不返回邮箱。
-- 任一方向存在 block 时，Handle 搜索统一按 `404 NOT_FOUND` 处理，避免泄露“被谁拉黑”。
-- 搜索默认每用户 10 分钟最多 60 次；发送新好友申请默认每用户 24 小时最多 30 次。
-- 同方向重复 PENDING 申请幂等返回原记录。
-- 反方向存在 PENDING 时，新申请会原子接受已有申请并建立好友关系。
-- 接受申请时双向 contacts 与 DIRECT conversation 创建/复用在同一事务完成。
-- 删除好友删除双方 contacts，但保留逻辑私聊会话和后续历史消息语义。
-- 拉黑会删除双方 contacts 并取消双方 PENDING 申请。
-
-## 3.6 Conversations
-
-```text
-GET   /api/v1/conversations
-POST  /api/v1/conversations/direct
-GET   /api/v1/conversations/{conversationId}
-PATCH /api/v1/conversations/{conversationId}/preferences
-POST  /api/v1/conversations/{conversationId}/read
-```
-
-创建私聊必须幂等；同一对用户返回同一逻辑私聊会话。
-
-## 3.7 Messages
-
-```text
-GET    /api/v1/conversations/{conversationId}/messages?beforeSequence=1000&limit=50
-POST   /api/v1/conversations/{conversationId}/messages
-POST   /api/v1/messages/{messageId}/recall
-DELETE /api/v1/messages/{messageId}/local
-POST   /api/v1/messages/{messageId}/forward
-GET    /api/v1/messages/{messageId}
-```
-
-发送明文消息示例：
-
-```json
-{
-  "clientMessageId": "01H...",
+  "clientMessageId": "device-stable-idempotency-key",
   "type": "TEXT",
   "content": {
-    "text": "你好"
+    "text": "hello @alice"
   },
   "replyToMessageId": null
 }
 ```
 
-发送 E2EE 消息示例：
+服务端保存时可扩展 authoritative entities：
 
 ```json
 {
-  "clientMessageId": "01H...",
-  "type": "ENCRYPTED",
-  "encryptedEnvelopes": [
+  "text": "hello @alice",
+  "entities": [
     {
-      "recipientDeviceId": "dev_...",
-      "ciphertext": "base64...",
-      "protocolVersion": 1
+      "type": "MENTION_USER",
+      "offset": 6,
+      "length": 6,
+      "userId": "stable-uuid"
     }
-  ],
-  "metadata": {
-    "contentClass": "MESSAGE"
+  ]
+}
+```
+
+## 18.2 IMAGE
+
+```json
+{
+  "type": "IMAGE",
+  "content": {
+    "mediaId": "uuid",
+    "width": 1080,
+    "height": 1440
   }
 }
 ```
 
-服务端不得信任客户端传入的 senderUserId、senderDeviceId 或 sequence。
-
-## 3.8 Groups
-
-```text
-POST   /api/v1/groups
-GET    /api/v1/groups/{groupId}
-PATCH  /api/v1/groups/{groupId}
-DELETE /api/v1/groups/{groupId}
-GET    /api/v1/groups/{groupId}/members
-POST   /api/v1/groups/{groupId}/members
-PATCH  /api/v1/groups/{groupId}/members/{userId}
-DELETE /api/v1/groups/{groupId}/members/{userId}
-POST   /api/v1/groups/{groupId}/leave
-POST   /api/v1/groups/{groupId}/transfer-owner
-POST   /api/v1/groups/{groupId}/announcements
-```
-
-## 3.9 Media
-
-```text
-POST /api/v1/media/uploads
-POST /api/v1/media/uploads/{uploadId}/complete
-GET  /api/v1/media/{mediaId}
-POST /api/v1/media/{mediaId}/download-url
-DELETE /api/v1/media/{mediaId}
-```
-
-申请上传：
+## 18.3 VOICE
 
 ```json
 {
-  "fileName": "photo.jpg",
-  "size": 123456,
-  "mimeType": "image/jpeg",
-  "sha256": "...",
-  "purpose": "CHAT_IMAGE"
-}
-```
-
-返回：
-
-```json
-{
-  "data": {
-    "uploadId": "upl_...",
-    "uploadUrl": "short-lived-signed-url",
-    "expiresAt": "2026-08-07T03:00:00Z",
-    "requiredHeaders": {}
+  "type": "VOICE",
+  "content": {
+    "mediaId": "uuid",
+    "durationMs": 14220
   }
 }
 ```
 
-## 3.10 Calls
-
-```text
-POST /api/v1/calls
-GET  /api/v1/calls/{callId}
-POST /api/v1/calls/{callId}/accept
-POST /api/v1/calls/{callId}/reject
-POST /api/v1/calls/{callId}/end
-POST /api/v1/calls/{callId}/livekit-token
-GET  /api/v1/calls/history
-```
-
-服务端签发的 LiveKit Token：
-
-- 短时有效。
-- 限定房间。
-- 限定身份。
-- 限定发布/订阅权限。
-
-## 3.11 Moments
-
-```text
-GET    /api/v1/moments/feed
-POST   /api/v1/moments
-GET    /api/v1/moments/{momentId}
-DELETE /api/v1/moments/{momentId}
-POST   /api/v1/moments/{momentId}/likes
-DELETE /api/v1/moments/{momentId}/likes/me
-POST   /api/v1/moments/{momentId}/comments
-DELETE /api/v1/moment-comments/{commentId}
-POST   /api/v1/moments/{momentId}/report
-```
-
-## 3.12 QR
-
-```text
-POST /api/v1/qr/profile
-POST /api/v1/qr/group-invite
-POST /api/v1/qr/login/sessions
-GET  /api/v1/qr/login/sessions/{sessionId}
-POST /api/v1/qr/login/sessions/{sessionId}/scan
-POST /api/v1/qr/login/sessions/{sessionId}/confirm
-POST /api/v1/qr/login/sessions/{sessionId}/cancel
-POST /api/v1/qr/resolve
-```
-
-## 3.13 Sync
-
-```text
-GET /api/v1/sync?cursor=<cursor>&limit=500
-GET /api/v1/conversations/{conversationId}/sync?afterSequence=100
-```
-
-同步事件示例：
+## 18.4 VIDEO
 
 ```json
 {
-  "eventId": "evt_...",
-  "cursor": "cur_...",
-  "type": "MESSAGE_CREATED",
-  "resourceId": "msg_...",
-  "conversationId": "conv_...",
-  "sequence": 101,
-  "occurredAt": "2026-08-07T02:00:00Z"
-}
-```
-
-## 3.14 Admin
-
-```text
-GET   /api/v1/admin/overview
-GET   /api/v1/admin/users
-GET   /api/v1/admin/users/{userId}
-POST  /api/v1/admin/users/{userId}/suspend
-POST  /api/v1/admin/users/{userId}/unsuspend
-POST  /api/v1/admin/users/{userId}/revoke-sessions
-GET   /api/v1/admin/reports
-POST  /api/v1/admin/reports/{reportId}/resolve
-GET   /api/v1/admin/audit-logs
-GET   /api/v1/admin/config
-PATCH /api/v1/admin/config
-POST  /api/v1/admin/test/smtp
-POST  /api/v1/admin/test/object-storage
-POST  /api/v1/admin/test/livekit
-```
-
-## 4. WebSocket 协议
-
-连接：
-
-```text
-wss://api.example.com/api/v1/realtime
-```
-
-客户端首帧：
-
-```json
-{
-  "type": "HELLO",
-  "protocolVersion": 1,
-  "deviceId": "dev_...",
-  "lastCursor": "cur_..."
-}
-```
-
-服务端事件：
-
-```json
-{
-  "type": "EVENT_AVAILABLE",
-  "eventId": "evt_...",
-  "cursor": "cur_..."
-}
-```
-
-心跳：
-
-```json
-{"type":"PING","timestamp":1234567890}
-{"type":"PONG","timestamp":1234567890}
-```
-
-呼叫信令：
-
-- `CALL_INVITED`
-- `CALL_RINGING`
-- `CALL_ACCEPTED`
-- `CALL_REJECTED`
-- `CALL_ENDED`
-- `CALL_STATE_CHANGED`
-
-限制：
-
-- 单帧最大大小。
-- 每秒命令数。
-- 未认证连接超时。
-- Origin 白名单。
-- 协议版本不兼容明确断开码。
-
-## 5. 数据表草案
-
-## 5.1 身份与用户
-
-### users
-
-- `id`
-- `email_normalized`
-- `email_verified_at`
-- `handle_normalized`
-- `display_name`
-- `avatar_media_id`
-- `bio`
-- `status`
-- `created_at`
-- `updated_at`
-- `deleted_at`
-
-唯一约束：
-
-- `email_normalized`
-- `handle_normalized`
-
-### user_privacy_settings
-
-- `user_id`
-- `allow_email_search`
-- `allow_stranger_messages`
-- `show_online_status`
-- `read_receipts_enabled`
-- `notification_preview_enabled`
-
-### auth_passwords
-
-- `user_id`
-- `password_hash`
-- `password_changed_at`
-
-### devices
-
-- `id`
-- `user_id`
-- `name`
-- `platform`
-- `app_version`
-- `identity_public_key`
-- `is_verified`
-- `last_seen_at`
-- `revoked_at`
-
-### refresh_tokens
-
-- `id`
-- `user_id`
-- `device_id`
-- `token_hash`
-- `family_id`
-- `expires_at`
-- `used_at`
-- `revoked_at`
-
-## 5.2 好友
-
-### contact_requests
-
-- `id`
-- `sender_user_id`
-- `receiver_user_id`
-- `message`
-- `status`：`PENDING/ACCEPTED/REJECTED/CANCELLED/EXPIRED`
-- `created_at`
-- `expires_at`
-- `resolved_at`
-
-当前正式约束不是只防“同方向”重复，而是对排序后的用户对建立 PENDING 唯一索引：
-
-```text
-LEAST(sender_user_id, receiver_user_id)
-GREATEST(sender_user_id, receiver_user_id)
-```
-
-这样双方同时互发申请也不会长期留下两条 PENDING。
-
-### contacts
-
-每个方向各一行，用于保存 owner 私有元数据：
-
-- `owner_user_id`
-- `contact_user_id`
-- `remark`
-- `is_starred`
-- `created_at`
-- `updated_at`
-
-### contact_tags
-
-- `owner_user_id`
-- `contact_user_id`
-- `tag_normalized`
-- `tag_name`
-- `created_at`
-
-当前每联系人最多 20 个标签；标签 NFKC 归一化并按大小写去重。
-
-### blocks
-
-- `owner_user_id`
-- `blocked_user_id`
-- `created_at`
-
-### relationship_rate_events
-
-- `user_id`
-- `scope`：`HANDLE_SEARCH/CONTACT_REQUEST`
-- `created_at`
-
-用于 P3 当前跨进程可持续的数据库限流；后续如迁移到 Redis 分布式限流，仍保留服务层语义和审计能力。
-
-## 5.3 会话与消息
-
-### conversations
-
-- `id`
-- `type`：`DIRECT`/`GROUP`
-- `direct_pair_key`：私聊唯一对键
-- `last_sequence`
-- `last_message_id`
-- `created_at`
-- `updated_at`
-
-### conversation_members
-
-- `conversation_id`
-- `user_id`
-- `role`
-- `status`
-- `joined_at`
-- `left_at`
-- `last_read_sequence`
-- `muted_until`
-- `is_pinned`
-
-### messages
-
-- `id`
-- `conversation_id`
-- `sequence`
-- `sender_user_id`
-- `sender_device_id`
-- `client_message_id`
-- `type`
-- `content_json`：仅非 E2EE 模式
-- `ciphertext_json`：E2EE 信封
-- `reply_to_message_id`
-- `created_at`
-- `recalled_at`
-- `deleted_at`
-
-唯一约束：
-
-- `(conversation_id, sequence)`
-- `(sender_device_id, client_message_id)`
-
-### message_receipts
-
-仅对需要精细送达的场景保存；群聊已读优先使用成员的 `last_read_sequence`。
-
-- `message_id`
-- `user_id`
-- `device_id`
-- `status`
-- `occurred_at`
-
-### outbox_events
-
-- `id`
-- `aggregate_type`
-- `aggregate_id`
-- `event_type`
-- `payload_json`
-- `created_at`
-- `published_at`
-- `attempts`
-- `last_error`
-
-## 5.4 群聊
-
-### groups
-
-- `id`
-- `conversation_id`
-- `owner_user_id`
-- `name`
-- `avatar_media_id`
-- `announcement`
-- `join_policy`
-- `member_limit`
-- `created_at`
-
-### group_invites
-
-- `id`
-- `group_id`
-- `token_hash`
-- `created_by`
-- `expires_at`
-- `max_uses`
-- `used_count`
-- `revoked_at`
-
-## 5.5 媒体
-
-### media_objects
-
-- `id`
-- `owner_user_id`
-- `storage_key`
-- `original_name`
-- `mime_type`
-- `size_bytes`
-- `sha256`
-- `purpose`
-- `status`
-- `encryption_mode`
-- `created_at`
-- `deleted_at`
-
-### media_variants
-
-- `id`
-- `media_id`
-- `variant_type`
-- `storage_key`
-- `mime_type`
-- `size_bytes`
-- `width`
-- `height`
-- `duration_ms`
-
-## 5.6 通话
-
-### calls
-
-- `id`
-- `conversation_id`
-- `initiator_user_id`
-- `type`
-- `status`
-- `livekit_room_name`
-- `started_at`
-- `answered_at`
-- `ended_at`
-- `end_reason`
-
-### call_participants
-
-- `call_id`
-- `user_id`
-- `device_id`
-- `status`
-- `joined_at`
-- `left_at`
-
-## 5.7 朋友圈
-
-### moments
-
-- `id`
-- `author_user_id`
-- `text`
-- `visibility_type`
-- `visibility_rule_json`
-- `created_at`
-- `deleted_at`
-
-### moment_media
-
-- `moment_id`
-- `media_id`
-- `sort_order`
-
-### moment_likes
-
-- `moment_id`
-- `user_id`
-- `created_at`
-
-### moment_comments
-
-- `id`
-- `moment_id`
-- `author_user_id`
-- `reply_to_comment_id`
-- `reply_to_user_id`
-- `content`
-- `created_at`
-- `deleted_at`
-
-## 5.8 QR 与登录
-
-### qr_login_sessions
-
-- `id`
-- `token_hash`
-- `status`
-- `requesting_device_info_json`
-- `scanned_by_user_id`
-- `scanned_by_device_id`
-- `expires_at`
-- `confirmed_at`
-- `consumed_at`
-
-## 5.9 风控与审计
-
-### reports
-
-- `id`
-- `reporter_user_id`
-- `target_type`
-- `target_id`
-- `reason`
-- `status`
-- `assigned_admin_id`
-- `resolved_at`
-
-### audit_logs
-
-- `id`
-- `actor_type`
-- `actor_id`
-- `action`
-- `target_type`
-- `target_id`
-- `reason`
-- `request_id`
-- `source_ip`
-- `result`
-- `created_at`
-
-## 6. 索引建议
-
-- `messages(conversation_id, sequence desc)`。
-- `conversations(updated_at desc)`。
-- `conversation_members(user_id, status)`。
-- `contact_requests(receiver_user_id, status, created_at desc)`。
-- `contacts(owner_user_id, created_at)`。
-- `moments(author_user_id, created_at desc)`。
-- `moment_comments(moment_id, created_at)`。
-- `outbox_events(published_at, created_at)` 部分索引。
-- `media_objects(owner_user_id, status, created_at)`。
-- `audit_logs(created_at desc, actor_id)`。
-
-消息表达到较大规模后按时间或会话哈希分区，但首版不提前分库分表。
-
-## 7. 数据一致性
-
-必须使用事务：
-
-- 接受好友申请 + 建立双向联系人 + 建立/复用私聊。
-- 创建消息 + 增加会话序号 + 更新最后消息 + 写 Outbox。
-- 创建群 + 创建会话 + 添加群主成员。
-- 删除用户的状态切换 + 撤销会话 + 写审计。
-
-不允许跨数据库事务依赖 Redis 成功。Redis 更新失败应可重试和重建。
-
-## 8. 数据保留
-
-可配置：
-
-- 验证码：分钟级。
-- 扫码会话：分钟级。
-- 未完成上传：小时级。
-- 普通日志：天/周级。
-- 审计日志：月/年级。
-- 已删除媒体：宽限期后清理。
-- 已注销用户：按法律和实例策略清理。
-
-E2EE 消息的服务端密文保留策略与普通消息相同，但服务端无法恢复丢失的客户端密钥。
-
-## 9. P4 当前实现快照（2026-08-08）
-
-本节记录已经落地的正式实现，避免后续只看早期草案误判当前接口。
-
-### 9.1 已落地表
-
-Migration `000005_messaging` 已增加：
-
-```text
-messages
-outbox_events
-sync_events
-message_local_deletions
-```
-
-关键约束：
-
-- `messages(conversation_id, sequence)` 唯一，sequence 从会话原子递增得到。
-- `messages(sender_device_id, client_message_id)` 唯一。
-- 同一 `senderDeviceId + clientMessageId` 使用 PostgreSQL advisory transaction lock 串行化竞争窗口，重复请求返回原 message。
-- 同一 DIRECT user pair 使用 advisory transaction lock + `direct_pair_key` 唯一键双保险。
-- Message、conversation `last_sequence/last_message_id` 与 Durable Outbox 在同一事务提交。
-- `sync_events(source_outbox_id, user_id)` 唯一，使 Dispatcher 重放不制造重复 Sync 事件。
-
-### 9.2 正式 Messaging API
-
-当前 OpenAPI 已正式包含：
-
-```text
-GET  /api/v1/conversations
-POST /api/v1/conversations/direct
-GET  /api/v1/conversations/{conversationId}
-GET  /api/v1/conversations/{conversationId}/messages
-POST /api/v1/conversations/{conversationId}/messages
-POST /api/v1/conversations/{conversationId}/read
-PATCH /api/v1/conversations/{conversationId}/preferences
-GET  /api/v1/messages/{messageId}
-POST /api/v1/messages/{messageId}/recall
-DELETE /api/v1/messages/{messageId}/local
-GET  /api/v1/sync?cursor=...
-```
-
-发送接口不接受客户端伪造 `senderUserId / senderDeviceId`；身份只来自 Access Token 对应的 `Principal`。
-
-### 9.3 正式 Realtime 语义
-
-```text
-/ws                 = P0 PoC 兼容入口
-/api/v1/realtime    = P4 正式鉴权入口
-```
-
-P4 hello 必须携带：
-
-```json
-{
-  "type": "hello",
-  "payload": {
-    "clientId": "<device-id>",
-    "accessToken": "<access-token>",
-    "protocolVersion": "1",
-    "lastEventId": 0
+  "type": "VIDEO",
+  "content": {
+    "mediaId": "video-uuid",
+    "posterMediaId": "poster-uuid",
+    "width": 1920,
+    "height": 1080,
+    "durationMs": 42000
   }
 }
 ```
 
-服务端的 `event_available` **只表示“有增量可同步”**。客户端收到后调用 `/api/v1/sync?cursor=`；即使 WebSocket 提示丢失或断线，重连后的 cursor Sync 仍负责补账。
+主视频和 Poster 不允许使用同一个 mediaId。
 
-### 9.4 Outbox / Worker
+## 18.5 STICKER
 
-`cmd/worker` 现已正式消费 `outbox_events`：
-
-- `FOR UPDATE SKIP LOCKED` 并发领取。
-- 至少一次处理。
-- `sync_events` 唯一键幂等。
-- 失败指数退避。
-- 单条消费失败通过 SAVEPOINT 回到可提交状态，再记录 attempts / last_error / available_at。
-
-开发环境 `run-auth-dev.ps1` 现在会统一启动 PostgreSQL / Redis / Mailpit / LiveKit，并构建启动 API 与 Worker；`stop-auth-dev.ps1` 会按状态文件只停止本轮脚本负责的进程/容器。LiveKit 开发端口为 signal `17880`、RTC TCP `17881`、RTC UDP `17882`、TURN UDP `13478`，并按自动检测到的 LAN IP 对 Android 真机开放 LocalSubnet。
-
-### 9.5 Redis 跨节点实时唤醒
-
-P4 现在已接入 Redis Pub/Sub 跨 API 节点事件总线。设计刻意不在 Redis 保存一份必须重建的 Presence 真相：
-
-```text
-API A 提交消息
-→ 本机 Hub 唤醒本机接收者连接
-→ Redis 发布 userId + event_available
-→ API B/C/... 收到后只唤醒各自本机该 userId 的 Socket
-→ 客户端调用 /api/v1/sync?cursor=...
+```json
+{
+  "type": "STICKER",
+  "content": {
+    "mediaId": "dd-stable-media-uuid"
+  }
+}
 ```
+
+服务端发送时必须验证当前用户拥有发送权限。
+
+---
+
+# 19. Mention Suggestion 合同
+
+```http
+GET /api/v1/users/mention-suggestions?q=al&conversationId=<uuid>&limit=8
+```
+
+当前约束：
+
+- `q` 2～32。
+- 首字符 a-z。
+- 后续 a-z/0-9/_。
+- limit 最大 8。
+- 双向 block filter。
+- 当前 DIRECT peer 优先。
+- contacts 其次。
+- public matches 最后。
+
+---
+
+# 20. Sync 合同原则
+
+```http
+GET /api/v1/sync?cursor=<lastCursor>&limit=<bounded>
+```
+
+响应应包含：
+
+- event items。
+- 新 cursor/下一页语义。
+
+客户端不能因为 WebSocket 收到一条消息就跳过 cursor 持久化。
+
+---
+
+# 21. Media Reservation 合同原则
+
+创建：
+
+```json
+{
+  "purpose": "CHAT_VIDEO",
+  "fileName": "clip.mp4",
+  "mimeType": "video/mp4",
+  "sizeBytes": 12345678,
+  "sha256": "64-char-hex"
+}
+```
+
+服务端返回概念上：
+
+```json
+{
+  "uploadId": "uuid",
+  "mediaId": "uuid",
+  "uploadUrl": "short-lived-presigned-url",
+  "expiresAt": "..."
+}
+```
+
+Complete 后才成为 READY。
+
+---
+
+# 22. Search 当前边界
+
+服务端当前存在文本消息搜索。
 
 因此：
 
-- Redis 只做跨节点低延迟提示，不存聊天事实。
-- Redis Pub/Sub 短暂断开期间的提示允许丢失；消息不会丢，因为 Durable Outbox / sync_events 在 PostgreSQL。
-- Redis 连接被 `CLIENT KILL TYPE pubsub` 强杀后，go-redis 自动重连，后续提示恢复投递；已有真 Redis 集成测试。
-- `/api/v1/system/ready` 在配置 `REDIS_URL` 时会包含 Redis readiness。
+- 当前非 E2EE 消息可以服务端搜索。
+- 未来 E2EE 正式开启后不能默认继续服务端全文索引密文。
+- E2EE 搜索应转向客户端本地索引或明确可选服务端模型。
 
-### 9.6 Flutter P4 交互现状
+---
 
-当前后端/客户端链路已接通：
+# 23. 下一轮 API/Data 必做
 
-```text
-会话最后消息 / 未读 / 时间
-按账号+设备持久化草稿
-文字发送
-断网待发送
-单条立即重试 / 取消发送
-回复（离线重试保留 replyToMessageId）
-复制
-撤回事件链
-仅本地删除
-历史 sequence cursor
-当前聊天自动推进 read sequence
-```
-
-2026-08-08 已完成两轮聊天体验补强：
-
-```text
-Web 置顶 / 免打扰：修复 CORS PATCH/DELETE 预检，并在成功响应后本地立即 upsert 会话
-已读 UI：Conversation 新增 peerLastReadSequence；对端关闭 readReceiptsEnabled 时返回 null
-已读可见性：只有聊天页真正可见 + App resumed + 当前 route 才推进 read sequence，隐藏 IndexedStack 不算“正在阅读”
-未读：主消息入口/会话行保留红色角标；Android 未读会话支持“标为已读”
-PC/Web 键盘：Enter=发送、Shift+Enter=换行；输入法 composing 阶段不发送
-Android IME：adjustNothing + viewInsets + 合成层 Transform，减少键盘动画驱动长消息列表反复 layout；点击聊天空白可收键盘
-移动菜单：紧凑圆角 Action Sheet，危险删除为红色
-Token：Access Token 到期前主动轮换；401 发送失败保留 pending 并触发 refresh，不丢 clientMessageId
-通知：前台非当前会话使用软件内提醒；Windows/Android 进程存活后台使用本地系统通知，杀进程 Push 仍留 P10
-头像：大图在客户端后台旋转/缩放/压缩后上传；点击对方头像进入资料页
-通话：聊天入口复用 P0 Call/LiveKit；主开发环境已真正启动/配置 LAN LiveKit，重复 hangup 等同状态动作幂等
-Unicode Emoji：基础选择器已接入输入区
-撤回：移除 2 分钟硬限制及 RECALL_WINDOW_EXPIRED，自己的消息默认不限时
-客户端：正式 Auth → 主壳，移动四入口、桌面窄导航+会话/聊天双栏、微信式灰底和白/浅绿气泡
-```
-
-仍未完成或仍需真人/协议收口：
-
-```text
-独立“已送达”确认
-Emoji 最近使用
-图片表情 / Sticker
-GIF
-图片消息
-语音条
-完整 SQLite 本地库
-三端微信式 UI 逐页细节与 Telegram 级性能 Profile
-```
-
-因此 API 有字段或后端状态存在，仍不等价于对应产品能力已经完整验收。产品基线见 `docs/12-产品体验与UI功能基线.md`。
-
-### 9.7 P4 专项负载基线
-
-可重复执行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\benchmark-p4.ps1
-```
-
-脚本自动启动所需 PostgreSQL / Redis（只停止自己启动的服务），执行 Migration 后验证：
-
-```text
-真实 PostgreSQL >= 100 msg/s
-200 条 /api/v1/realtime 正式鉴权 WebSocket 同时在线并全部 Ping/Pong
-Redis 两节点跨节点 event_available
-强杀 Pub/Sub 连接后自动恢复后续事件投递
-```
-
-性能阈值不作为共享 CI Runner 的硬门禁，避免共享机器负载造成伪失败；功能正确性、Redis reconnect 和消息并发幂等仍有 CI / 集成测试门禁。
-
-### 9.8 当前仍未完成
-
-以下仍属于 P4 收口，不应从本节误判为完成：
-
-- Flutter 完整会话/消息/联系人本地数据库和正式迁移链；当前本地持久化重点仍是 Sync cursor、待发送队列与草稿。
-- Golden 视觉基准与真人 Windows / Android 双端 E2E Checkpoint。
+1. 修复 P9 Flutter QR 当前 `KNOWN-FAILURE`，确保客户端与已稳定的 QR HTTP/Data 合同一致。
+2. 完成 P10 `000022_push` 真实 PostgreSQL roundtrip，再实现 Push domain、endpoint API、durable Job producer、Worker consumer、provider adapter 与客户端 token 注册；在这些完成前不要把当前 Push schema 当稳定产品合同发布。
+3. P11 E2EE 需要新增 identity/prekey/session/device/backup 等独立数据模型，不能污染当前明文 message schema 后假装加密完成。
+4. Admin 新建独立管理员 identity/RBAC/audit/report schema，不能复用普通用户 token 当管理员权限。
+5. 头像迁移统一媒体存储前写 migration/兼容 ADR。
+6. P13 生产化前补 migration compatibility、backup/restore 与 schema upgrade 演练。

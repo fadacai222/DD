@@ -3,18 +3,31 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
+import '../../../core/logging/client_log.dart';
 import '../data/call_signaling_client.dart';
 import '../data/http_call_session_api.dart';
 import '../domain/call_media_gateway.dart';
 import '../domain/call_session.dart';
 
 final class TwoPartyCallController extends ChangeNotifier {
-  TwoPartyCallController(
-    this._media, {
+  factory TwoPartyCallController(
+    CallMediaGateway media, {
     CallSessionApi? api,
     CallSignalingFactory? signalingFactory,
-  }) : _api = api ?? HttpCallSessionApi(),
-       _signalingFactory = signalingFactory ?? _defaultSignalingFactory;
+    Future<String?> Function()? accessTokenProvider,
+  }) => TwoPartyCallController._(
+    media,
+    api ?? HttpCallSessionApi(accessTokenProvider: accessTokenProvider),
+    signalingFactory,
+    accessTokenProvider,
+  );
+
+  TwoPartyCallController._(
+    this._media,
+    this._api,
+    this._signalingFactory,
+    this._accessTokenProvider,
+  );
 
   static final RegExp _safeIdentifier = RegExp(
     r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$',
@@ -22,7 +35,8 @@ final class TwoPartyCallController extends ChangeNotifier {
 
   final CallMediaGateway _media;
   final CallSessionApi _api;
-  final CallSignalingFactory _signalingFactory;
+  final CallSignalingFactory? _signalingFactory;
+  final Future<String?> Function()? _accessTokenProvider;
 
   CallSignalingClient? _signaling;
   StreamSubscription<RealtimeEvent>? _eventSubscription;
@@ -88,13 +102,31 @@ final class TwoPartyCallController extends ChangeNotifier {
       _identity = identity;
       _displayName = displayName;
 
-      final signaling = _signalingFactory(
-        apiBaseUri: apiBaseUri,
-        participantIdentity: identity,
-      );
+      final accessToken = _accessTokenProvider == null
+          ? null
+          : (await _accessTokenProvider())?.trim();
+      if (_accessTokenProvider != null &&
+          (accessToken == null || accessToken.isEmpty)) {
+        throw const CallApiException(
+          code: 'AUTH_REQUIRED',
+          message: '当前登录状态已失效，无法连接通话服务。',
+        );
+      }
+      final signalingFactory = _signalingFactory;
+      final signaling = signalingFactory != null
+          ? signalingFactory(
+              apiBaseUri: apiBaseUri,
+              participantIdentity: identity,
+            )
+          : RealtimeCallSignalingClient(
+              apiBaseUri: apiBaseUri,
+              participantIdentity: identity,
+              accessToken: accessToken,
+            );
       _signaling = signaling;
       _eventSubscription = signaling.events.listen(_handleRealtimeEvent);
       _stateSubscription = signaling.states.listen((state) {
+        unawaited(ClientLog.info('Call signaling state: ${state.name}'));
         final wasConnected =
             _signalingState == RealtimeConnectionState.connected;
         _signalingState = state;
@@ -216,8 +248,23 @@ final class TwoPartyCallController extends ChangeNotifier {
 
   void _handleRealtimeEvent(RealtimeEvent event) {
     if (event.type != 'call.incoming' && event.type != 'call.updated') return;
+    unawaited(
+      ClientLog.info(
+        'Call signaling event received: type=${event.type}, eventId=${event.eventId}',
+      ),
+    );
     try {
       final call = CallSession.fromJson(event.payload);
+      final deliveryMs = DateTime.now()
+          .toUtc()
+          .difference(call.createdAt.toUtc())
+          .inMilliseconds
+          .clamp(0, 24 * 60 * 60 * 1000);
+      unawaited(
+        ClientLog.info(
+          'Call event parsed: callId=${call.id}, status=${call.status.name}, kind=${call.kind.name}, ageMs=$deliveryMs',
+        ),
+      );
       if (call.callerIdentity != _identity &&
           call.calleeIdentity != _identity) {
         return;
@@ -339,6 +386,15 @@ final class TwoPartyCallController extends ChangeNotifier {
     }
   }
 
+  void updateAccessToken(String accessToken) {
+    final normalized = accessToken.trim();
+    if (normalized.isEmpty) return;
+    final signaling = _signaling;
+    if (signaling is RealtimeCallSignalingClient) {
+      unawaited(signaling.updateAccessToken(normalized));
+    }
+  }
+
   Future<void> shutdown() async {
     if (_closed) return;
     _closed = true;
@@ -376,22 +432,13 @@ final class TwoPartyCallController extends ChangeNotifier {
 
   void _setError(String message, {bool preserveCall = false}) {
     _errorMessage = message;
+    unawaited(ClientLog.error('Call: $message'));
     if (!preserveCall) _currentCall = null;
     _notify();
   }
 
   void _notify() {
     if (!_closed) notifyListeners();
-  }
-
-  static CallSignalingClient _defaultSignalingFactory({
-    required Uri apiBaseUri,
-    required String participantIdentity,
-  }) {
-    return RealtimeCallSignalingClient(
-      apiBaseUri: apiBaseUri,
-      participantIdentity: participantIdentity,
-    );
   }
 
   static Uri? _parseApiBaseUri(String raw) {

@@ -16,15 +16,26 @@ import (
 
 type MessagingService interface {
 	EnsureDirectConversation(ctx context.Context, principal account.Principal, targetUserID uuid.UUID) (messaging.Conversation, error)
+	EnsureSavedConversation(ctx context.Context, principal account.Principal) (messaging.Conversation, error)
 	ListConversations(ctx context.Context, principal account.Principal, limit int) ([]messaging.Conversation, error)
 	GetConversation(ctx context.Context, principal account.Principal, conversationID uuid.UUID) (messaging.Conversation, error)
 	UpdatePreferences(ctx context.Context, principal account.Principal, conversationID uuid.UUID, input messaging.UpdatePreferencesInput) (messaging.Conversation, error)
+	HideConversation(ctx context.Context, principal account.Principal, conversationID uuid.UUID) error
 	MarkRead(ctx context.Context, principal account.Principal, conversationID uuid.UUID, sequence int64) (messaging.MarkReadResult, []uuid.UUID, error)
 	SendMessage(ctx context.Context, principal account.Principal, conversationID uuid.UUID, input messaging.SendMessageInput) (messaging.SendResult, error)
 	ListMessages(ctx context.Context, principal account.Principal, conversationID uuid.UUID, beforeSequence int64, limit int) (messaging.MessagePage, error)
 	GetMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) (messaging.Message, error)
+	EditMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID, input messaging.EditMessageInput) (messaging.SendResult, error)
 	RecallMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) (messaging.SendResult, error)
 	DeleteMessageLocally(ctx context.Context, principal account.Principal, messageID uuid.UUID) error
+	SaveMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) (messaging.SavedMessage, error)
+	UnsaveMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) error
+	ListSavedMessages(ctx context.Context, principal account.Principal, limit int) ([]messaging.SavedMessage, error)
+	PinMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) (messaging.PinnedMessage, []uuid.UUID, error)
+	UnpinMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) ([]uuid.UUID, error)
+	ListPinnedMessages(ctx context.Context, principal account.Principal, conversationID uuid.UUID, limit int) ([]messaging.PinnedMessage, error)
+	SearchMessages(ctx context.Context, principal account.Principal, query string, conversationID *uuid.UUID, limit int) ([]messaging.MessageSearchHit, error)
+	ForwardMessage(ctx context.Context, principal account.Principal, sourceMessageID uuid.UUID, input messaging.ForwardMessageInput) (messaging.SendResult, error)
 	Sync(ctx context.Context, principal account.Principal, cursor int64, limit int) (messaging.SyncPage, error)
 	DispatchOutbox(ctx context.Context, limit int) (int, error)
 }
@@ -93,16 +104,24 @@ func (s *server) handleConversationByID(response http.ResponseWriter, request *h
 		return
 	}
 	if len(parts) == 1 {
-		if request.Method != http.MethodGet {
-			methodNotAllowed(response, http.MethodGet)
-			return
+		switch request.Method {
+		case http.MethodGet:
+			result, err := s.messaging.GetConversation(request.Context(), principal, conversationID)
+			if err != nil {
+				s.writeMessagingError(response, request, err)
+				return
+			}
+			writeSuccess(response, http.StatusOK, result)
+		case http.MethodDelete:
+			if err := s.messaging.HideConversation(request.Context(), principal, conversationID); err != nil {
+				s.writeMessagingError(response, request, err)
+				return
+			}
+			s.publishEventAvailable([]uuid.UUID{principal.UserID}, "conversation-hidden")
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			methodNotAllowed(response, http.MethodGet, http.MethodDelete)
 		}
-		result, err := s.messaging.GetConversation(request.Context(), principal, conversationID)
-		if err != nil {
-			s.writeMessagingError(response, request, err)
-			return
-		}
-		writeSuccess(response, http.StatusOK, result)
 		return
 	}
 
@@ -113,6 +132,8 @@ func (s *server) handleConversationByID(response http.ResponseWriter, request *h
 		s.handleConversationRead(response, request, principal, conversationID)
 	case "preferences":
 		s.handleConversationPreferences(response, request, principal, conversationID)
+	case "pinned-messages":
+		s.handleConversationPinnedMessages(response, request, principal, conversationID)
 	default:
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 	}
@@ -216,16 +237,44 @@ func (s *server) handleMessageByID(response http.ResponseWriter, request *http.R
 		return
 	}
 	if len(parts) == 1 {
-		if request.Method != http.MethodGet {
-			methodNotAllowed(response, http.MethodGet)
-			return
+		switch request.Method {
+		case http.MethodGet:
+			result, err := s.messaging.GetMessage(request.Context(), principal, messageID)
+			if err != nil {
+				s.writeMessagingError(response, request, err)
+				return
+			}
+			writeSuccess(response, http.StatusOK, result)
+		case http.MethodPatch:
+			if !requireJSON(response, request) {
+				return
+			}
+			var requestBody struct {
+				Text                string `json:"text"`
+				ExpectedEditVersion *int   `json:"expectedEditVersion"`
+			}
+			if err := decodeSingleJSON(response, request, &requestBody); err != nil {
+				writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+				return
+			}
+			if requestBody.ExpectedEditVersion == nil {
+				writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", "expectedEditVersion is required")
+				return
+			}
+			input := messaging.EditMessageInput{
+				Text:                requestBody.Text,
+				ExpectedEditVersion: *requestBody.ExpectedEditVersion,
+			}
+			result, err := s.messaging.EditMessage(request.Context(), principal, messageID, input)
+			if err != nil {
+				s.writeMessageEditError(response, request, err)
+				return
+			}
+			s.publishEventAvailable(result.NotifyUserIDs, "message-edited")
+			writeSuccess(response, http.StatusOK, result.Message)
+		default:
+			methodNotAllowed(response, http.MethodGet, http.MethodPatch)
 		}
-		result, err := s.messaging.GetMessage(request.Context(), principal, messageID)
-		if err != nil {
-			s.writeMessagingError(response, request, err)
-			return
-		}
-		writeSuccess(response, http.StatusOK, result)
 		return
 	}
 	switch parts[1] {
@@ -252,9 +301,168 @@ func (s *server) handleMessageByID(response http.ResponseWriter, request *http.R
 		}
 		s.publishEventAvailable([]uuid.UUID{principal.UserID}, "local-delete")
 		writeSuccess(response, http.StatusOK, map[string]any{"deleted": true})
+	case "save":
+		s.handleMessageSave(response, request, principal, messageID)
+	case "pin":
+		s.handleMessagePin(response, request, principal, messageID)
+	case "forward":
+		s.handleMessageForward(response, request, principal, messageID)
 	default:
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 	}
+}
+
+func (s *server) handleSavedConversation(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPut {
+		methodNotAllowed(response, http.MethodPut)
+		return
+	}
+	principal, ok := s.requireMessagingPrincipal(response, request)
+	if !ok {
+		return
+	}
+	result, err := s.messaging.EnsureSavedConversation(request.Context(), principal)
+	if err != nil {
+		s.writeMessagingError(response, request, err)
+		return
+	}
+	s.publishEventAvailable([]uuid.UUID{principal.UserID}, "saved-conversation")
+	writeSuccess(response, http.StatusOK, result)
+}
+
+func (s *server) handleSavedMessages(response http.ResponseWriter, request *http.Request) {
+	principal, ok := s.requireMessagingPrincipal(response, request)
+	if !ok {
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+	limit, ok := parseBoundedIntQuery(response, request, "limit", messaging.DefaultProductivityLimit, 1, messaging.MaximumProductivityLimit)
+	if !ok {
+		return
+	}
+	items, err := s.messaging.ListSavedMessages(request.Context(), principal, limit)
+	if err != nil {
+		s.writeMessagingError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) handleMessageSearch(response http.ResponseWriter, request *http.Request) {
+	principal, ok := s.requireMessagingPrincipal(response, request)
+	if !ok {
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+	limit, ok := parseBoundedIntQuery(response, request, "limit", messaging.DefaultProductivityLimit, 1, messaging.MaximumProductivityLimit)
+	if !ok {
+		return
+	}
+	var conversationID *uuid.UUID
+	if raw := strings.TrimSpace(request.URL.Query().Get("conversationId")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", "conversationId must be a UUID")
+			return
+		}
+		conversationID = &parsed
+	}
+	items, err := s.messaging.SearchMessages(request.Context(), principal, request.URL.Query().Get("q"), conversationID, limit)
+	if err != nil {
+		s.writeMessagingError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) handleConversationPinnedMessages(response http.ResponseWriter, request *http.Request, principal account.Principal, conversationID uuid.UUID) {
+	if request.Method != http.MethodGet {
+		methodNotAllowed(response, http.MethodGet)
+		return
+	}
+	limit, ok := parseBoundedIntQuery(response, request, "limit", messaging.DefaultProductivityLimit, 1, messaging.MaximumProductivityLimit)
+	if !ok {
+		return
+	}
+	items, err := s.messaging.ListPinnedMessages(request.Context(), principal, conversationID, limit)
+	if err != nil {
+		s.writeMessagingError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) handleMessageSave(response http.ResponseWriter, request *http.Request, principal account.Principal, messageID uuid.UUID) {
+	switch request.Method {
+	case http.MethodPut:
+		result, err := s.messaging.SaveMessage(request.Context(), principal, messageID)
+		if err != nil {
+			s.writeMessagingError(response, request, err)
+			return
+		}
+		s.publishEventAvailable([]uuid.UUID{principal.UserID}, "saved-message")
+		writeSuccess(response, http.StatusOK, result)
+	case http.MethodDelete:
+		if err := s.messaging.UnsaveMessage(request.Context(), principal, messageID); err != nil {
+			s.writeMessagingError(response, request, err)
+			return
+		}
+		s.publishEventAvailable([]uuid.UUID{principal.UserID}, "saved-message")
+		writeSuccess(response, http.StatusOK, map[string]any{"saved": false})
+	default:
+		methodNotAllowed(response, http.MethodPut, http.MethodDelete)
+	}
+}
+
+func (s *server) handleMessagePin(response http.ResponseWriter, request *http.Request, principal account.Principal, messageID uuid.UUID) {
+	switch request.Method {
+	case http.MethodPut:
+		result, userIDs, err := s.messaging.PinMessage(request.Context(), principal, messageID)
+		if err != nil {
+			s.writeMessagingError(response, request, err)
+			return
+		}
+		s.publishEventAvailable(userIDs, "pinned-message")
+		writeSuccess(response, http.StatusOK, result)
+	case http.MethodDelete:
+		userIDs, err := s.messaging.UnpinMessage(request.Context(), principal, messageID)
+		if err != nil {
+			s.writeMessagingError(response, request, err)
+			return
+		}
+		s.publishEventAvailable(userIDs, "pinned-message")
+		writeSuccess(response, http.StatusOK, map[string]any{"pinned": false})
+	default:
+		methodNotAllowed(response, http.MethodPut, http.MethodDelete)
+	}
+}
+
+func (s *server) handleMessageForward(response http.ResponseWriter, request *http.Request, principal account.Principal, messageID uuid.UUID) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response, http.MethodPost)
+		return
+	}
+	if !requireJSON(response, request) {
+		return
+	}
+	var input messaging.ForwardMessageInput
+	if err := decodeSingleJSON(response, request, &input); err != nil {
+		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	result, err := s.messaging.ForwardMessage(request.Context(), principal, messageID, input)
+	if err != nil {
+		s.writeMessagingError(response, request, err)
+		return
+	}
+	s.publishEventAvailable(result.NotifyUserIDs, "message-forward")
+	writeSuccess(response, http.StatusCreated, result.Message)
 }
 
 func (s *server) handleSync(response http.ResponseWriter, request *http.Request) {
@@ -293,6 +501,23 @@ func (s *server) requireMessagingPrincipal(response http.ResponseWriter, request
 	return s.requirePrincipal(response, request)
 }
 
+func (s *server) writeMessageEditError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, messaging.ErrNotFound):
+		writeAPIError(response, http.StatusNotFound, "MESSAGE_NOT_FOUND", "Message was not found")
+	case errors.Is(err, messaging.ErrEditForbidden), errors.Is(err, messaging.ErrForbidden):
+		writeAPIError(response, http.StatusForbidden, "MESSAGE_EDIT_FORBIDDEN", "Message cannot be edited by this user")
+	case errors.Is(err, messaging.ErrEditUnsupported):
+		writeAPIError(response, http.StatusBadRequest, "MESSAGE_EDIT_UNSUPPORTED", "This message type cannot be edited")
+	case errors.Is(err, messaging.ErrEditConflict):
+		writeAPIError(response, http.StatusConflict, "MESSAGE_EDIT_CONFLICT", "Message was edited on another device")
+	case errors.Is(err, messaging.ErrInvalidInput):
+		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", "Message edit request is invalid")
+	default:
+		s.writeMessagingError(response, request, err)
+	}
+}
+
 func (s *server) writeMessagingError(response http.ResponseWriter, request *http.Request, err error) {
 	switch {
 	case errors.Is(err, messaging.ErrNotFound):
@@ -301,8 +526,12 @@ func (s *server) writeMessagingError(response http.ResponseWriter, request *http
 		writeAPIError(response, http.StatusForbidden, "MESSAGING_FORBIDDEN", "Messaging operation is not allowed")
 	case errors.Is(err, messaging.ErrBlocked):
 		writeAPIError(response, http.StatusForbidden, "MESSAGING_BLOCKED", "Messaging is blocked for this relationship")
+	case errors.Is(err, messaging.ErrPinnedLimit):
+		writeAPIError(response, http.StatusConflict, "PINNED_CONVERSATION_LIMIT", "最多只能置顶 10 个会话")
 	case errors.Is(err, messaging.ErrConflict):
 		writeAPIError(response, http.StatusConflict, "MESSAGING_CONFLICT", "Messaging state conflicts with this request")
+	case errors.Is(err, messaging.ErrTooManyMentions):
+		writeAPIError(response, http.StatusBadRequest, "TOO_MANY_MENTIONS", "Message contains too many mentions")
 	case errors.Is(err, messaging.ErrInvalidInput), errors.Is(err, messaging.ErrUnsupportedType):
 		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", "Messaging request is invalid")
 	case errors.Is(err, messaging.ErrUnavailable), errors.Is(err, messaging.ErrOutboxUnavailable):

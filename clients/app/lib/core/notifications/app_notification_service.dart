@@ -1,8 +1,6 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
 import 'notification_avatar_file.dart';
@@ -16,9 +14,13 @@ final class AppNotificationService {
 
   static final AppNotificationService shared = AppNotificationService();
 
-  static const _channelId = 'dd_messages';
+  static const String androidSmallIcon = 'ic_stat_dd';
+  // Android notification-channel importance is immutable after first creation.
+  // v1 was created by some test builds with non-heads-up settings, so keep a
+  // versioned id and migrate users to a fresh high-importance channel.
+  static const String androidChannelId = 'dd_messages_v2';
   static const _channelName = 'DD 新消息';
-  static const _channelDescription = '好友消息与会话提醒';
+  static const _channelDescription = '消息与会话提醒';
   static const MethodChannel _windowChannel = MethodChannel('dd/window');
 
   final FlutterLocalNotificationsPlugin _plugin;
@@ -40,7 +42,7 @@ final class AppNotificationService {
     _initializing = true;
     try {
       const settings = InitializationSettings(
-        android: AndroidInitializationSettings('ic_stat_dd'),
+        android: AndroidInitializationSettings(androidSmallIcon),
         windows: WindowsInitializationSettings(
           appName: 'DD',
           appUserModelId: 'OpenIMX.DD.Client',
@@ -51,13 +53,25 @@ final class AppNotificationService {
       _initialized = initialized ?? false;
       if (!_initialized) return;
 
-      if (requestPermission &&
-          defaultTargetPlatform == TargetPlatform.android) {
-        await _plugin
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final android = _plugin
             .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin
-            >()
-            ?.requestNotificationsPermission();
+            >();
+        await android?.createNotificationChannel(
+          const AndroidNotificationChannel(
+            androidChannelId,
+            _channelName,
+            description: _channelDescription,
+            importance: Importance.max,
+            playSound: false,
+            enableVibration: true,
+            showBadge: true,
+          ),
+        );
+        if (requestPermission) {
+          await android?.requestNotificationsPermission();
+        }
       }
     } catch (_) {
       // Tests, unsupported embedders and stale locally cached runners may not
@@ -76,8 +90,7 @@ final class AppNotificationService {
     String? accessToken,
     String? senderUserId,
   }) async {
-    final windows =
-        !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+    final windows = !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
     if (!_initialized && !windows) return;
     final body = preview.trim().isEmpty ? '你收到了一条新消息' : preview.trim();
     final id = _nextId++ & 0x7FFFFFFF;
@@ -97,16 +110,18 @@ final class AppNotificationService {
 
     try {
       final androidDetails = AndroidNotificationDetails(
-        _channelId,
+        androidChannelId,
         _channelName,
+        icon: androidSmallIcon,
         channelDescription: _channelDescription,
-        importance: Importance.high,
-        priority: Priority.high,
+        importance: Importance.max,
+        priority: Priority.max,
         category: AndroidNotificationCategory.message,
         visibility: NotificationVisibility.private,
         largeIcon: avatarBytes == null
             ? null
             : ByteArrayAndroidBitmap(avatarBytes),
+        playSound: false,
         styleInformation: MessagingStyleInformation(
           const Person(name: 'DD'),
           conversationTitle: senderName,
@@ -126,10 +141,10 @@ final class AppNotificationService {
         ),
       );
 
-      WindowsNotificationDetails windowsDetails =
-          const WindowsNotificationDetails(
-            duration: WindowsNotificationDuration.short,
-          );
+      WindowsNotificationDetails windowsDetails = WindowsNotificationDetails(
+        duration: WindowsNotificationDuration.short,
+        audio: WindowsNotificationAudio.silent(),
+      );
       Uri? avatarUri;
       if (avatarBytes != null && senderUserId != null) {
         avatarUri = await writeNotificationAvatarFile(
@@ -139,6 +154,7 @@ final class AppNotificationService {
         if (avatarUri != null) {
           windowsDetails = WindowsNotificationDetails(
             duration: WindowsNotificationDuration.short,
+            audio: WindowsNotificationAudio.silent(),
             images: <WindowsImage>[
               WindowsImage(
                 avatarUri,
@@ -190,13 +206,15 @@ final class AppNotificationService {
     final key = '${origin.origin}|$userId';
     if (_avatarMemoryCache.containsKey(key)) return _avatarMemoryCache[key];
     try {
-      final response = await _httpClient.get(
-        origin.resolve('/api/v1/avatars/$userId'),
-        headers: <String, String>{
-          'Accept': 'image/png,image/jpeg,image/webp,*/*',
-          'Authorization': 'Bearer $accessToken',
-        },
-      ).timeout(const Duration(seconds: 3));
+      final response = await _httpClient
+          .get(
+            origin.resolve('/api/v1/avatars/$userId'),
+            headers: <String, String>{
+              'Accept': 'image/png,image/jpeg,image/webp,*/*',
+              'Authorization': 'Bearer $accessToken',
+            },
+          )
+          .timeout(const Duration(seconds: 3));
       if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
         _avatarMemoryCache[key] = null;
         return null;
@@ -208,5 +226,4 @@ final class AppNotificationService {
       return null;
     }
   }
-
 }

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
+import '../../../../theme/app_theme.dart';
+
 class ConnectionStatusBadge extends StatelessWidget {
   const ConnectionStatusBadge({required this.state, super.key});
 
@@ -36,7 +38,7 @@ class ConnectionStatusBadge extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: background,
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),

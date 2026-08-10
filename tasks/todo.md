@@ -1,6 +1,6 @@
 # 开发 Todolist
 
-> 状态同步：2026-08-08 12:14（UTC+8）。当前 P4 修复批次代码与三端构建已收口，先做真人复测，不因“自动测试通过”提前勾掉仍要求真实设备/跨端 Verify 的任务。
+> 状态同步：2026-08-09（UTC+8）。当前 P4/P5 主链已继续加入 DDID 非好友直聊、唯一 SELF 我的收藏、Android 会话左右滑、资料自动保存/切换账号、历史登录、关系实时刷新和媒体本地缓存等在制改动。最近完整门禁记录为 Flutter 92/92、Go test/vet、真 PostgreSQL 集成与三端构建 PASS；其后最新改动尚未在本次文档同步中重跑，因此所有要求真实设备/跨端 Verify 的任务继续保持未勾选。
 > 规则：按依赖顺序执行。每个任务完成时必须同时满足 Acceptance 与 Verify。任何任务如果预计改动超过 5 个主要文件，应继续拆分。
 
 ## P0：决策与技术验证
@@ -153,7 +153,7 @@
   - Verify：真实 PostgreSQL + Mailpit 集成覆盖重置后旧密码/旧会话失效和新密码成功。
 
 - [x] **P2-010 实现用户资料和隐私设置 API**
-  - Progress：`GET/PATCH /api/v1/me`、资料字段和隐私设置已实现；2026-08-08 新增头像可用链：`PUT/DELETE /api/v1/me/avatar`、`GET /api/v1/avatars/{userId}` 和 `000006_profile_avatars`。服务端最终载荷仍限制 2 MiB、JPEG/PNG/WebP、最大 2048×2048 / 约 4MP；客户端现允许选择更大的手机原图，原生端通过 `compute` 后台处理 EXIF 方向、最长边缩至 1536 并压缩为 JPEG 后再上传，避免大图压缩阻塞 UI；为防客户端内存 DoS，源文件保留 64 MiB、解码画布约 70MP 的宽松安全上限。聊天中点击对方头像可进入资料页读取昵称、Handle、简介和关系。这是 P5 对象存储媒体管线前的可用过渡，不冒充最终媒体架构。
+  - Progress：`GET/PATCH /api/v1/me`、资料字段和隐私设置已实现；2026-08-08 新增头像可用链：`PUT/DELETE /api/v1/me/avatar`、`GET /api/v1/avatars/{userId}` 和 `000006_profile_avatars`。服务端最终载荷仍限制 2 MiB、JPEG/PNG/WebP、最大 2048×2048 / 约 4MP；客户端现允许选择更大的手机原图，原生端通过 `compute` 后台处理 EXIF 方向、最长边缩至 1536 并压缩为 JPEG 后再上传，避免大图压缩阻塞 UI；为防客户端内存 DoS，源文件保留 64 MiB、解码画布约 70MP 的宽松安全上限。聊天中点击对方头像可进入资料页读取昵称、DDID、简介和关系（底层字段仍为 handle）。这是 P5 对象存储媒体管线前的可用过渡，不冒充最终媒体架构。
   - Acceptance：资料字段长度和隐私默认值正确；头像具备授权、类型/大小限制和稳定读取；P5 接入对象存储时迁移头像资源但保持 API 兼容。
   - Verify：头像魔数单测、Auth API Client 二进制上传测试、CORS PUT 门禁和 OpenAPI strict 已覆盖；真实多端头像刷新留 `人工测试.md`。
 
@@ -164,22 +164,27 @@
 
 - [ ] **P2-012 Flutter 注册 UI**
   - Progress：Windows/Web/Android 共用注册表单、验证码、错误恢复和 360×640 防 overflow Widget Test 已实现；真实 UI 注册端到端待 `人工测试.md`。
-  - Acceptance：邮箱、验证码、密码、Handle、昵称流程完整，错误可恢复。
+  - Acceptance：邮箱、验证码、密码、DDID（底层 handle）、昵称流程完整，错误可恢复。
   - Verify：Widget Test 与端到端注册测试通过。
 
 - [x] **P2-013 Flutter 登录和安全存储**
-  - Progress：Native 已接 `flutter_secure_storage`，启动自动 Refresh 恢复；Web 继续只用 HttpOnly Cookie，Refresh Token 不进入 JS 存储。
-  - Acceptance：原生 Refresh Token 只进入系统安全存储；Web 使用 Cookie。
-  - Verify：Auth 自动测试通过；Windows 当前机器 clean Release 仍受 Visual Studio ATL 环境依赖阻塞，真实安全存储恢复留人工跨端批次。
+  - Progress：Native Refresh Token 继续只进入 `flutter_secure_storage`；为修复 Windows `flutter_secure_storage.dat` 并发占用/损坏，所有安全存储调用统一经过进程级串行网关并带短重试，Auth Session 从多 key 改为单 JSON bundle，退出登录写 tombstone 而不是逐 key 删除。服务端登录/刷新成功后即使本机安全存储暂时不可写，当前会话仍继续可用并给中文提示。Windows runner 同时改为单实例，第二次启动激活现有 DD 窗口，避免跨进程同时写同一安全文件。Web 继续只用 HttpOnly Cookie，Refresh Token 不进入 JS 存储。
+  - Acceptance：原生 Refresh Token 只进入系统安全存储；Web 使用 Cookie；Windows 不因安全存储文件短时占用导致当前会话崩坏。
+  - Verify：Auth bundle/tombstone 单测已有 PASS 记录；最近整套 Flutter 记录为 92/92 PASS；Windows 单实例与真实文件锁恢复、最新在制改动重跑待本轮关闭。
 
 - [ ] **P2-014 Flutter 资料与设备管理 UI**
-  - Progress：资料、隐私、头像更换/移除、设备列表、远程退出、全部退出 UI 已实现；Windows/Web 设置页改为微信式“左侧分类 + 右侧内容”，含账号与存储/通用/快捷键/通知/插件/关于 DD；移动端继续保持单栏。头像在主导航、会话、聊天、联系人和“我的”中统一显示。自动测试通过，跨 Windows/Android/Web 真人 E2E 尚未执行。
-  - Acceptance：修改资料/头像、查看设备、远程退出可用；桌面设置页不再是 Material Card 堆叠。
+  - Progress：资料、隐私、头像更换/移除、设备列表、远程退出、全部退出 UI 已实现；当前账号管理同时支持昵称、DDID、个性签名编辑，邮箱变更走新邮箱验证码；可自动保存的资料使用 debounce 自动保存，不再依赖冗余总“保存设置”按钮；“我的/账号”新增 `切换账号`。Windows/Web 设置页改为微信式“左侧分类 + 右侧内容”，移动端保持单栏。头像在主导航、会话、聊天、联系人和“我的”中统一显示。代码完成，跨 Windows/Android/Web 真人 E2E 尚未关闭。
+  - Acceptance：修改昵称/DDID/个签/邮箱/头像、查看设备、远程退出、切换账号可用；邮箱换绑必须验证；自动保存失败不得假成功；桌面设置页不再是 Material Card 堆叠。
   - Verify：跨两台设备端到端测试留 `人工测试.md`。
 
 - [ ] **P2-015 Admin 用户只读列表**
   - Acceptance：仅管理员访问，支持游标/分页和状态筛选，不显示密码/Token。
   - Verify：RBAC 和字段泄露测试。
+
+- [ ] **P2-016 历史登录与 Access Token 无感轮换**
+  - Progress：代码完成、待 Windows/Android 真人关闭。登录页新增最近 5 个历史账号（头像、昵称、DDID、邮箱），点击后预填实例地址/邮箱并聚焦密码框，不保存明文密码；有效 Refresh Token 仍自动恢复会话。HTTP 401 现在单飞刷新 Refresh Token，更新 HTTP + Realtime WebSocket token 后原请求重试一次，MainShell 使用稳定 user/device key，不再因 token 轮换整棵销毁；服务端原始 `Valid access token is required` 不再直接展示给用户。
+  - Acceptance：历史账号可快速选择且不保存明文密码；Access Token 自然过期时无感恢复，不要求大退客户端。
+  - Verify：历史登录 Widget Test、401 刷新/重试 Coordinator Test 已有 PASS 记录；最近整套 Flutter 记录为 92/92 PASS；真实跨 Access Token 生命周期与最新在制改动重跑待人工/自动门禁关闭。
 
 ### Checkpoint P2
 
@@ -193,8 +198,8 @@
   - Acceptance：contact_requests、contacts、blocks、contact_tags 及唯一约束完成。
   - Verify：PostgreSQL 18.4 真库 Migration + 并发关系链测试通过。
 
-- [x] **P3-002 实现 Handle 精确搜索**
-  - Progress：`GET /api/v1/users/by-handle/{handle}` 已实现；只返回公开资料，不返回邮箱；任一方向 block 时统一 404；10 分钟 60 次持久化限流。
+- [x] **P3-002 实现 DDID 精确搜索（底层 API 保留 handle）**
+  - Progress：用户产品术语已统一为 DDID；底层继续复用 `GET /api/v1/users/by-handle/{handle}` 以避免破坏式迁移。接口只返回公开资料，不返回邮箱；联系人精确搜索仍执行 block 隐私与 10 分钟 60 次持久化限流。
   - Acceptance：遵守隐私、封禁和限流，不暴露邮箱。
   - Verify：未登录 401、被拉黑 404、无 email、限流第 61 次阻断均已有自动测试。
 
@@ -224,8 +229,8 @@
   - Verify：P3 范围真库测试已通过；P4/P7/P8 各自接入后再完成跨模块权限集成。
 
 - [ ] **P3-008 Flutter 联系人列表与搜索**
-  - Progress：移动端四 Tab 继续覆盖搜索、申请、接受/拒绝/撤销、备注/标签/星标、删除、拉黑、黑名单解除；Windows/Web 已重构为约 248px 左侧通讯录目录 + 右侧详情/申请/黑名单处理区，加入通讯录搜索、添加朋友菜单、星标分组和真实头像，交互结构对齐微信桌面通讯录。360×640 原回归继续 PASS。
-  - Acceptance：搜索、申请、备注、标签、删除、拉黑 UI 完整；桌面端使用通讯录信息架构而不是移动 Tab 横向放大。
+  - Progress：早期移动四 Tab 已继续重构：Android 联系人根页现在以“新的朋友 / 标签 / A-B-C/# 联系人分组”为主，`添加朋友` 从消息页右上 `+` / 对应入口进入 DDID 搜索，联系人资料页已接头像预览、发消息/语音/视频和右上好友管理；Windows/Web 使用约 248px 通讯录目录 + 右侧详情/申请/黑名单处理区。360×640 原回归继续作为基础门禁。
+  - Acceptance：搜索、申请、联系人分组、标签、备注、删除、拉黑 UI 完整；点击底部联系人能从子页回根页；桌面端使用通讯录信息架构而不是移动 Tab 横向放大。
   - Verify：Widget 已通过；Windows/Web/Android 双账号 E2E 留 `人工测试.md`。
 
 - [ ] **P3-009 Admin 风控配置基础**
@@ -239,16 +244,19 @@
 
 ## P4：会话、文字消息和同步
 
-### 当前执行优先级（2026-08-08 冻结）
+### 当前执行优先级（2026-08-09，按 `1(1).md` 修订）
 
 ```text
-1. Web 置顶 / 免打扰根因已修，当前进入跨端真人回归
-2. 微信式 UI 主体第一轮已落地，继续做细节收口和截图验收
-3. 紧接着做 Telegram 级丝滑度和响应性能专项
-4. 已读 UI、Enter 发送、不限时撤回已落代码，补跨端真人验收与“已送达”状态
-5. Unicode Emoji 已有基础选择器，继续补最近使用 / Sticker / GIF
-6. 再进入图片消息、语音条等 P5 媒体能力
-7. 最后继续群聊、朋友圈等外围大功能
+1. Android 顶部 + / 返回位置 / 联系人首页 / 新的朋友 / 联系人详情导航回归
+2. 聊天媒体真实渲染与 + 宫格，消灭正常消息的 [IMAGE]/[FILE]/[VOICE] 占位退化
+3. 头像裁剪、好友拒绝状态、回复跳转、Windows 拖拽确认、通话头像/摄像头关闭/原比例等体验缺口
+4. DDID + Telegram 式非好友直接私聊：无需审批，Block 才阻断
+5. Telegram 式会话归档 + 最多 10 个置顶并显示 Pin
+6. 我的收藏 / Saved Messages 唯一 SELF 自聊 + 转发 + 消息置顶
+7. Android 会话左右滑：右滑置顶/已读，左滑静音/归档/删除
+8. 全局消息搜索并定位原消息
+9. DD 品牌图标 / Splash 构建链
+10. 跨 Android / Windows / Web 自动构建 + 真人验收，再继续群聊/朋友圈
 ```
 
 > UI 阶段优先级高于继续堆新功能。目标不是“做得像一个 Flutter Demo”，而是先形成稳定、微信式、低干扰的完整客户端骨架，并把滚动、点击、输入、页面切换做到接近 Telegram 的即时响应感。
@@ -264,7 +272,7 @@
   - Verify：真实 PostgreSQL 100 个并发创建请求仅一个会话，PASS。
 
 - [x] **P4-003 实现会话成员授权服务**
-  - Progress：消息读写授权集中在 messaging service；私聊新消息统一检查 active membership、好友/陌生消息策略和双方拉黑关系，Handler 不信任客户端 sender 身份。
+  - Progress：消息读写授权集中在 messaging service；DIRECT 写入检查 active membership 与双方 block，**不再用好友审批或 `allow_stranger_messages` 作为聊天许可证**；Handler 不信任客户端 sender 身份。好友关系只负责联系人管理。
   - Acceptance：读、写、管理动作统一授权，不由各 Handler 随意判断。
   - Verify：HTTP forged sender、block 后禁止新写但保留历史等自动测试 PASS。
 
@@ -329,7 +337,7 @@
   - Verify：Web 设置 → UI 立即变化 → 刷新仍保存 → Windows/Android 读取一致 → 另一端修改后 Sync 更新，全部通过后才能关闭。
 
 - [ ] **P4-016 Flutter 聊天页面**
-  - Progress：聊天页已完成微信式灰底、真实头像、白色/浅绿气泡、紧凑输入区、Telegram 式右键/长按菜单、发送中/已发送/已读/失败展示、回复/复制/撤回/本地删除、历史加载、Unicode Emoji 选择器；Android 长按菜单统一为紧凑圆角 Action Sheet，危险操作红色，会话未读时提供“标为已读”。已读推进现要求聊天页真正可见 + App resumed + 当前路由，修复 `IndexedStack` 隐藏聊天在联系人页仍自动已读的问题。PC/Web 已实现 `Enter=发送`、`Shift+Enter=换行` 并防输入法组合态误发送；发送后保持 FocusNode。Access Token 新增到期前自动轮换，401 发送失败保留 pending 并触发刷新，不再笼统标为“服务端拒绝”。聊天标题栏语音/视频继续复用 P0 Call/LiveKit；主开发启动脚本现正式启动并配置 LAN LiveKit。**仍缺独立“已送达”确认、Sticker/GIF、图片和语音条。**
+  - Progress：聊天页已完成微信式灰底、真实头像、白色/浅绿气泡、紧凑输入区、Telegram 式右键/长按菜单、发送中/已发送/已读/失败展示、回复/复制/撤回/本地删除、历史加载、Unicode Emoji 选择器；Android 长按菜单统一为紧凑圆角 Action Sheet，危险操作红色，会话未读时提供“标为已读”。已读推进现要求聊天页真正可见 + App resumed + 当前路由，修复 `IndexedStack` 隐藏聊天在联系人页仍自动已读的问题。PC/Web 已实现 `Enter=发送`、`Shift+Enter=换行` 并防输入法组合态误发送；发送后保持 FocusNode。Access Token 新增到期前自动轮换，401 发送失败保留 pending 并触发刷新。2026-08-09 已定位并修复媒体消息读取根因：服务端此前只为 `TEXT` 反序列化 `content_json`，导致 `IMAGE/GIF/STICKER/FILE/VOICE` 到客户端时 `content=null` 并退化成 `[TYPE]`；现全部非加密媒体类型恢复真实 metadata，聊天流已有图片/GIF/Sticker/文件卡片/语音条渲染和微信式 4 列 `+` 宫格。**仍缺独立“已送达”确认；媒体跨 Android ↔ Windows 的真人显示仍需本轮验收。**
   - Acceptance：文字发送、失败重试、回复、复制、历史加载可用；聊天区显示发送中/已发送/已送达/已读/失败；PC/Web `Enter=发送`、`Shift+Enter=换行`。
   - Verify：Windows/Web/Android 真人 E2E + 键盘交互 + 已读状态 UI 验收。
 
@@ -354,7 +362,7 @@
   - Verify：Windows/Web/Android Profile 模式 + 实机滚动/快速发送/长列表测试；连续快速发送 50 条不冻结、不重复、不乱序；500+ 历史消息滚动无持续性掉帧；慢帧比例目标 < 1%。
 
 - [ ] **P4-020 Emoji / Sticker / GIF 基础交互**
-  - Progress：Unicode Emoji 选择器已接入聊天输入区并可插入当前光标位置；“+”面板已为图片/GIF/文件保留真实入口但明确标记开发中，不伪装成已可发送。最近使用、图片表情/Sticker、GIF 数据源与发送协议仍待开发。
+  - Progress：Unicode Emoji 选择器已接入聊天输入区并可插入当前光标位置；`+` 已改为微信式 4 列宫格，并接通本地图片、GIF、Sticker/图片表情、文件真实发送入口；拍摄尚未实现，因此明确禁用不伪装可用。GIF 第三方在线搜索 Provider 与最近使用仍待后续，核心自托管本地 GIF/Sticker 发送不依赖第三方。
   - Acceptance：Unicode Emoji 选择器、最近使用、图片表情/Sticker 入口、GIF 入口存在；第三方 GIF 搜索必须可选，自托管环境仍可发送本地 GIF。
   - Verify：Windows/Web/Android 发送与展示一致；无第三方 Provider 时核心功能仍可用。
 
@@ -369,8 +377,64 @@
   - Verify：中文输入法、英文、多行文本、Web/Windows 自动与人工测试。
 
 - [ ] **P4-023 Telegram 式消息操作扩展预留**
-  - Acceptance：消息菜单和协议为编辑消息、Reaction、为双方删除、收藏、转发等能力保留清晰扩展点，不把当前 P4 数据模型锁死。
-  - Verify：接口/模型设计审查，不要求本阶段一次实现全部功能。
+  - Progress：`1(1).md` 已把收藏、转发、消息置顶从“仅预留”提升为当前实现任务，分别拆到 P4-028～P4-030。
+  - Acceptance：消息菜单和协议继续为编辑消息、Reaction、为双方删除等后续能力保留清晰扩展点，不把当前 P4 数据模型锁死。
+  - Verify：接口/模型设计审查。
+
+- [ ] **P4-025 Android 搜索 / 联系人 / 新的朋友信息架构回归（最高优先级）**
+  - Progress：代码完成、待真机关闭。主壳把“底部联系人=强制回通讯录根页”和“消息页 + → 添加朋友=进入添加朋友页”拆成独立导航 token，修复子页状态残留导致必须大退；移动消息页搜索改为圆角入口→独立二级搜索页；通讯录新增 A/B/# 分组与真实标签页；联系人详情改为微信式资料块并接通头像查看、发消息/语音/视频及右上角“备注与标签/删除好友/拉黑”管理菜单；拒绝按钮改灰色并本地化 `已拒绝`。备注弹窗生命周期竞态已由 Widget Test 捕获并修成独立 Stateful Dialog。
+  - Acceptance：消息页 `+` 固定右上；搜索点击进入二级页；添加朋友与新的朋友不混用；联系人 Tab 返回后不丢列表；联系人详情为微信式资料页。
+  - Verify：相关搜索二级页、联系人 A/B/# 分组、真实标签页、资料页头像查看/好友管理、归档入口、Pin 图标、联系人拒绝状态已有专门 Widget 回归；最近整套 Flutter 记录为 92/92 PASS；三端构建最近记录 PASS；此后最新在制改动仍需重跑与 Android 360×640 真机验收。
+
+- [ ] **P4-026 DDID 与 Telegram 式直接私聊**
+  - Progress：代码完成、待双账号真人关闭。用户可见术语已切 DDID；二级搜索对 `@DDID` 做精确账号查询并直接 `ensureDirectConversation`。当前服务端 `canWriteDirect` 只把双方 block 作为关系层硬阻断；好友申请与 legacy `allow_stranger_messages` 不再限制 DIRECT 写入。客户端不应再展示“对方不允许陌生人消息，先添加好友”的旧锁定输入区。
+  - Acceptance：UI 统一显示 DDID；知道有效 DDID 即可直接聊天；好友关系只用于联系人管理；任一方向 block 后无法发送/绕过，解除 block 后无需重新加好友即可恢复直聊。
+  - Verify：真实 PostgreSQL 集成测试已明确覆盖“非好友 + legacy 隐私位仍可写、block 才阻断”的新语义；最近记录 Go 全套 PASS。双账号真实收发/拉黑恢复仍需人工。
+
+- [ ] **P4-027 Telegram 式会话归档与 10 个置顶上限**
+  - Progress：代码完成、待跨端真人关闭。`000010_messaging_productivity` 新增 `archived_at`；主列表提供“已归档”入口及归档/取消归档菜单；未静音归档会话收到对端新消息自动醒回主列表，静音归档保持。置顶行显示 Pin 图标；服务端使用按用户 advisory transaction lock + 计数统一限制最多 10 个，第 11 个返回 `PINNED_CONVERSATION_LIMIT`，避免多设备并发突破上限。
+  - Acceptance：归档跨端持久化；主列表提供已归档入口；未静音归档会话有新消息时回主列表、静音保持归档；置顶最多 10 个并显示 Pin 图标；第 11 个由服务端明确拒绝。
+  - Verify：真实 PostgreSQL 已覆盖并发抢第 10/11 个置顶，严格得到 1 成功 + 1 `ErrPinnedLimit` 且数据库最终恰为 10 个；归档未静音唤醒/静音保持真库测试 PASS；最近整套 Go/Flutter/三端构建记录 PASS。双端视觉同步与最新在制改动重跑仍待关闭。
+
+- [ ] **P4-028 我的收藏 / Saved Messages SELF 自聊**
+  - Progress：当前已从旧“收藏列表”升级为 Telegram 式唯一 SELF conversation。`000013_saved_messages_self_chat` 扩展 conversations 类型并为 legacy `saved_messages` 增加 `migrated_message_id`；`GET /api/v1/saved-messages/conversation` 保证每用户只存在一个 SELF 会话。消息页固定 `我的收藏`，我的页有同一入口；可直接给自己发文字/媒体；普通消息 `收藏` 会复制成 SELF 中独立消息并保留来源语义；转发目标包含我的收藏。SELF 不产生自己的未读、不显示通话按钮、不允许“再次收藏自己”。
+  - Acceptance：SELF 单例；直接自发消息与跨设备同步可用；收藏动作生成独立副本；源消息之后撤回/本地删除不连带删除已经复制成功的收藏副本；旧收藏只迁移一次；无重复 SELF/未读/通话按钮。
+  - Verify：真实 PostgreSQL `saved_conversation_integration_test.go` 已覆盖 SELF 单例与 legacy 收藏幂等迁移；Flutter 已有 Saved Messages 页面/会话入口专项回归。最新在制改动仍待整套工具链重跑和 Windows/Android 真人关闭。
+
+- [ ] **P4-029 消息转发**
+  - Progress：首版单目标真实转发已完成、待真人关闭。消息菜单打开目标会话选择器；文本/图片/GIF/Sticker/文件/语音均走统一转发 API。媒体复用现有 `mediaId` 但服务端重新校验源消息当前可见性、媒体 READY/purpose 与目标会话写权限，并写入 `forwarded_from_message_id`；不重新上传同一对象。
+  - Acceptance：首版至少支持单目标转发；文本与媒体均可；复用媒体对象但重新校验源读取和目标写入权限；记录安全的 forward 元数据。
+  - Verify：真实 PostgreSQL 已覆盖可见源消息转发、`forwarded_from_message_id`、本地删除源消息后转发返回 `ErrNotFound`；最近整套 Go/Flutter 记录 PASS；多类型跨端转发真人显示与最新在制改动重跑待人工/自动门禁关闭。
+
+- [ ] **P4-030 会话内消息置顶**
+  - Progress：代码完成、待真人关闭。新增 `conversation_pinned_messages`；消息菜单支持置顶/取消置顶；聊天顶部显示置顶条和数量，点击直接定位并高亮原消息。列表查询受当前 active membership/local delete 约束；撤回消息内容按统一读取逻辑清空。
+  - Acceptance：私聊双方可置顶/取消置顶；聊天顶部展示可点击置顶条；点击定位消息；撤回/失权后不继续泄露正文。
+  - Verify：真实 PostgreSQL 已覆盖双方置顶、本地删除只影响当前用户可见性；Flutter 已覆盖置顶条显示与点击定位高亮；最近整套 Go/Flutter 记录 PASS；多条切换和跨端同步手感待人工。
+
+- [ ] **P4-031 全局聊天记录搜索与原消息定位**
+  - Progress：代码完成、待大历史真人关闭。服务端跨 active 会话搜索 TEXT，排除数据库删除、撤回、本地删除；客户端二级搜索页 280ms debounce 调服务端，并为不在当前 100 条会话缓存中的命中按 conversationId 补拉会话，点击携带 `messageId` 进入聊天后加载旧页并定位/高亮。
+  - Acceptance：跨可见会话搜索文本；排除本地删除/撤回/失权消息；结果显示上下文；点击进入会话并定位对应消息。
+  - Verify：真实 PostgreSQL 已覆盖撤回/本地删除消息不会进入搜索结果；Flutter 已覆盖搜索二级页与会话补拉链，结果补充原发送者信息；最近整套 Go/Flutter 记录 PASS；100+ 会话真人性能仍待人工。
+
+- [ ] **P4-032 回复引用点击定位**
+  - Progress：代码完成、待真人关闭。回复引用条已变为可点击 InkWell；若目标未加载，客户端最多连续补拉 40 页旧历史，找到后 `Scrollable.ensureVisible` 定位并高亮约 1.2 秒；目标已撤回/不可见时给明确提示，不再展示调试式额外提示条。
+  - Acceptance：引用条可点击；已加载消息直接滚动并高亮；未加载时根据 messageId/sequence 拉取附近历史后定位；删除无意义调试提示。
+  - Verify：Flutter 已新增“目标不在首屏 → 分页补拉旧历史 → 定位并高亮”的专门 Widget Test；最近整套 Flutter 记录为 92/92 PASS；撤回目标真人交互提示与最新在制改动重跑仍待关闭。
+
+- [x] **P4-033 DD 品牌图标与 Splash 构建链**
+  - Progress：完成。`scripts/generate-brand-assets.ps1` 自动定位项目品牌母版 `logo.png`（规避 Windows PowerShell 5.1 中文路径编码坑），生成 Android 5 档 launcher/round icon、adaptive foreground、5 档 Splash；Windows 多尺寸 PNG-compressed `.ico`；Web favicon/PWA 192/512；同时在 `设计图/brand-assets` 生成母版副本、1024 图标、透明图标、ICO 和品牌预览图。`build-client.ps1` 每次构建前自动刷新品牌资源。
+  - Acceptance：以 `设计图/logo.png` 为唯一母版，Android launcher/adaptive icon、Windows ico、Web favicon/PWA icon、Android Splash 可重复生成或稳定引用；构建脚本不依赖手工复制。
+  - Verify：2026-08-09 Windows Release / Web Release / Android Debug APK 三端构建全部 PASS，生成资源实际存在。
+
+- [ ] **P4-034 好友通过实时反馈与新的朋友闭环**
+  - Progress：代码完成、待双端真人关闭。联系人根页每次进入主动 reload；好友接受事务新增 SYSTEM 消息 `我刚刚同意了你的好友请求` 并进入现有 Outbox/Realtime 链；对端收到该系统消息立即触发联系人/申请列表 refresh token，不需要大退。已接受申请继续留在“新的朋友”，状态中文化并可点击直接进入私聊；未处理角标固定为 20px 紧凑 badge，不再被 Row 拉成长竖条。好友接受只改变联系人关系，不再决定 DIRECT 是否可写。
+  - Acceptance：好友接受后双方无需重启即可看到联系人/申请状态；聊天立即出现系统提示；已接受申请点击进入私聊；角标视觉正常；不影响“非好友也可 DDID 直聊”的新规则。
+  - Verify：联系人 Widget 回归 PASS；SYSTEM 消息 Widget 回归 PASS；真实 PostgreSQL `TestRelationshipLifecycleWithPostgres` PASS 并断言 SYSTEM 消息真实落库；最近记录 Flutter 全套 92/92 PASS。
+
+- [ ] **P4-035 Android 会话左右滑快捷操作**
+  - Progress：代码完成、待真机手感关闭。普通会话右滑显示置顶/取消置顶与未读时“标为已读”；左滑显示静音/取消静音、归档/取消归档、删除本地会话。快捷操作复用现有 preference/local-hide 服务，不额外造一套状态。
+  - Acceptance：右滑置顶/已读，左滑静音/归档/删除；横向手势不明显破坏纵向列表滚动；危险删除视觉与确认合理；操作后列表立即更新并与服务端状态一致。
+  - Verify：`conversations_page_test.dart` 已有右滑置顶/已读、左滑静音/归档/删除 Widget 回归；Android 真机手势冲突/动画仍待人工。
 
 ### Checkpoint P4：MVP 核心门
 
@@ -419,12 +483,12 @@
   - Verify：大图、断网、取消、粘贴、拖拽、跨端显示测试。
 
 - [ ] **P5-009 Flutter 文件消息和桌面拖拽**
-  - Progress：普通文件选择/私有上传/FILE 可靠消息/文件名与大小气泡已接；2026-08-08 已改成双遍流式读取：第一遍流式 SHA-256，第二遍 StreamedRequest 上传，不再把整个文件读入内存，支持实时进度与上传中取消，客户端恢复使用服务端 2 GiB 上限。下载端已从“复制临时 URL”升级为系统保存位置 + 授权流式下载 + 真实进度 + 点击取消，且取消前不会写入半截目标文件。剩桌面拖拽、断点续传、超大下载落盘流式化与安全直接打开策略。
+  - Progress：普通文件选择/私有上传/FILE 可靠消息/文件名与大小气泡已接；上传使用双遍流式读取（SHA-256 + StreamedRequest），支持真实进度和取消，服务端上限 2 GiB。下载支持系统保存位置、授权流式下载、真实进度和取消，取消前不写半截目标文件。**Windows 桌面拖拽已接 `desktop_drop`，松手后先展示确认层；图片可选普通图片或“作为文件发送”，多文件显示数量与总大小。**剩剪贴板媒体、断点续传、超大下载直接落盘优化与安全直接打开策略。
   - Acceptance：大小提示、进度、取消、重试和打开策略安全。
   - Verify：Windows/Web/Android 测试。
 
 - [ ] **P5-010 Flutter 语音录制**
-  - Progress：`record` 已接 WAV 录制；Android 长按/上滑取消、桌面/Web 点击开始结束、10 分钟上限、私有上传并进入 durable pending 已实现，真实权限/设备行为留晚间人工验收。
+  - Progress：Android 已改为按下即录、滑动进入取消区、松开发送/取消并带实时振幅反馈；录音编码优先使用跨 Windows/Android 稳定的 48kHz / 96kbps AAC-LC，PCM/WAV 仅作为兼容回退；桌面/Web 保留点击开始/结束，10 分钟上限、私有上传和 durable pending 已接。真实权限/设备麦克风行为仍待人工。
   - Acceptance：Android/iOS 支持按住说话、上滑取消、录制计时、最大时长、权限拒绝恢复；Windows/Web 支持点击开始/结束录音；录音完成进入可靠发送队列。
   - Verify：Android/iOS/Windows/Web 权限、取消、断网、重试测试。
 
@@ -437,6 +501,11 @@
   - Progress：本地 GIF 与 PNG/WebP/GIF 图片表情已经走对象存储、可靠消息和授权下载；自定义贴纸收藏/贴纸包、最近表情管理和可选第三方 GIF 搜索仍待开发。
   - Acceptance：本地 GIF 可上传/发送/播放；静态 Sticker 可收藏并组成自定义贴纸包；资源走对象存储和权限校验。第三方 GIF 搜索 Provider 为可选插件，不得成为核心依赖。
   - Verify：无第三方网络时本地 GIF/Sticker 仍可发送；跨用户越权、超大文件和畸形媒体测试。
+
+- [ ] **P5-013 可见媒体懒加载与本地持久化缓存**
+  - Progress：代码完成、待真人性能关闭。聊天 ListView 继续按可见/邻近气泡懒构建；图片/GIF/Sticker 首次可见时下载真实 bytes 并按 `userId + mediaId` 写入 Application Support 媒体缓存，再次进入会话优先磁盘命中；语音播放复用同一缓存。并发相同 mediaId 合并为一个 in-flight 请求；内存只保留 24 条热点，磁盘上限 512 MiB 并按最旧访问时间清理；缓存不可写只退化在线读取，不影响消息。
+  - Acceptance：已加载媒体二次进入会话不再反复转圈；不同账号缓存隔离；长期缓存有容量上限；缓存损坏可重新下载。
+  - Verify：内存命中、跨 cache 实例磁盘命中、并发去重、账号隔离单测已有 PASS 记录；最近整套 Flutter 记录为 92/92 PASS；Android/Windows 二次打开速度、断网已缓存显示与最新在制改动重跑待人工/自动门禁关闭。
 
 ### Checkpoint P5
 

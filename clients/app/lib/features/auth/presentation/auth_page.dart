@@ -2,17 +2,34 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
+import '../../../theme/app_theme.dart';
 import '../../shell/presentation/main_shell_page.dart';
 import '../data/auth_api_client.dart';
 import '../data/auth_session_vault.dart';
+import '../data/login_history_store.dart';
+import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
 import 'password_reset_page.dart';
 
 class AuthPage extends StatefulWidget {
-  const AuthPage({super.key, this.gateway});
+  const AuthPage({
+    super.key,
+    this.gateway,
+    this.historyStore,
+    this.vault,
+    this.initialSession,
+    this.initialOrigin,
+    this.restoreSession = true,
+  });
 
   final AuthGateway? gateway;
+  final LoginHistoryRepository? historyStore;
+  final AuthSessionVault? vault;
+  final AuthSession? initialSession;
+  final Uri? initialOrigin;
+  final bool restoreSession;
 
   @override
   State<AuthPage> createState() => _AuthPageState();
@@ -29,14 +46,17 @@ class _AuthPageState extends State<AuthPage>
   late final TextEditingController _password;
   late final TextEditingController _handle;
   late final TextEditingController _displayName;
+  late final FocusNode _passwordFocus;
   late final AuthSessionVault _vault;
+  late final LoginHistoryRepository _historyStore;
 
   AuthSession? _session;
   bool _busy = false;
   String? _message;
   bool _messageIsError = false;
   Timer? _refreshTimer;
-  bool _refreshingSession = false;
+  Future<AuthSession?>? _refreshInFlight;
+  List<LoginHistoryEntry> _loginHistory = const [];
 
   @override
   void initState() {
@@ -44,15 +64,27 @@ class _AuthPageState extends State<AuthPage>
     _ownsGateway = widget.gateway == null;
     _gateway = widget.gateway ?? AuthApiClient();
     _tabs = TabController(length: 2, vsync: this);
-    _origin = TextEditingController(text: 'http://127.0.0.1:18473');
+    _origin = TextEditingController(
+      text: (widget.initialOrigin ?? Uri.parse('http://127.0.0.1:18473'))
+          .toString(),
+    );
     _email = TextEditingController();
     _code = TextEditingController();
     _password = TextEditingController();
     _handle = TextEditingController();
     _displayName = TextEditingController();
-    _vault = AuthSessionVault();
+    _passwordFocus = FocusNode(debugLabel: 'auth-password');
+    _vault = widget.vault ?? AuthSessionVault();
+    _historyStore = widget.historyStore ?? LoginHistoryStore();
+    _session = widget.initialSession;
     WidgetsBinding.instance.addObserver(this);
-    _restoreSession();
+    unawaited(_loadLoginHistory());
+    final initialSession = _session;
+    if (initialSession != null) {
+      _scheduleSessionRefresh(initialSession);
+    } else if (widget.restoreSession) {
+      unawaited(_restoreSession());
+    }
   }
 
   @override
@@ -77,6 +109,7 @@ class _AuthPageState extends State<AuthPage>
     _password.dispose();
     _handle.dispose();
     _displayName.dispose();
+    _passwordFocus.dispose();
     if (_ownsGateway) _gateway.close();
     super.dispose();
   }
@@ -86,11 +119,12 @@ class _AuthPageState extends State<AuthPage>
     final session = _session;
     if (session != null) {
       return MainShellPage(
-        key: ValueKey(session.tokens.accessToken),
+        key: ValueKey('${session.user.id}-${session.device.id}'),
         origin: _validatedOrigin(),
         session: session,
         authGateway: _gateway,
         onRefreshSession: _refresh,
+        onProfileChanged: _applyProfile,
         onLogout: _clearSession,
       );
     }
@@ -222,7 +256,7 @@ class _AuthPageState extends State<AuthPage>
           enabled: !_busy,
           textInputAction: TextInputAction.next,
           decoration: const InputDecoration(
-            labelText: '账号短号',
+            labelText: 'DDID',
             hintText: 'alice_01',
             helperText: '3–32 位，以字母开头，只用小写字母、数字和下划线。',
             border: OutlineInputBorder(),
@@ -260,6 +294,24 @@ class _AuthPageState extends State<AuthPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_loginHistory.isNotEmpty) ...[
+          _buildLoginHistory(),
+          const SizedBox(height: 18),
+          const Row(
+            children: [
+              Expanded(child: Divider()),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  '其他账号登录',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF888888)),
+                ),
+              ),
+              Expanded(child: Divider()),
+            ],
+          ),
+          const SizedBox(height: 18),
+        ],
         _emailField(),
         const SizedBox(height: 12),
         _passwordField(),
@@ -287,6 +339,134 @@ class _AuthPageState extends State<AuthPage>
     );
   }
 
+  Widget _buildLoginHistory() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          '历史登录',
+          style: TextStyle(fontSize: 13, color: Color(0xFF888888)),
+        ),
+        const SizedBox(height: 8),
+        for (final entry in _loginHistory)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Material(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(DdRadii.surface),
+              child: InkWell(
+                key: Key('login-history-${entry.userId}'),
+                borderRadius: BorderRadius.circular(DdRadii.surface),
+                onTap: () => _selectLoginHistory(entry),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 9,
+                  ),
+                  child: Row(
+                    children: [
+                      _historyAvatar(entry),
+                      const SizedBox(width: 11),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.displayName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'DDID：${entry.ddid} · ${entry.email}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF888888),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        key: Key('login-history-remove-${entry.userId}'),
+                        tooltip: '移除历史账号',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => _removeLoginHistory(entry),
+                        icon: const Icon(Icons.close_rounded, size: 17),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _historyAvatar(LoginHistoryEntry entry) {
+    final bytes = entry.avatarBytes;
+    return ClipOval(
+      child: SizedBox(
+        width: 42,
+        height: 42,
+        child: bytes != null && bytes.isNotEmpty
+            ? Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true)
+            : ColoredBox(
+                color: const Color(0xFF6F9FCA),
+                child: Center(
+                  child: Text(
+                    entry.displayName.trim().isEmpty
+                        ? 'D'
+                        : entry.displayName
+                              .trim()
+                              .characters
+                              .first
+                              .toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+
+  void _selectLoginHistory(LoginHistoryEntry entry) {
+    _origin.text = entry.origin.toString();
+    _email.text = entry.email;
+    _password.clear();
+    _tabs.animateTo(1);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _passwordFocus.requestFocus();
+    });
+  }
+
+  Future<void> _removeLoginHistory(LoginHistoryEntry entry) async {
+    try {
+      await _historyStore.remove(entry);
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _loginHistory = _loginHistory
+          .where(
+            (item) =>
+                item.userId != entry.userId ||
+                item.origin.origin != entry.origin.origin,
+          )
+          .toList(growable: false);
+    });
+  }
+
   Widget _emailField() {
     return TextField(
       key: const Key('auth-email'),
@@ -307,6 +487,7 @@ class _AuthPageState extends State<AuthPage>
     return TextField(
       key: const Key('auth-password'),
       controller: _password,
+      focusNode: _passwordFocus,
       enabled: !_busy,
       obscureText: true,
       enableSuggestions: false,
@@ -323,7 +504,7 @@ class _AuthPageState extends State<AuthPage>
     final colors = Theme.of(context).colorScheme;
     return Material(
       color: error ? colors.errorContainer : colors.secondaryContainer,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(DdRadii.control),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Text(
@@ -336,6 +517,60 @@ class _AuthPageState extends State<AuthPage>
         ),
       ),
     );
+  }
+
+  Future<void> _loadLoginHistory() async {
+    final entries = await _historyStore.list();
+    if (!mounted) return;
+    setState(() => _loginHistory = entries);
+  }
+
+  Future<void> _rememberLogin(AuthSession session) async {
+    Uint8List? avatarBytes;
+    try {
+      avatarBytes = await _fetchAvatarSnapshot(session);
+    } catch (_) {
+      avatarBytes = null;
+    }
+    final entry = LoginHistoryEntry(
+      origin: _validatedOrigin(),
+      userId: session.user.id,
+      email: session.user.email,
+      ddid: session.user.handle,
+      displayName: session.user.displayName,
+      lastUsedAt: DateTime.now().toUtc(),
+      avatarBytes: avatarBytes,
+    );
+    try {
+      await _historyStore.upsert(entry);
+      final entries = await _historyStore.list();
+      if (mounted) setState(() => _loginHistory = entries);
+    } catch (_) {
+      // Login must never fail because non-secret history metadata could not be
+      // persisted. The active session remains authoritative.
+    }
+  }
+
+  Future<Uint8List?> _fetchAvatarSnapshot(AuthSession session) async {
+    final client = http.Client();
+    try {
+      final response = await client
+          .get(
+            _validatedOrigin().resolve('/api/v1/avatars/${session.user.id}'),
+            headers: {
+              'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
+              'Authorization': 'Bearer ${session.tokens.accessToken}',
+            },
+          )
+          .timeout(const Duration(milliseconds: 1500));
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) return null;
+      // Keep login history light; very large avatar responses are ignored and
+      // the UI falls back to the account initial.
+      if (response.bodyBytes.length > 512 * 1024) return null;
+      return response.bodyBytes;
+    } finally {
+      client.close();
+    }
   }
 
   Uri _validatedOrigin() {
@@ -364,9 +599,15 @@ class _AuthPageState extends State<AuthPage>
     );
     if (!mounted) return;
     setState(() => _session = session);
-    await _persistSession(session);
+    final persisted = await _persistSessionBestEffort(session);
     _scheduleSessionRefresh(session);
-    _setMessage('注册成功，服务端已创建用户、首设备和 Refresh Token。');
+    unawaited(_rememberLogin(session));
+    _setMessage(
+      persisted
+          ? '注册成功，服务端已创建用户、首设备和 Refresh Token。'
+          : '注册成功；本机安全存储暂时被占用，本次会话可继续使用，但下次启动可能需要重新登录。',
+      error: !persisted,
+    );
   });
 
   Future<void> _login() => _run(() async {
@@ -378,38 +619,101 @@ class _AuthPageState extends State<AuthPage>
     );
     if (!mounted) return;
     setState(() => _session = session);
-    await _persistSession(session);
+    final persisted = await _persistSessionBestEffort(session);
     _scheduleSessionRefresh(session);
-    _setMessage('登录成功。');
+    unawaited(_rememberLogin(session));
+    _setMessage(
+      persisted ? '登录成功。' : '登录成功；本机安全存储暂时被占用，本次会话可继续使用，但下次启动可能需要重新登录。',
+      error: !persisted,
+    );
   });
 
-  Future<void> _refresh() => _refreshSession(silent: true);
-
-  Future<void> _refreshSession({required bool silent}) async {
-    if (_refreshingSession) return;
+  Future<void> _applyProfile(AccountProfile profile) async {
     final current = _session;
-    if (current == null) return;
-    _refreshingSession = true;
+    if (current == null || current.user.id != profile.id) return;
+    final next = AuthSession(
+      user: AuthUser(
+        id: current.user.id,
+        email: profile.email,
+        handle: profile.handle,
+        displayName: profile.displayName,
+      ),
+      device: current.device,
+      tokens: current.tokens,
+    );
+    if (!mounted) return;
+    setState(() => _session = next);
+    unawaited(_rememberLogin(next));
+  }
+
+  Future<String?> _refresh() async {
+    final refreshed = await _refreshSession(silent: true);
+    return refreshed?.tokens.accessToken ?? _session?.tokens.accessToken;
+  }
+
+  Future<AuthSession?> _refreshSession({required bool silent}) {
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) return inFlight;
+    final current = _session;
+    if (current == null) return Future<AuthSession?>.value(null);
+
+    final request = _performRefresh(current, silent: silent);
+    _refreshInFlight = request;
+    request.whenComplete(() {
+      if (identical(_refreshInFlight, request)) _refreshInFlight = null;
+    });
+    return request;
+  }
+
+  Future<AuthSession?> _performRefresh(
+    AuthSession current, {
+    required bool silent,
+  }) async {
     try {
       final next = await _gateway.refresh(
         origin: _validatedOrigin(),
         refreshToken: current.tokens.refreshToken,
       );
-      if (!mounted) return;
+      if (!mounted) return next;
       setState(() => _session = next);
-      await _persistSession(next);
       _scheduleSessionRefresh(next);
+      try {
+        await _persistSession(next);
+      } catch (storageError) {
+        // A successful server-side rotation must remain active in memory even
+        // if Windows secure storage is temporarily busy. DdSecureStorage
+        // already retries and serializes writes; do not roll the UI back to an
+        // expired access token just because local persistence failed.
+        if (!silent) {
+          _setMessage('会话已刷新，但本机安全存储暂时不可用：$storageError', error: true);
+        }
+      }
       if (!silent) _setMessage('会话已刷新，Refresh Token 已完成轮换。');
+      return next;
     } catch (error) {
-      if (!mounted) return;
-      if (!silent) _setMessage(_friendlyError(error), error: true);
-      _refreshTimer?.cancel();
-      _refreshTimer = Timer(
-        const Duration(seconds: 30),
-        () => unawaited(_refreshSession(silent: true)),
-      );
-    } finally {
-      _refreshingSession = false;
+      if (error is AuthApiException && error.statusCode == 401) {
+        _refreshTimer?.cancel();
+        try {
+          await _vault.clear();
+        } catch (_) {
+          // Server-side revocation is authoritative even if local secure
+          // storage is temporarily unavailable.
+        }
+        if (mounted) {
+          setState(() => _session = null);
+          _setMessage('登录状态已失效，请重新登录。', error: true);
+        }
+        return null;
+      }
+      if (mounted) {
+        if (!silent) _setMessage(_friendlyError(error), error: true);
+        _refreshTimer?.cancel();
+        _refreshTimer = Timer(
+          const Duration(seconds: 30),
+          () => unawaited(_refreshSession(silent: true)),
+        );
+      }
+      return null;
     }
   }
 
@@ -450,9 +754,13 @@ class _AuthPageState extends State<AuthPage>
       );
       if (!mounted) return;
       setState(() => _session = session);
-      await _persistSession(session);
+      final persisted = await _persistSessionBestEffort(session);
       _scheduleSessionRefresh(session);
-      _setMessage('已从系统安全存储自动恢复登录会话。');
+      unawaited(_rememberLogin(session));
+      _setMessage(
+        persisted ? '已从系统安全存储自动恢复登录会话。' : '登录会话已恢复，但本机安全存储暂时不可写；当前会话仍可继续使用。',
+        error: !persisted,
+      );
     } catch (_) {
       try {
         await _vault.clear();
@@ -466,6 +774,15 @@ class _AuthPageState extends State<AuthPage>
     origin: _validatedOrigin(),
     refreshToken: session.tokens.refreshToken,
   );
+
+  Future<bool> _persistSessionBestEffort(AuthSession session) async {
+    try {
+      await _persistSession(session);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<void> _clearSession() async {
     _refreshTimer?.cancel();
@@ -530,7 +847,7 @@ class _AuthPageState extends State<AuthPage>
         'LOGIN_RATE_LIMITED' => '登录失败次数过多，请 15 分钟后再试。',
         'INVALID_VERIFICATION_CODE' => '验证码错误或已过期。',
         'EMAIL_ALREADY_REGISTERED' => '这个邮箱已经注册。',
-        'HANDLE_UNAVAILABLE' => '这个账号短号不可用。',
+        'HANDLE_UNAVAILABLE' => '这个 DDID 不可用。',
         'INVALID_CREDENTIALS' => '邮箱或密码错误。',
         'SESSION_EXPIRED' => '登录会话已失效，请重新登录。',
         'REGISTRATION_DISABLED' => '当前实例没有开放注册。',

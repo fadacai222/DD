@@ -42,15 +42,17 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 		suffix = suffix[len(suffix)-12:]
 	}
 	email := "auth-" + suffix + "@example.test"
+	newEmail := "auth-new-" + suffix + "@example.test"
 	handle := "u" + suffix
+	newHandle := "v" + suffix
 	passwordValue := "correct horse battery staple 2026"
 
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM auth_login_attempts WHERE email_normalized = $1`, email)
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE email_normalized = $1`, email)
-		_, _ = pool.Exec(cleanupCtx, `DELETE FROM email_codes WHERE email_normalized = $1`, email)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM auth_login_attempts WHERE email_normalized IN ($1,$2)`, email, newEmail)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE email_normalized IN ($1,$2) OR handle_normalized IN ($3,$4)`, email, newEmail, handle, newHandle)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM email_codes WHERE email_normalized IN ($1,$2)`, email, newEmail)
 	}()
 
 	codec, err := emailcode.NewCodec([]byte(strings.Repeat("p", 32)))
@@ -188,6 +190,7 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 		t.Fatalf("get me = %#v err=%v", me, err)
 	}
 	updated, err := service.UpdateMe(ctx, principal, UpdateMeInput{
+		Handle:      newHandle,
 		DisplayName: "Integration Alice Updated",
 		Bio:         "P2 profile integration",
 		Privacy: PrivacySettings{
@@ -195,7 +198,7 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 			ReadReceiptsEnabled: false, NotificationPreviewEnabled: false,
 		},
 	})
-	if err != nil || updated.Profile.DisplayName != "Integration Alice Updated" || !updated.Privacy.AllowEmailSearch {
+	if err != nil || updated.Profile.DisplayName != "Integration Alice Updated" || updated.Profile.Handle != newHandle || !updated.Privacy.AllowEmailSearch {
 		t.Fatalf("update me = %#v err=%v", updated, err)
 	}
 	devices, err := service.ListDevices(ctx, principal)
@@ -237,6 +240,18 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	}
 	if _, err := service.Login(ctx, LoginInput{Email: email, Password: newPassword, Device: registration.DeviceInput{Name: "Rate Limited", Platform: "WEB"}}); !errors.Is(err, ErrLoginRateLimited) {
 		t.Fatalf("login rate limit error = %v", err)
+	}
+
+	newPrincipal, err := service.AuthenticateAccessToken(ctx, newLogin.Tokens.AccessToken)
+	if err != nil {
+		t.Fatalf("authenticate before email change: %v", err)
+	}
+	if err := service.SendEmailChangeCode(ctx, newPrincipal, newEmail); err != nil {
+		t.Fatalf("send email change code: %v", err)
+	}
+	changed, err := service.ChangeEmail(ctx, newPrincipal, ChangeEmailInput{Email: newEmail, Code: mailer.Code()})
+	if err != nil || changed.Profile.Email != newEmail || changed.Profile.Handle != newHandle {
+		t.Fatalf("change email = %#v err=%v", changed, err)
 	}
 }
 

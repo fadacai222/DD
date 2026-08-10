@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../../../core/security/dd_secure_storage.dart';
 
 final class StoredAuthSession {
   const StoredAuthSession({required this.origin, required this.refreshToken});
@@ -9,34 +12,80 @@ final class StoredAuthSession {
 }
 
 final class AuthSessionVault {
-  AuthSessionVault({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
+  AuthSessionVault({SecureKeyValueStore? storage})
+    : _storage = storage ?? DdSecureStorage.shared;
 
-  static const _originKey = 'dd.auth.origin';
-  static const _refreshKey = 'dd.auth.refresh';
+  static const _bundleKey = 'dd.auth.session.v2';
+  static const _legacyOriginKey = 'dd.auth.origin';
+  static const _legacyRefreshKey = 'dd.auth.refresh';
 
-  final FlutterSecureStorage _storage;
+  final SecureKeyValueStore _storage;
 
   Future<void> save({required Uri origin, required String refreshToken}) async {
     if (kIsWeb || refreshToken.isEmpty) return;
-    await _storage.write(key: _originKey, value: origin.toString());
-    await _storage.write(key: _refreshKey, value: refreshToken);
+    await _storage.write(
+      _bundleKey,
+      jsonEncode({
+        'version': 2,
+        'loggedOut': false,
+        'origin': origin.toString(),
+        'refreshToken': refreshToken,
+      }),
+    );
   }
 
   Future<StoredAuthSession?> read() async {
     if (kIsWeb) return null;
-    final originRaw = await _storage.read(key: _originKey);
-    final refreshToken = await _storage.read(key: _refreshKey);
+    final bundled = await _storage.read(_bundleKey);
+    if (bundled != null) {
+      return _decodeBundle(bundled);
+    }
+
+    // One-time compatibility path for sessions persisted before v2. Keep the
+    // legacy keys untouched; once the bundle exists they are never consulted
+    // again, avoiding extra writes/deletes against the shared Windows store.
+    final originRaw = await _storage.read(_legacyOriginKey);
+    final refreshToken = await _storage.read(_legacyRefreshKey);
     final origin = originRaw == null ? null : Uri.tryParse(originRaw);
     if (origin == null || refreshToken == null || refreshToken.isEmpty) {
       return null;
     }
-    return StoredAuthSession(origin: origin, refreshToken: refreshToken);
+    final migrated = StoredAuthSession(
+      origin: origin,
+      refreshToken: refreshToken,
+    );
+    await save(origin: origin, refreshToken: refreshToken);
+    return migrated;
   }
 
   Future<void> clear() async {
     if (kIsWeb) return;
-    await _storage.delete(key: _originKey);
-    await _storage.delete(key: _refreshKey);
+    // Write a tombstone instead of deleting keys. On Windows delete still
+    // performs a read-modify-write of the same encrypted file, and a durable
+    // tombstone also prevents stale legacy refresh tokens from being restored.
+    await _storage.write(
+      _bundleKey,
+      jsonEncode({'version': 2, 'loggedOut': true}),
+    );
+  }
+
+  StoredAuthSession? _decodeBundle(String raw) {
+    if (raw.trim().isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+      if (decoded['loggedOut'] == true) return null;
+      final originRaw = decoded['origin'];
+      final refreshToken = decoded['refreshToken'];
+      final origin = originRaw is String ? Uri.tryParse(originRaw) : null;
+      if (origin == null ||
+          refreshToken is! String ||
+          refreshToken.trim().isEmpty) {
+        return null;
+      }
+      return StoredAuthSession(origin: origin, refreshToken: refreshToken);
+    } catch (_) {
+      return null;
+    }
   }
 }

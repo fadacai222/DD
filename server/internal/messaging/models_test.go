@@ -24,6 +24,9 @@ func TestNormalizeSendInput(t *testing.T) {
 		{name: "valid file", input: SendMessageInput{ClientMessageID: "client-0009", Type: "FILE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000126"}}},
 		{name: "valid voice", input: SendMessageInput{ClientMessageID: "client-0010", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 4200}}},
 		{name: "voice too short", input: SendMessageInput{ClientMessageID: "client-0011", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 100}}, wantErr: ErrInvalidInput},
+		{name: "valid video", input: SendMessageInput{ClientMessageID: "client-0014", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", PosterMediaID: "00000000-0000-0000-0000-000000000129", Width: 1920, Height: 1080, DurationMS: 42000}}},
+		{name: "video missing poster", input: SendMessageInput{ClientMessageID: "client-0015", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", Width: 1920, Height: 1080, DurationMS: 42000}}, wantErr: ErrInvalidInput},
+		{name: "video poster matches primary", input: SendMessageInput{ClientMessageID: "client-0016", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", PosterMediaID: "00000000-0000-0000-0000-000000000128", Width: 1920, Height: 1080, DurationMS: 42000}}, wantErr: ErrInvalidInput},
 		{name: "unsupported type", input: SendMessageInput{ClientMessageID: "client-0012", Type: "POLL", Content: &TextContent{Text: "x"}}, wantErr: ErrUnsupportedType},
 		{name: "bad reply uuid", input: SendMessageInput{ClientMessageID: "client-0013", Type: "TEXT", Content: &TextContent{Text: "x"}, ReplyToMessageID: stringPointer("not-a-uuid")}, wantErr: ErrInvalidInput},
 	}
@@ -41,6 +44,38 @@ func TestNormalizeSendInput(t *testing.T) {
 			}
 			if got.Type != strings.ToUpper(tt.input.Type) || got.Content == nil {
 				t.Fatalf("normalized=%#v", got)
+			}
+		})
+	}
+}
+
+func TestNormalizeEditMessageInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   EditMessageInput
+		wantErr error
+	}{
+		{name: "valid", input: EditMessageInput{Text: "updated text", ExpectedEditVersion: 0}},
+		{name: "preserve surrounding spaces", input: EditMessageInput{Text: "  updated text  ", ExpectedEditVersion: 2}},
+		{name: "blank", input: EditMessageInput{Text: "   ", ExpectedEditVersion: 0}, wantErr: ErrInvalidInput},
+		{name: "too long", input: EditMessageInput{Text: strings.Repeat("界", MaximumTextRunes+1), ExpectedEditVersion: 0}, wantErr: ErrInvalidInput},
+		{name: "nul", input: EditMessageInput{Text: "hello\x00world", ExpectedEditVersion: 0}, wantErr: ErrInvalidInput},
+		{name: "negative version", input: EditMessageInput{Text: "updated", ExpectedEditVersion: -1}, wantErr: ErrInvalidInput},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeEditMessageInput(tt.input)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("error=%v want=%v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Text != tt.input.Text || got.ExpectedEditVersion != tt.input.ExpectedEditVersion {
+				t.Fatalf("normalized=%#v input=%#v", got, tt.input)
 			}
 		})
 	}

@@ -51,9 +51,23 @@ abstract interface class AuthGateway {
   Future<AccountMe> updateMe({
     required Uri origin,
     required String accessToken,
+    required String handle,
     required String displayName,
     required String bio,
     required AccountPrivacy privacy,
+  });
+
+  Future<void> sendEmailChangeCode({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+  });
+
+  Future<AccountMe> changeEmail({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+    required String code,
   });
 
   Future<DateTime> uploadProfileAvatar({
@@ -90,6 +104,12 @@ final class AuthDeviceInput {
     required this.platform,
     this.appVersion = '',
   });
+
+  factory AuthDeviceInput.fromJson(Map<String, dynamic> json) => AuthDeviceInput(
+    name: json['name'] as String? ?? '',
+    platform: json['platform'] as String? ?? '',
+    appVersion: json['appVersion'] as String? ?? '',
+  );
 
   factory AuthDeviceInput.current() {
     final platform = kIsWeb
@@ -251,6 +271,7 @@ final class AuthApiClient implements AuthGateway {
   Future<AccountMe> updateMe({
     required Uri origin,
     required String accessToken,
+    required String handle,
     required String displayName,
     required String bio,
     required AccountPrivacy privacy,
@@ -261,10 +282,46 @@ final class AuthApiClient implements AuthGateway {
       accessToken,
       method: 'PATCH',
       body: {
+        'handle': handle,
         'displayName': displayName,
         'bio': bio,
         'privacy': privacy.toJson(),
       },
+    );
+    if (response.statusCode != 200) throw _exception(response);
+    final body = _decodeObject(response.body);
+    return AccountMe.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
+  @override
+  Future<void> sendEmailChangeCode({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/me/email/send-code',
+      accessToken,
+      method: 'POST',
+      body: {'email': email},
+    );
+    if (response.statusCode != 202) throw _exception(response);
+  }
+
+  @override
+  Future<AccountMe> changeEmail({
+    required Uri origin,
+    required String accessToken,
+    required String email,
+    required String code,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/me/email',
+      accessToken,
+      method: 'PATCH',
+      body: {'email': email, 'code': code},
     );
     if (response.statusCode != 200) throw _exception(response);
     final body = _decodeObject(response.body);

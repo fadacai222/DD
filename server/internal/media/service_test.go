@@ -12,26 +12,35 @@ func TestValidateUploadInputByPurpose(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "chat image jpeg",
+			name:  "chat image jpeg",
 			input: CreateUploadInput{FileName: "photo.jpg", Size: 2 * 1024 * 1024, MIMEType: "image/jpeg", SHA256: strings.Repeat("a", 64), Purpose: PurposeChatImage},
 		},
 		{
-			name: "gif is explicit purpose",
+			name:  "gif is explicit purpose",
 			input: CreateUploadInput{FileName: "fun.gif", Size: 3 * 1024 * 1024, MIMEType: "image/gif", SHA256: strings.Repeat("b", 64), Purpose: PurposeGIF},
 		},
 		{
-			name: "image rejects executable mime",
-			input: CreateUploadInput{FileName: "photo.exe", Size: 1024, MIMEType: "application/x-msdownload", SHA256: strings.Repeat("c", 64), Purpose: PurposeChatImage},
+			name:    "image rejects executable mime",
+			input:   CreateUploadInput{FileName: "photo.exe", Size: 1024, MIMEType: "application/x-msdownload", SHA256: strings.Repeat("c", 64), Purpose: PurposeChatImage},
 			wantErr: ErrInvalidInput,
 		},
 		{
-			name: "voice rejects oversized",
-			input: CreateUploadInput{FileName: "voice.m4a", Size: maxVoiceBytes + 1, MIMEType: "audio/mp4", SHA256: strings.Repeat("d", 64), Purpose: PurposeChatVoice},
+			name:    "voice rejects oversized",
+			input:   CreateUploadInput{FileName: "voice.m4a", Size: maxVoiceBytes + 1, MIMEType: "audio/mp4", SHA256: strings.Repeat("d", 64), Purpose: PurposeChatVoice},
 			wantErr: ErrQuotaExceeded,
 		},
 		{
-			name: "sha must be lowercase hex",
-			input: CreateUploadInput{FileName: "photo.jpg", Size: 1024, MIMEType: "image/jpeg", SHA256: strings.Repeat("Z", 64), Purpose: PurposeChatImage},
+			name:  "chat video mp4",
+			input: CreateUploadInput{FileName: "clip.mp4", Size: 180 * 1024 * 1024, MIMEType: "video/mp4", SHA256: strings.Repeat("e", 64), Purpose: PurposeChatVideo},
+		},
+		{
+			name:    "chat video rejects fake mime",
+			input:   CreateUploadInput{FileName: "clip.exe", Size: 1024, MIMEType: "application/x-msdownload", SHA256: strings.Repeat("f", 64), Purpose: PurposeChatVideo},
+			wantErr: ErrInvalidInput,
+		},
+		{
+			name:    "sha must be lowercase hex",
+			input:   CreateUploadInput{FileName: "photo.jpg", Size: 1024, MIMEType: "image/jpeg", SHA256: strings.Repeat("Z", 64), Purpose: PurposeChatImage},
 			wantErr: ErrInvalidInput,
 		},
 	}

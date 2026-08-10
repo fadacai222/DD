@@ -25,6 +25,8 @@ func mediaPurposeForMessageType(messageType string) (string, bool) {
 		return "CHAT_FILE", true
 	case "VOICE":
 		return "CHAT_VOICE", true
+	case "VIDEO":
+		return "CHAT_VIDEO", true
 	default:
 		return "", false
 	}
@@ -88,32 +90,117 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 		return SendResult{}, err
 	}
 
-	_, _, err = authorizeConversationTx(ctx, tx, principal, conversationID, true)
+	conversationType, _, err := authorizeConversationTx(ctx, tx, principal, conversationID, true)
 	if err != nil {
 		return SendResult{}, err
 	}
 
+	if input.Type == "TEXT" {
+		if len(input.trustedEntities) > 0 {
+			input.Content.Entities = cloneMessageEntities(input.trustedEntities)
+		} else {
+			entities, err := resolveMentionEntitiesTx(
+				ctx,
+				tx,
+				input.Content.Text,
+				conversationType,
+				conversationID,
+				principal.UserID,
+			)
+			if err != nil {
+				return SendResult{}, err
+			}
+			input.Content.Entities = entities
+		}
+	}
+
 	var primaryMediaID *uuid.UUID
+	var thumbnailMediaID *uuid.UUID
 	if mediaPurpose, ok := mediaPurposeForMessageType(input.Type); ok {
 		parsedMediaID := uuid.MustParse(input.Content.MediaID)
 		var originalName string
 		var mimeType string
 		var sizeBytes int64
-		err := tx.QueryRow(ctx, `
-			SELECT original_name,mime_type,size_bytes
-			FROM media_objects
-			WHERE id=$1 AND owner_user_id=$2 AND status='READY' AND purpose=$3 AND deleted_at IS NULL
-		`, parsedMediaID, principal.UserID, mediaPurpose).Scan(&originalName, &mimeType, &sizeBytes)
-		if errors.Is(err, pgx.ErrNoRows) {
+		var mediaErr error
+		if input.forwardSourceID != nil {
+			mediaErr = tx.QueryRow(ctx, `
+				SELECT mo.original_name,mo.mime_type,mo.size_bytes
+				FROM media_objects mo
+				JOIN message_media mm ON mm.media_id=mo.id AND mm.role='PRIMARY'
+				JOIN messages source ON source.id=mm.message_id
+				JOIN conversation_members cm ON cm.conversation_id=source.conversation_id
+				WHERE mo.id=$1 AND mo.status='READY' AND mo.purpose=$3 AND mo.deleted_at IS NULL
+				  AND source.id=$4 AND source.recalled_at IS NULL AND source.deleted_at IS NULL
+				  AND cm.user_id=$2 AND cm.status='ACTIVE'
+				  AND NOT EXISTS(
+					SELECT 1 FROM message_local_deletions d
+					WHERE d.user_id=$2 AND d.message_id=source.id
+				  )
+			`, parsedMediaID, principal.UserID, mediaPurpose, *input.forwardSourceID).Scan(&originalName, &mimeType, &sizeBytes)
+		} else {
+			mediaErr = tx.QueryRow(ctx, `
+				SELECT mo.original_name,mo.mime_type,mo.size_bytes
+				FROM media_objects mo
+				WHERE mo.id=$1 AND mo.status='READY' AND mo.purpose=$3 AND mo.deleted_at IS NULL
+				  AND (
+					mo.owner_user_id=$2
+					OR ($3='STICKER' AND EXISTS(
+						SELECT 1 FROM custom_stickers cs
+						WHERE cs.owner_user_id=$2 AND cs.media_id=mo.id AND cs.deleted_at IS NULL
+					))
+					OR ($3='STICKER' AND EXISTS(
+						SELECT 1
+						FROM telegram_sticker_items tsi
+						JOIN user_sticker_packs usp ON usp.pack_id=tsi.pack_id AND usp.user_id=$2
+						WHERE tsi.media_id=mo.id
+					))
+				  )
+			`, parsedMediaID, principal.UserID, mediaPurpose).Scan(&originalName, &mimeType, &sizeBytes)
+		}
+		if errors.Is(mediaErr, pgx.ErrNoRows) {
 			return SendResult{}, ErrForbidden
 		}
-		if err != nil {
-			return SendResult{}, fmt.Errorf("authorize %s media: %w", input.Type, err)
+		if mediaErr != nil {
+			return SendResult{}, fmt.Errorf("authorize %s media: %w", input.Type, mediaErr)
 		}
 		input.Content.FileName = originalName
 		input.Content.MIMEType = mimeType
 		input.Content.SizeBytes = sizeBytes
 		primaryMediaID = &parsedMediaID
+
+		if input.Type == "VIDEO" {
+			parsedPosterID := uuid.MustParse(input.Content.PosterMediaID)
+			var posterErr error
+			if input.forwardSourceID != nil {
+				posterErr = tx.QueryRow(ctx, `
+					SELECT mo.id
+					FROM media_objects mo
+					JOIN message_media mm ON mm.media_id=mo.id AND mm.role='THUMBNAIL'
+					JOIN messages source ON source.id=mm.message_id
+					JOIN conversation_members cm ON cm.conversation_id=source.conversation_id
+					WHERE mo.id=$1 AND mo.status='READY' AND mo.purpose='CHAT_IMAGE' AND mo.deleted_at IS NULL
+					  AND source.id=$3 AND source.recalled_at IS NULL AND source.deleted_at IS NULL
+					  AND cm.user_id=$2 AND cm.status='ACTIVE'
+					  AND NOT EXISTS(
+						SELECT 1 FROM message_local_deletions d
+						WHERE d.user_id=$2 AND d.message_id=source.id
+					  )
+				`, parsedPosterID, principal.UserID, *input.forwardSourceID).Scan(&parsedPosterID)
+			} else {
+				posterErr = tx.QueryRow(ctx, `
+					SELECT id FROM media_objects
+					WHERE id=$1 AND owner_user_id=$2 AND status='READY'
+					  AND purpose='CHAT_IMAGE' AND deleted_at IS NULL
+				`, parsedPosterID, principal.UserID).Scan(&parsedPosterID)
+			}
+			if errors.Is(posterErr, pgx.ErrNoRows) {
+				return SendResult{}, ErrForbidden
+			}
+			if posterErr != nil {
+				return SendResult{}, fmt.Errorf("authorize VIDEO thumbnail: %w", posterErr)
+			}
+			thumbnailMediaID = &parsedPosterID
+		}
 	}
 
 	var replyID *uuid.UUID
@@ -141,10 +228,10 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 	contentBytes, _ := json.Marshal(input.Content)
 	var messageID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO messages(conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)
+		INSERT INTO messages(conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)
 		RETURNING id
-	`, conversationID, sequence, principal.UserID, principal.DeviceID, input.ClientMessageID, input.Type, string(contentBytes), replyID, now).Scan(&messageID); err != nil {
+	`, conversationID, sequence, principal.UserID, principal.DeviceID, input.ClientMessageID, input.Type, string(contentBytes), replyID, input.forwardSourceID, now).Scan(&messageID); err != nil {
 		return SendResult{}, fmt.Errorf("insert message: %w", err)
 	}
 	if primaryMediaID != nil {
@@ -155,13 +242,47 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 			return SendResult{}, fmt.Errorf("attach message media: %w", err)
 		}
 	}
+	if thumbnailMediaID != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_media(message_id,media_id,role,created_at)
+			VALUES($1,$2,'THUMBNAIL',$3)
+		`, messageID, *thumbnailMediaID, now); err != nil {
+			return SendResult{}, fmt.Errorf("attach message thumbnail: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_message_id=$2 WHERE id=$1`, conversationID, messageID); err != nil {
 		return SendResult{}, fmt.Errorf("update conversation last message: %w", err)
+	}
+	if conversationType == "SELF" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE conversation_members
+			SET last_read_sequence=$3,hidden_through_sequence=NULL,is_pinned=true,archived_at=NULL
+			WHERE conversation_id=$1 AND user_id=$2 AND status='ACTIVE'
+		`, conversationID, principal.UserID, sequence); err != nil {
+			return SendResult{}, fmt.Errorf("mark self message read: %w", err)
+		}
+	}
+	// Telegram-like archive rule: an incoming message wakes an archived chat
+	// only when that recipient has not muted the conversation. The sender's
+	// archive choice is left untouched.
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_members
+		SET archived_at=NULL
+		WHERE conversation_id=$1 AND user_id<>$2 AND archived_at IS NOT NULL
+		  AND (muted_until IS NULL OR muted_until<=$3)
+	`, conversationID, principal.UserID, now); err != nil {
+		return SendResult{}, fmt.Errorf("wake archived conversation: %w", err)
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"messageId":      messageID.String(),
 		"conversationId": conversationID.String(),
 		"sequence":       sequence,
+		"forwardedFromMessageId": func() any {
+			if input.forwardSourceID == nil {
+				return nil
+			}
+			return input.forwardSourceID.String()
+		}(),
 	})
 	if err := insertOutbox(ctx, tx, "MESSAGE", messageID, "MESSAGE_CREATED", &conversationID, &sequence, nil, payload, now); err != nil {
 		return SendResult{}, err
@@ -203,7 +324,7 @@ func (service *Service) ListMessages(ctx context.Context, principal account.Prin
 		}
 	}
 	rows, err := service.pool.Query(ctx, `
-		SELECT m.id,m.conversation_id,m.sequence,m.sender_user_id,m.sender_device_id,m.client_message_id,m.type,m.content_json,m.reply_to_message_id,m.created_at,m.recalled_at
+		SELECT m.id,m.conversation_id,m.sequence,m.sender_user_id,m.sender_device_id,m.client_message_id,m.type,m.content_json,m.reply_to_message_id,m.forwarded_from_message_id,m.created_at,m.edited_at,m.edit_version,m.recalled_at
 		FROM messages m
 		LEFT JOIN message_local_deletions d ON d.message_id=m.id AND d.user_id=$2
 		WHERE m.conversation_id=$1 AND m.sequence<$3 AND m.deleted_at IS NULL AND d.message_id IS NULL
@@ -258,6 +379,92 @@ func (service *Service) GetMessage(ctx context.Context, principal account.Princi
 		return Message{}, ErrNotFound
 	}
 	return message, nil
+}
+
+func (service *Service) EditMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID, input EditMessageInput) (SendResult, error) {
+	input, err := normalizeEditMessageInput(input)
+	if err != nil {
+		return SendResult{}, err
+	}
+	now := service.now().UTC()
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return SendResult{}, fmt.Errorf("begin edit message: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	message, err := loadMessageByIDForUpdateTx(ctx, tx, messageID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if message.SenderUserID != principal.UserID.String() || message.RecalledAt != nil {
+		return SendResult{}, ErrEditForbidden
+	}
+	if message.Type != "TEXT" {
+		return SendResult{}, ErrEditUnsupported
+	}
+	conversationID := uuid.MustParse(message.ConversationID)
+	conversationType, _, err := authorizeConversationTx(ctx, tx, principal, conversationID, false)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if message.Content != nil && message.Content.Text == input.Text {
+		memberIDs, err := activeMemberIDsTx(ctx, tx, conversationID)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return SendResult{}, fmt.Errorf("commit idempotent edit: %w", err)
+		}
+		return SendResult{Message: message, NotifyUserIDs: memberIDs}, nil
+	}
+	if message.EditVersion != input.ExpectedEditVersion {
+		return SendResult{}, ErrEditConflict
+	}
+	entities, err := resolveMentionEntitiesTx(
+		ctx,
+		tx,
+		input.Text,
+		conversationType,
+		conversationID,
+		principal.UserID,
+	)
+	if err != nil {
+		return SendResult{}, err
+	}
+	contentValue := TextContent{Text: input.Text, Entities: entities}
+	content, err := json.Marshal(contentValue)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("marshal edited message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE messages
+		SET content_json=$2::jsonb, edited_at=$3, edit_version=edit_version+1
+		WHERE id=$1
+	`, messageID, content, now); err != nil {
+		return SendResult{}, fmt.Errorf("edit message: %w", err)
+	}
+	message.Content = &contentValue
+	message.EditedAt = &now
+	message.EditVersion++
+	sequence := message.Sequence
+	payload, _ := json.Marshal(map[string]any{
+		"messageId":      message.ID,
+		"conversationId": message.ConversationID,
+		"sequence":       message.Sequence,
+		"editVersion":    message.EditVersion,
+	})
+	if err := insertOutbox(ctx, tx, "MESSAGE", messageID, "MESSAGE_EDITED", &conversationID, &sequence, nil, payload, now); err != nil {
+		return SendResult{}, err
+	}
+	memberIDs, err := activeMemberIDsTx(ctx, tx, conversationID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SendResult{}, fmt.Errorf("commit edit message: %w", err)
+	}
+	return SendResult{Message: message, NotifyUserIDs: memberIDs}, nil
 }
 
 func (service *Service) RecallMessage(ctx context.Context, principal account.Principal, messageID uuid.UUID) (SendResult, error) {
@@ -328,6 +535,11 @@ func (service *Service) DeleteMessageLocally(ctx context.Context, principal acco
 	`, principal.UserID, messageID, now); err != nil {
 		return fmt.Errorf("delete message locally: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM saved_messages WHERE user_id=$1 AND migrated_message_id=$2
+	`, principal.UserID, messageID); err != nil {
+		return fmt.Errorf("delete migrated saved bookmark: %w", err)
+	}
 	conversationID := uuid.MustParse(message.ConversationID)
 	payload, _ := json.Marshal(map[string]any{"messageId": message.ID, "conversationId": message.ConversationID})
 	if err := insertOutbox(ctx, tx, "MESSAGE", messageID, "MESSAGE_LOCAL_DELETED", &conversationID, nil, &principal.UserID, payload, now); err != nil {
@@ -338,7 +550,7 @@ func (service *Service) DeleteMessageLocally(ctx context.Context, principal acco
 
 func (service *Service) loadMessageByClientID(ctx context.Context, deviceID uuid.UUID, clientMessageID string) (Message, error) {
 	row := service.pool.QueryRow(ctx, `
-		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at,recalled_at
+		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at,edited_at,edit_version,recalled_at
 		FROM messages WHERE sender_device_id=$1 AND client_message_id=$2 AND deleted_at IS NULL
 	`, deviceID, clientMessageID)
 	return scanMessageRow(row)
@@ -346,7 +558,7 @@ func (service *Service) loadMessageByClientID(ctx context.Context, deviceID uuid
 
 func loadMessageByClientIDTx(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID, clientMessageID string) (Message, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at,recalled_at
+		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at,edited_at,edit_version,recalled_at
 		FROM messages WHERE sender_device_id=$1 AND client_message_id=$2 AND deleted_at IS NULL
 	`, deviceID, clientMessageID)
 	return scanMessageRow(row)
@@ -354,7 +566,7 @@ func loadMessageByClientIDTx(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID,
 
 func (service *Service) loadMessageByID(ctx context.Context, messageID uuid.UUID) (Message, error) {
 	row := service.pool.QueryRow(ctx, `
-		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at,recalled_at
+		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at,edited_at,edit_version,recalled_at
 		FROM messages WHERE id=$1 AND deleted_at IS NULL
 	`, messageID)
 	return scanMessageRow(row)
@@ -362,7 +574,7 @@ func (service *Service) loadMessageByID(ctx context.Context, messageID uuid.UUID
 
 func loadMessageByIDTx(ctx context.Context, tx pgx.Tx, messageID uuid.UUID) (Message, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at,recalled_at
+		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at,edited_at,edit_version,recalled_at
 		FROM messages WHERE id=$1 AND deleted_at IS NULL
 	`, messageID)
 	return scanMessageRow(row)
@@ -370,7 +582,7 @@ func loadMessageByIDTx(ctx context.Context, tx pgx.Tx, messageID uuid.UUID) (Mes
 
 func loadMessageByIDForUpdateTx(ctx context.Context, tx pgx.Tx, messageID uuid.UUID) (Message, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,created_at,recalled_at
+		SELECT id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,reply_to_message_id,forwarded_from_message_id,created_at,edited_at,edit_version,recalled_at
 		FROM messages WHERE id=$1 AND deleted_at IS NULL FOR UPDATE
 	`, messageID)
 	return scanMessageRow(row)
@@ -378,10 +590,10 @@ func loadMessageByIDForUpdateTx(ctx context.Context, tx pgx.Tx, messageID uuid.U
 
 func (service *Service) loadLastVisibleMessage(ctx context.Context, userID, conversationID uuid.UUID) (Message, error) {
 	row := service.pool.QueryRow(ctx, `
-		SELECT m.id,m.conversation_id,m.sequence,m.sender_user_id,m.sender_device_id,m.client_message_id,m.type,m.content_json,m.reply_to_message_id,m.created_at,m.recalled_at
+		SELECT m.id,m.conversation_id,m.sequence,m.sender_user_id,m.sender_device_id,m.client_message_id,m.type,m.content_json,m.reply_to_message_id,m.forwarded_from_message_id,m.created_at,m.edited_at,m.edit_version,m.recalled_at
 		FROM messages m
 		LEFT JOIN message_local_deletions d ON d.message_id=m.id AND d.user_id=$1
-		WHERE m.conversation_id=$2 AND m.deleted_at IS NULL AND d.message_id IS NULL
+		WHERE m.conversation_id=$2 AND m.deleted_at IS NULL AND m.recalled_at IS NULL AND d.message_id IS NULL
 		ORDER BY m.sequence DESC LIMIT 1
 	`, userID, conversationID)
 	return scanMessageRow(row)
@@ -399,8 +611,9 @@ func scanMessageRow(row rowScanner) (Message, error) {
 	var result Message
 	var id, conversationID, senderUserID, senderDeviceID uuid.UUID
 	var replyID *uuid.UUID
+	var forwardID *uuid.UUID
 	var rawContent []byte
-	if err := row.Scan(&id, &conversationID, &result.Sequence, &senderUserID, &senderDeviceID, &result.ClientMessageID, &result.Type, &rawContent, &replyID, &result.CreatedAt, &result.RecalledAt); errors.Is(err, pgx.ErrNoRows) {
+	if err := row.Scan(&id, &conversationID, &result.Sequence, &senderUserID, &senderDeviceID, &result.ClientMessageID, &result.Type, &rawContent, &replyID, &forwardID, &result.CreatedAt, &result.EditedAt, &result.EditVersion, &result.RecalledAt); errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
 	} else if err != nil {
 		return Message{}, fmt.Errorf("scan message: %w", err)
@@ -413,7 +626,11 @@ func scanMessageRow(row rowScanner) (Message, error) {
 		value := replyID.String()
 		result.ReplyToMessageID = &value
 	}
-	if result.Type == "TEXT" {
+	if forwardID != nil {
+		value := forwardID.String()
+		result.ForwardedFromMessageID = &value
+	}
+	if result.Type != "ENCRYPTED" {
 		var content TextContent
 		if len(rawContent) > 0 {
 			if err := json.Unmarshal(rawContent, &content); err != nil {
@@ -421,7 +638,7 @@ func scanMessageRow(row rowScanner) (Message, error) {
 			}
 		}
 		if result.RecalledAt != nil {
-			content.Text = ""
+			content = TextContent{}
 		}
 		result.Content = &content
 	}

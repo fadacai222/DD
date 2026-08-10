@@ -238,7 +238,7 @@ func (s *server) handleCalls(response http.ResponseWriter, request *http.Request
 		return
 	}
 
-	call, err := s.calls.create(s.now(), s.callRingTimeout, input)
+	call, err := s.legacyCalls.create(s.now(), s.callRingTimeout, input)
 	if err != nil {
 		if errors.Is(err, errCallBusy) {
 			writeAPIError(response, http.StatusConflict, "CALL_BUSY", err.Error())
@@ -263,7 +263,7 @@ func (s *server) handleActiveCall(response http.ResponseWriter, request *http.Re
 		writeAPIError(response, http.StatusBadRequest, "INVALID_CALL_IDENTITY", "participant_identity is invalid")
 		return
 	}
-	call, ok := s.calls.activeFor(identity)
+	call, ok := s.legacyCalls.activeFor(identity)
 	if !ok {
 		response.WriteHeader(http.StatusNoContent)
 		return
@@ -311,7 +311,7 @@ func (s *server) handleCallAction(response http.ResponseWriter, request *http.Re
 		return
 	}
 
-	call, err := s.calls.applyAction(callID, s.now(), input.ParticipantIdentity, input.Action)
+	call, err := s.legacyCalls.applyAction(callID, s.now(), input.ParticipantIdentity, input.Action)
 	if err != nil {
 		switch {
 		case errors.Is(err, errCallNotFound):
@@ -355,7 +355,7 @@ func (s *server) handleScopedCallToken(response http.ResponseWriter, request *ht
 		return
 	}
 
-	call, ok := s.calls.get(callID)
+	call, ok := s.legacyCalls.get(callID)
 	if !ok {
 		writeAPIError(response, http.StatusNotFound, "CALL_NOT_FOUND", "Call not found")
 		return
@@ -374,7 +374,7 @@ func (s *server) handleScopedCallToken(response http.ResponseWriter, request *ht
 
 func (s *server) scheduleCallTimeout(call callSession) {
 	time.AfterFunc(s.callRingTimeout, func() {
-		timedOut, ok := s.calls.timeout(call.ID, s.now())
+		timedOut, ok := s.legacyCalls.timeout(call.ID, s.now())
 		if !ok {
 			return
 		}

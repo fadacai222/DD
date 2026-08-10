@@ -21,6 +21,11 @@ if (-not (Test-Path -LiteralPath $FlutterExe)) {
 if (-not (Test-Path -LiteralPath $JavaHome)) {
     throw "JDK not found: $JavaHome"
 }
+$BrandGenerator = Join-Path $PSScriptRoot 'generate-brand-assets.ps1'
+if (-not (Test-Path -LiteralPath $BrandGenerator)) {
+    throw "Brand asset generator not found: $BrandGenerator"
+}
+& $BrandGenerator
 $DeveloperMode = Get-ItemPropertyValue `
     -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' `
     -Name 'AllowDevelopmentWithoutDevLicense' `
@@ -174,6 +179,7 @@ function Reset-WindowsFlutterGeneratedState {
 
 function Build-Windows {
     Assert-WindowsATL
+    $BuildStartedAtUtc = [DateTime]::UtcNow
     $Drive = Get-FreeSubstDrive
     & subst.exe $Drive $Root
     if ($LASTEXITCODE -ne 0) {
@@ -197,6 +203,16 @@ function Build-Windows {
             Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp
             Invoke-Flutter @('build', 'windows', '--release', '--no-pub') $MappedApp 'Windows release build failed after cache repair.'
         }
+
+        $WindowsExe = Join-Path $MappedApp 'build\windows\x64\runner\Release\im_client.exe'
+        if (-not (Test-Path -LiteralPath $WindowsExe)) {
+            throw 'Windows build reported success, but im_client.exe was not produced.'
+        }
+        $Artifact = Get-Item -LiteralPath $WindowsExe
+        if ($Artifact.LastWriteTimeUtc -lt $BuildStartedAtUtc.AddSeconds(-2)) {
+            throw "Windows build returned success but the release executable is stale: $($Artifact.LastWriteTime). Refusing to publish an old client."
+        }
+        Write-Host "Fresh Windows artifact: $WindowsExe ($($Artifact.LastWriteTime))"
     }
     finally {
         Set-Location 'C:\'
@@ -214,6 +230,7 @@ function Test-KnownAndroidKgpStack {
 
     $LockText = Get-Content -LiteralPath $LockFile -Raw -Encoding UTF8
     return `
+        ($LockText -match '(?ms)^  desktop_drop:.*?^    version: "0\.7\.1"\s*$') -and `
         ($LockText -match '(?ms)^  livekit_client:.*?^    version: "2\.10\.0"\s*$') -and `
         ($LockText -match '(?ms)^  flutter_webrtc:.*?^    version: "1\.6\.0"\s*$') -and `
         ($LockText -match '(?ms)^  device_info_plus:.*?^    version: "12\.4\.0"\s*$')
@@ -246,7 +263,7 @@ function Invoke-FlutterAndroidBuild {
         $SuppressKnownKgpWarning = $false
         foreach ($Line in $Output) {
             $Text = [string]$Line
-            if ($KnownKgpStack -and $Text -match 'WARNING: Your app uses the following plugins that apply Kotlin Gradle Plugin \(KGP\): device_info_plus, flutter_webrtc, livekit_client') {
+            if ($KnownKgpStack -and $Text -match 'WARNING: Your app uses the following plugins that apply Kotlin Gradle Plugin \(KGP\): desktop_drop, device_info_plus, flutter_webrtc, livekit_client') {
                 $SuppressKnownKgpWarning = $true
                 continue
             }

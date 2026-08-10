@@ -21,15 +21,18 @@ void main() {
     expect(wav.sublist(44), pcm);
   });
 
-  test('wrapPcm16AsWav keeps stereo byte rate and block alignment coherent', () {
-    final pcm = Uint8List(16);
-    final wav = wrapPcm16AsWav(pcm, sampleRate: 48000, channels: 2);
-    final header = ByteData.sublistView(wav);
+  test(
+    'wrapPcm16AsWav keeps stereo byte rate and block alignment coherent',
+    () {
+      final pcm = Uint8List(16);
+      final wav = wrapPcm16AsWav(pcm, sampleRate: 48000, channels: 2);
+      final header = ByteData.sublistView(wav);
 
-    expect(header.getUint16(22, Endian.little), 2);
-    expect(header.getUint32(24, Endian.little), 48000);
-    expect(header.getUint32(28, Endian.little), 192000);
-    expect(header.getUint16(32, Endian.little), 4);
-    expect(header.getUint32(4, Endian.little), 36 + pcm.length);
-  });
+      expect(header.getUint16(22, Endian.little), 2);
+      expect(header.getUint32(24, Endian.little), 48000);
+      expect(header.getUint32(28, Endian.little), 192000);
+      expect(header.getUint16(32, Endian.little), 4);
+      expect(header.getUint32(4, Endian.little), 36 + pcm.length);
+    },
+  );
 }

@@ -1,5 +1,6 @@
 #include "win32_window.h"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <windowsx.h>
 #include <flutter_windows.h>
@@ -138,8 +139,18 @@ void Win32Window::Destroy() {
 }
 
 void Win32Window::SetChildContent(HWND content) {
+  if (child_content_ != nullptr && child_content_ != content) {
+    ::RemoveWindowSubclass(child_content_, ChildContentSubclassProc, 1);
+  }
   child_content_ = content;
   ::SetParent(content, window_handle_);
+  // Flutter's engine view fills the complete client area. Without this
+  // subclass, WM_NCHITTEST lands on the child HWND and the top-level window
+  // never gets a chance to return HTLEFT/HTTOP/etc. Returning HTTRANSPARENT
+  // only inside the resize border lets Windows continue hit testing the parent
+  // while all normal client interactions still go straight to Flutter.
+  ::SetWindowSubclass(content, ChildContentSubclassProc, 1,
+                      reinterpret_cast<DWORD_PTR>(this));
   const RECT frame = GetClientArea();
   ::MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
                frame.bottom - frame.top, TRUE);
@@ -176,6 +187,47 @@ LRESULT CALLBACK Win32Window::WndProc(HWND window, UINT message, WPARAM wparam,
   return ::DefWindowProc(window, message, wparam, lparam);
 }
 
+LRESULT CALLBACK Win32Window::ChildContentSubclassProc(
+    HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+    UINT_PTR subclass_id, DWORD_PTR reference_data) noexcept {
+  auto* owner = reinterpret_cast<Win32Window*>(reference_data);
+  if (message == WM_NCHITTEST && owner != nullptr &&
+      owner->window_handle_ != nullptr) {
+    const LRESULT hit = owner->HitTestResizeBorder(owner->window_handle_, lparam);
+    if (hit != HTCLIENT) {
+      return HTTRANSPARENT;
+    }
+  }
+  if (message == WM_NCDESTROY) {
+    ::RemoveWindowSubclass(window, ChildContentSubclassProc, subclass_id);
+  }
+  return ::DefSubclassProc(window, message, wparam, lparam);
+}
+
+LRESULT Win32Window::HitTestResizeBorder(HWND window,
+                                         LPARAM lparam) const noexcept {
+  if (::IsZoomed(window)) return HTCLIENT;
+  RECT rect{};
+  if (!::GetWindowRect(window, &rect)) return HTCLIENT;
+  const int x = GET_X_LPARAM(lparam);
+  const int y = GET_Y_LPARAM(lparam);
+  const UINT dpi = ::GetDpiForWindow(window);
+  const int border = ::MulDiv(8, dpi == 0 ? 96 : dpi, 96);
+  const bool left = x >= rect.left && x < rect.left + border;
+  const bool right = x <= rect.right && x > rect.right - border;
+  const bool top = y >= rect.top && y < rect.top + border;
+  const bool bottom = y <= rect.bottom && y > rect.bottom - border;
+  if (top && left) return HTTOPLEFT;
+  if (top && right) return HTTOPRIGHT;
+  if (bottom && left) return HTBOTTOMLEFT;
+  if (bottom && right) return HTBOTTOMRIGHT;
+  if (left) return HTLEFT;
+  if (right) return HTRIGHT;
+  if (top) return HTTOP;
+  if (bottom) return HTBOTTOM;
+  return HTCLIENT;
+}
+
 LRESULT Win32Window::MessageHandler(HWND window, UINT message, WPARAM wparam,
                                     LPARAM lparam) noexcept {
   switch (message) {
@@ -184,31 +236,14 @@ LRESULT Win32Window::MessageHandler(HWND window, UINT message, WPARAM wparam,
         return 0;
       }
       return ::DefWindowProc(window, message, wparam, lparam);
-    case WM_NCHITTEST: {
-      if (::IsZoomed(window)) return HTCLIENT;
-      RECT rect{};
-      ::GetWindowRect(window, &rect);
-      const int x = GET_X_LPARAM(lparam);
-      const int y = GET_Y_LPARAM(lparam);
-      const int border = ::MulDiv(8, ::GetDpiForWindow(window), 96);
-      const bool left = x >= rect.left && x < rect.left + border;
-      const bool right = x <= rect.right && x > rect.right - border;
-      const bool top = y >= rect.top && y < rect.top + border;
-      const bool bottom = y <= rect.bottom && y > rect.bottom - border;
-      if (top && left) return HTTOPLEFT;
-      if (top && right) return HTTOPRIGHT;
-      if (bottom && left) return HTBOTTOMLEFT;
-      if (bottom && right) return HTBOTTOMRIGHT;
-      if (left) return HTLEFT;
-      if (right) return HTRIGHT;
-      if (top) return HTTOP;
-      if (bottom) return HTBOTTOM;
-      return HTCLIENT;
-    }
+    case WM_NCHITTEST:
+      return HitTestResizeBorder(window, lparam);
     case WM_GETMINMAXINFO: {
       auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
-      info->ptMinTrackSize.x = 720;
-      info->ptMinTrackSize.y = 520;
+      const UINT dpi = ::GetDpiForWindow(window);
+      const int effective_dpi = dpi == 0 ? 96 : static_cast<int>(dpi);
+      info->ptMinTrackSize.x = ::MulDiv(720, effective_dpi, 96);
+      info->ptMinTrackSize.y = ::MulDiv(520, effective_dpi, 96);
 
       // WS_POPUP frameless windows need explicit work-area bounds or a maximized
       // window may cover the taskbar. Match normal Windows window behavior.
@@ -225,7 +260,14 @@ LRESULT Win32Window::MessageHandler(HWND window, UINT message, WPARAM wparam,
       }
       return 0;
     }
+    case WM_ERASEBKGND:
+      // Flutter paints the complete client surface. Mark the erase as handled
+      // to avoid a native gray/white flash during interactive resize.
+      return 1;
     case WM_DESTROY:
+      if (child_content_ != nullptr) {
+        ::RemoveWindowSubclass(child_content_, ChildContentSubclassProc, 1);
+      }
       window_handle_ = nullptr;
       child_content_ = nullptr;
       if (quit_on_close_) {

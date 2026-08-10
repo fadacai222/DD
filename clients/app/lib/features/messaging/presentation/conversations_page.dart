@@ -1,14 +1,21 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
+import '../../../core/logging/client_log.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../calls/domain/call_session.dart';
+import '../../groups/domain/group_models.dart';
+import '../../groups/presentation/create_group_page.dart';
 import '../application/messaging_coordinator.dart';
 import '../domain/messaging_models.dart';
+import 'conversations_page_controller.dart';
+import 'messaging_search_page.dart';
+import 'saved_messages_page.dart';
 import 'text_chat_page.dart';
 
 class ConversationsPage extends StatefulWidget {
@@ -22,7 +29,9 @@ class ConversationsPage extends StatefulWidget {
     this.currentUserAvatarRevision = 0,
     this.onStartCall,
     this.onOpenContacts,
+    this.onOpenAddFriend,
     this.coordinator,
+    this.navigationController,
     this.hostVisible = true,
     this.embedded = false,
   });
@@ -36,7 +45,9 @@ class ConversationsPage extends StatefulWidget {
   final Future<void> Function(String peerId, String peerName, CallKind kind)?
   onStartCall;
   final VoidCallback? onOpenContacts;
+  final VoidCallback? onOpenAddFriend;
   final MessagingCoordinator? coordinator;
+  final ConversationsPageController? navigationController;
   final bool hostVisible;
   final bool embedded;
 
@@ -50,6 +61,8 @@ class _ConversationsPageState extends State<ConversationsPage> {
   late final TextEditingController _searchController;
   String _query = '';
   String? _selectedConversationId;
+  bool _showArchived = false;
+  int _handledNavigationSerial = 0;
 
   @override
   void initState() {
@@ -64,11 +77,31 @@ class _ConversationsPageState extends State<ConversationsPage> {
           deviceId: widget.deviceId,
         );
     _searchController = TextEditingController();
+    widget.navigationController?.addListener(_handleNavigationRequest);
     if (_ownsCoordinator) unawaited(_coordinator.initialize());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _handleNavigationRequest(),
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant ConversationsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(
+      oldWidget.navigationController,
+      widget.navigationController,
+    )) {
+      oldWidget.navigationController?.removeListener(_handleNavigationRequest);
+      widget.navigationController?.addListener(_handleNavigationRequest);
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _handleNavigationRequest(),
+      );
+    }
   }
 
   @override
   void dispose() {
+    widget.navigationController?.removeListener(_handleNavigationRequest);
     _searchController.dispose();
     if (_ownsCoordinator) _coordinator.dispose();
     super.dispose();
@@ -109,34 +142,48 @@ class _ConversationsPageState extends State<ConversationsPage> {
       child: Column(
         children: [
           SizedBox(
+            width: double.infinity,
             height: 52,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '消息',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Text(
+                  _showArchived ? '已归档' : 'DD',
+                  key: const Key('messaging-mobile-title'),
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
                   ),
-                  _connectionDot(),
-                  const SizedBox(width: 6),
-                  IconButton(
-                    key: const Key('messaging-sync'),
-                    tooltip: '同步',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: _coordinator.busy ? null : _sync,
-                    icon: const Icon(Icons.sync_rounded, size: 21),
-                  ),
-                ],
-              ),
+                ),
+                Positioned(
+                  left: _showArchived ? 2 : 16,
+                  child: _showArchived
+                      ? IconButton(
+                          key: const Key('archive-back'),
+                          tooltip: '返回消息',
+                          onPressed: () =>
+                              setState(() => _showArchived = false),
+                          icon: const Icon(
+                            Icons.arrow_back_ios_new_rounded,
+                            size: 19,
+                          ),
+                        )
+                      : Tooltip(
+                          message: switch (_coordinator.realtimeState) {
+                            RealtimeConnectionState.connected => '实时已连接',
+                            RealtimeConnectionState.connecting => '实时连接中',
+                            RealtimeConnectionState.disconnected =>
+                              '实时已断开，将自动补同步',
+                          },
+                          child: _connectionDot(),
+                        ),
+                ),
+                if (!_showArchived)
+                  Positioned(right: 8, child: _createMenuButton(compact: true)),
+              ],
             ),
           ),
-          _searchBox(horizontal: 12),
+          _mobileSearchLauncher(),
           const SizedBox(height: 8),
         ],
       ),
@@ -148,9 +195,12 @@ class _ConversationsPageState extends State<ConversationsPage> {
     return Row(
       children: [
         SizedBox(
-          width: 248,
+          key: const Key('desktop-conversation-sidebar'),
+          width: DdDesktopTokens.sidebarWidth,
           child: ColoredBox(
-            color: Theme.of(context).colorScheme.surface,
+            color: DdDesktopTokens.sidebarSurface(
+              Theme.of(context).brightness,
+            ),
             child: Column(
               children: [
                 _desktopListHeader(),
@@ -174,8 +224,10 @@ class _ConversationsPageState extends State<ConversationsPage> {
                   currentUserDisplayName: widget.currentUserDisplayName,
                   currentUserAvatarRevision: widget.currentUserAvatarRevision,
                   onStartCall: widget.onStartCall,
+                  onOpenDirectChat: _openDirectChatByUserId,
                   hostVisible: widget.hostVisible,
                   embedded: true,
+                  savedMessagesMode: selected.type == 'SELF',
                 ),
         ),
       ],
@@ -184,69 +236,26 @@ class _ConversationsPageState extends State<ConversationsPage> {
 
   Widget _desktopListHeader() {
     return Material(
-      color: Theme.of(context).colorScheme.surface,
+      color: DdDesktopTokens.sidebarSurface(Theme.of(context).brightness),
       child: SizedBox(
         height: 50,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 7, 8),
           child: Row(
             children: [
+              if (_showArchived) ...[
+                IconButton(
+                  key: const Key('desktop-archive-back'),
+                  tooltip: '返回消息',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => setState(() => _showArchived = false),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 20),
+                ),
+                const SizedBox(width: 4),
+              ],
               Expanded(child: _searchBox(horizontal: 0)),
               const SizedBox(width: 6),
-              PopupMenuButton<String>(
-                key: const Key('messaging-create-menu'),
-                tooltip: '新建',
-                offset: const Offset(0, 36),
-                elevation: 10,
-                color: Theme.of(context).colorScheme.surface,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(7),
-                ),
-                menuPadding: const EdgeInsets.symmetric(vertical: 5),
-                onSelected: (value) {
-                  if (value == 'contacts') widget.onOpenContacts?.call();
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem<String>(
-                    enabled: false,
-                    value: 'group',
-                    child: _CreateMenuRow(
-                      icon: Icons.chat_bubble_outline_rounded,
-                      label: '发起群聊',
-                      trailing: '开发中',
-                    ),
-                  ),
-                  PopupMenuItem<String>(
-                    value: 'contacts',
-                    enabled: widget.onOpenContacts != null,
-                    child: const _CreateMenuRow(
-                      icon: Icons.person_add_alt_1_outlined,
-                      label: '添加朋友',
-                    ),
-                  ),
-                  const PopupMenuItem<String>(
-                    enabled: false,
-                    value: 'note',
-                    child: _CreateMenuRow(
-                      icon: Icons.edit_note_rounded,
-                      label: '写笔记',
-                      trailing: '开发中',
-                    ),
-                  ),
-                ],
-                child: Container(
-                  width: 34,
-                  height: 34,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).brightness == Brightness.dark
-                        ? const Color(0xFF303030)
-                        : const Color(0xFFE8E8E8),
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child: const Icon(Icons.add_rounded, size: 21),
-                ),
-              ),
+              if (!_showArchived) _createMenuButton(),
               const SizedBox(width: 3),
               Tooltip(
                 message: switch (_coordinator.realtimeState) {
@@ -263,6 +272,56 @@ class _ConversationsPageState extends State<ConversationsPage> {
     );
   }
 
+  Widget _mobileSearchLauncher() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Material(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF2B2B2B)
+            : const Color(0xFFEDEDED),
+        borderRadius: BorderRadius.circular(DdRadii.pill),
+        child: InkWell(
+          key: const Key('messaging-mobile-search-launcher'),
+          borderRadius: BorderRadius.circular(DdRadii.pill),
+          onTap: _openMobileSearch,
+          child: const SizedBox(
+            height: 36,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.search_rounded,
+                  size: 18,
+                  color: DdColors.textSecondary,
+                ),
+                SizedBox(width: 5),
+                Text(
+                  '搜索',
+                  style: TextStyle(fontSize: 14, color: DdColors.textSecondary),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMobileSearch() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MessagingSearchPage(
+          coordinator: _coordinator,
+          onOpenConversation: (conversation, messageId) => _openConversation(
+            conversation,
+            desktop: false,
+            initialMessageId: messageId,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _searchBox({required double horizontal}) {
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: horizontal),
@@ -271,14 +330,29 @@ class _ConversationsPageState extends State<ConversationsPage> {
         child: TextField(
           key: const Key('messaging-search'),
           controller: _searchController,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 14,
+            color: DdColors.textPrimary,
+            fontWeight: FontWeight.w400,
+          ),
           onChanged: (value) =>
               setState(() => _query = value.trim().toLowerCase()),
           decoration: InputDecoration(
             hintText: '搜索',
-            prefixIcon: const Icon(Icons.search_rounded, size: 18),
+            hintStyle: const TextStyle(
+              fontSize: 14,
+              color: DdColors.textSecondary,
+              fontWeight: FontWeight.w400,
+            ),
+            prefixIcon: const Icon(
+              Icons.search_rounded,
+              size: 17,
+              color: DdColors.textSecondary,
+            ),
             prefixIconConstraints: const BoxConstraints(minWidth: 34),
             suffixIcon: _query.isEmpty
-                ? null
+                ? const SizedBox(width: 34)
                 : IconButton(
                     tooltip: '清除',
                     onPressed: () {
@@ -289,6 +363,152 @@ class _ConversationsPageState extends State<ConversationsPage> {
                   ),
             contentPadding: const EdgeInsets.symmetric(vertical: 7),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _createMenuButton({bool compact = false}) {
+    return PopupMenuButton<String>(
+      key: const Key('messaging-create-menu'),
+      tooltip: '更多功能',
+      offset: Offset(0, compact ? 38 : 36),
+      elevation: 12,
+      color: Theme.of(context).brightness == Brightness.dark
+          ? const Color(0xFF2A2A2A)
+          : const Color(0xFF4C4C4C),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(DdRadii.surface),
+      ),
+      menuPadding: const EdgeInsets.symmetric(vertical: 5),
+      onSelected: _handleCreateAction,
+      itemBuilder: (_) => const [
+        PopupMenuItem<String>(
+          value: 'group',
+          child: _CreateMenuRow(
+            icon: Icons.chat_bubble_outline_rounded,
+            label: '发起群聊',
+            lightOnDark: true,
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'contacts',
+          child: _CreateMenuRow(
+            icon: Icons.person_add_alt_1_outlined,
+            label: '添加联系人',
+            lightOnDark: true,
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'scan',
+          enabled: false,
+          child: _CreateMenuRow(
+            icon: Icons.qr_code_scanner_rounded,
+            label: '扫一扫',
+            lightOnDark: true,
+          ),
+        ),
+      ],
+      child: compact
+          ? const SizedBox(
+              width: 40,
+              height: 40,
+              child: Icon(Icons.add_rounded, size: 27),
+            )
+          : Container(
+              width: 34,
+              height: 34,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFF303030)
+                    : const Color(0xFFE8E8E8),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.add_rounded, size: 21),
+            ),
+    );
+  }
+
+  void _handleCreateAction(String value) {
+    if (value == 'group') {
+      unawaited(_openCreateGroup());
+      return;
+    }
+    if (value == 'contacts') {
+      (widget.onOpenAddFriend ?? widget.onOpenContacts)?.call();
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('扫一扫功能正在接入。')));
+  }
+
+  Future<void> _openCreateGroup() async {
+    final group = await Navigator.of(context).push<GroupInfo>(
+      MaterialPageRoute<GroupInfo>(
+        builder: (_) => CreateGroupPage(
+          origin: widget.origin,
+          accessToken: _coordinator.accessToken,
+        ),
+      ),
+    );
+    if (!mounted || group == null) return;
+    await _coordinator.refreshConversations();
+    if (!mounted) return;
+    final conversation = _coordinator.conversationFor(group.id);
+    if (conversation == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('群聊已创建，但会话尚未同步完成，请稍后刷新。')),
+      );
+      return;
+    }
+    final desktop = MediaQuery.sizeOf(context).width >= 680;
+    await _openConversation(conversation, desktop: desktop);
+  }
+
+  Future<void> _openSavedMessages({bool desktop = false}) async {
+    if (desktop) {
+      try {
+        final conversation = await _coordinator.ensureSavedConversation();
+        if (!mounted) return;
+        setState(() => _selectedConversationId = conversation.id);
+      } catch (_) {
+        // Coordinator/API state exposes the actionable error in the list.
+      }
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => SavedMessagesPage(
+          coordinator: _coordinator,
+          onOpenMessage: _openSavedMessage,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSavedMessage(ChatMessage message) async {
+    final conversation = _coordinator.conversationFor(message.conversationId);
+    if (conversation == null || !mounted) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('原会话当前不可用。')));
+      }
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => TextChatPage(
+          coordinator: _coordinator,
+          conversation: conversation,
+          currentUserId: widget.currentUserId,
+          currentUserDisplayName: widget.currentUserDisplayName,
+          currentUserAvatarRevision: widget.currentUserAvatarRevision,
+          onStartCall: widget.onStartCall,
+          onOpenDirectChat: _openDirectChatByUserId,
+          initialMessageId: message.id,
         ),
       ),
     );
@@ -315,63 +535,192 @@ class _ConversationsPageState extends State<ConversationsPage> {
 
   Widget _conversationList(BuildContext context, {required bool desktop}) {
     final conversations = _filteredConversations();
-    if (_coordinator.conversations.isEmpty) {
-      return RefreshIndicator(
-        onRefresh: _sync,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: [
-            SizedBox(height: desktop ? 120 : 96),
-            const Icon(
-              Icons.chat_bubble_outline_rounded,
-              size: 42,
-              color: DdColors.textTertiary,
-            ),
-            const SizedBox(height: 12),
-            const Center(
-              child: Text(
-                '暂无会话',
-                style: TextStyle(color: DdColors.textSecondary),
-              ),
-            ),
-            const SizedBox(height: 5),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 30),
-              child: Text(
-                '成为好友后会自动创建私聊',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: DdColors.textTertiary),
-              ),
-            ),
-          ],
+    final archivedCount = _coordinator.conversations
+        .where((item) => item.preferences.isArchived)
+        .length;
+    final showArchiveEntry =
+        !_showArchived && archivedCount > 0 && _query.isEmpty;
+    final showSavedEntry =
+        !_showArchived &&
+        (_query.isEmpty || '我的收藏'.contains(_query) || '收藏'.contains(_query));
+    if (conversations.isEmpty && !showArchiveEntry && !showSavedEntry) {
+      return Center(
+        child: Text(
+          _showArchived ? '没有已归档会话' : '没有匹配的会话',
+          style: const TextStyle(color: DdColors.textSecondary),
         ),
       );
     }
-    if (conversations.isEmpty) {
-      return const Center(
-        child: Text('没有匹配的会话', style: TextStyle(color: DdColors.textSecondary)),
-      );
-    }
+    final leadingCount = (showSavedEntry ? 1 : 0) + (showArchiveEntry ? 1 : 0);
     return RefreshIndicator(
       onRefresh: _sync,
       child: ListView.builder(
         physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: conversations.length,
+        itemCount: conversations.length + leadingCount,
         itemExtent: 68,
-        itemBuilder: (context, index) =>
-            _conversationTile(conversations[index], desktop: desktop),
+        itemBuilder: (context, index) {
+          var offset = 0;
+          if (showSavedEntry) {
+            if (index == 0) return _savedMessagesEntry(desktop: desktop);
+            offset++;
+          }
+          if (showArchiveEntry) {
+            if (index == offset) return _archiveEntry(archivedCount);
+            offset++;
+          }
+          return _conversationTile(
+            conversations[index - offset],
+            desktop: desktop,
+          );
+        },
+      ),
+    );
+  }
+
+  ConversationItem? _savedConversation() {
+    for (final conversation in _coordinator.conversations) {
+      if (conversation.type == 'SELF') return conversation;
+    }
+    return null;
+  }
+
+  Widget _savedMessagesEntry({required bool desktop}) {
+    final saved = _savedConversation();
+    final preview = saved == null ? '给自己发送消息和文件' : _preview(saved);
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        key: const Key('saved-messages-conversation-entry'),
+        onTap: () => unawaited(_openSavedMessages(desktop: desktop)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4E9BEA),
+                  borderRadius: BorderRadius.circular(DdRadii.control),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  Icons.bookmark_rounded,
+                  size: 25,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            '我的收藏',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (saved != null && saved.updatedAt.year > 1970)
+                          Text(
+                            _conversationTime(saved.updatedAt.toLocal()),
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: DdColors.textTertiary,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      preview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: DdColors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Icon(
+                Icons.push_pin_rounded,
+                key: const Key('saved-messages-pin'),
+                size: 14,
+                color: DdColors.textTertiary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _archiveEntry(int count) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        key: const Key('archived-conversations-entry'),
+        onTap: () => setState(() {
+          _showArchived = true;
+          _selectedConversationId = null;
+        }),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 46,
+                height: 46,
+                child: Icon(
+                  Icons.archive_outlined,
+                  size: 25,
+                  color: DdColors.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  '已归档',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+                ),
+              ),
+              Text(
+                '$count',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: DdColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   List<ConversationItem> _filteredConversations() {
-    if (_query.isEmpty) return _coordinator.conversations;
     return _coordinator.conversations
         .where((conversation) {
+          if (conversation.type == 'SELF') return false;
+          if (conversation.preferences.isArchived != _showArchived) {
+            return false;
+          }
+          if (_query.isEmpty) return true;
           final peer = conversation.peer;
+          final group = conversation.group;
           final last = conversation.lastMessage?.content?.text ?? '';
           return (peer?.displayName.toLowerCase().contains(_query) ?? false) ||
               (peer?.handle.toLowerCase().contains(_query) ?? false) ||
+              (group?.name.toLowerCase().contains(_query) ?? false) ||
               last.toLowerCase().contains(_query);
         })
         .toList(growable: false);
@@ -382,23 +731,22 @@ class _ConversationsPageState extends State<ConversationsPage> {
     required bool desktop,
   }) {
     final peer = conversation.peer;
-    final title = peer?.displayName ?? '会话';
+    final title = _conversationTitle(conversation);
     final draft = _coordinator.draftFor(conversation.id);
     final pendingCount = _coordinator.pendingFor(conversation.id).length;
     final muted = _isMuted(conversation);
     final selected = desktop && _selectedConversationId == conversation.id;
     final pinned = conversation.preferences.isPinned;
+    final brightness = Theme.of(context).brightness;
     final background = selected
-        ? (Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFF333333)
-              : const Color(0xFFE2E2E2))
+        ? DdDesktopTokens.selectedSurface(brightness)
         : pinned
-        ? (Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFF292929)
-              : const Color(0xFFF2F2F2))
+        ? DdDesktopTokens.hoverSurface(brightness).withValues(alpha: 0.58)
+        : desktop
+        ? DdDesktopTokens.sidebarSurface(brightness)
         : Theme.of(context).colorScheme.surface;
 
-    return GestureDetector(
+    final tile = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onLongPress: () => _showConversationActions(conversation),
       onSecondaryTapDown: (details) =>
@@ -408,11 +756,15 @@ class _ConversationsPageState extends State<ConversationsPage> {
         child: InkWell(
           key: Key('conversation-${conversation.id}'),
           onTap: () => _openConversation(conversation, desktop: desktop),
+          hoverColor: desktop ? DdDesktopTokens.hoverSurface(brightness) : null,
+          splashColor: desktop ? Colors.transparent : null,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(11, 8, 10, 8),
             child: Row(
               children: [
-                _avatar(peer?.id ?? '', title),
+                conversation.type == 'GROUP'
+                    ? _groupAvatar(title)
+                    : _avatar(peer?.id ?? '', title),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -474,6 +826,16 @@ class _ConversationsPageState extends State<ConversationsPage> {
                               ),
                             ),
                           ),
+                          if (pinned)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 5),
+                              child: Icon(
+                                Icons.push_pin_rounded,
+                                key: Key('conversation-pin-${conversation.id}'),
+                                size: 14,
+                                color: DdColors.textTertiary,
+                              ),
+                            ),
                           if (muted)
                             const Padding(
                               padding: EdgeInsets.only(left: 5),
@@ -501,6 +863,65 @@ class _ConversationsPageState extends State<ConversationsPage> {
         ),
       ),
     );
+    if (desktop) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(6, 1, 6, 1),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(DdRadii.control),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(
+              minHeight: DdDesktopTokens.listRowHeight,
+            ),
+            child: tile,
+          ),
+        ),
+      );
+    }
+    return _ConversationSwipeActions(
+      conversationId: conversation.id,
+      pinned: conversation.preferences.isPinned,
+      muted: muted,
+      archived: conversation.preferences.isArchived,
+      onPin: () => _applyConversationAction(conversation, 'pin'),
+      onRead: () => _applyConversationAction(conversation, 'read'),
+      onMute: () =>
+          _applyConversationAction(conversation, muted ? 'unmute' : 'mute-8h'),
+      onArchive: () => _applyConversationAction(
+        conversation,
+        conversation.preferences.isArchived ? 'unarchive' : 'archive',
+      ),
+      onDelete: () => _applyConversationAction(conversation, 'delete'),
+      child: tile,
+    );
+  }
+
+  String _conversationTitle(ConversationItem conversation) {
+    if (conversation.type == 'GROUP') {
+      return conversation.group?.name ?? '群聊';
+    }
+    if (conversation.type == 'SELF') return '我的收藏';
+    return conversation.peer?.displayName ?? '会话';
+  }
+
+  Widget _groupAvatar(String title) {
+    final letter = title.trim().isEmpty ? '群' : title.trim().characters.first;
+    return Container(
+      width: 46,
+      height: 46,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: const Color(0xFF5D8FB8),
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Text(
+        letter,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 19,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 
   Widget _avatar(String userId, String title) {
@@ -510,9 +931,9 @@ class _ConversationsPageState extends State<ConversationsPage> {
         width: 46,
         height: 46,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: const Color(0xFF6F9FCA),
-          borderRadius: BorderRadius.circular(5),
+        decoration: const BoxDecoration(
+          color: Color(0xFF6F9FCA),
+          shape: BoxShape.circle,
         ),
         child: Text(
           letter,
@@ -541,7 +962,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
       padding: const EdgeInsets.symmetric(horizontal: 5),
       decoration: BoxDecoration(
         color: muted ? const Color(0xFFB8B8B8) : DdColors.danger,
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(DdRadii.pill),
       ),
       child: Text(
         text,
@@ -552,9 +973,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
 
   Widget _desktopEmptyState(BuildContext context) {
     return ColoredBox(
-      color: Theme.of(context).brightness == Brightness.dark
-          ? const Color(0xFF1D1D1D)
-          : DdColors.chatBackground,
+      color: DdDesktopTokens.contentSurface(Theme.of(context).brightness),
       child: const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -587,10 +1006,16 @@ class _ConversationsPageState extends State<ConversationsPage> {
             Expanded(
               child: Text(
                 _coordinator.errorMessage!,
-                maxLines: 2,
+                maxLines: 4,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Color(0xFF9D2323)),
               ),
+            ),
+            IconButton(
+              tooltip: '查看完整错误',
+              visualDensity: VisualDensity.compact,
+              onPressed: _showErrorDetails,
+              icon: const Icon(Icons.info_outline_rounded, size: 16),
             ),
             IconButton(
               tooltip: '关闭',
@@ -604,9 +1029,60 @@ class _ConversationsPageState extends State<ConversationsPage> {
     );
   }
 
+  Future<void> _showErrorDetails() async {
+    final message = _coordinator.errorMessage;
+    if (message == null || !mounted) return;
+    final logPath = ClientLog.path;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('错误详情'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: SelectableText(
+            logPath == null ? message : '$message\n\n本地日志：$logPath',
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: message));
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+            },
+            icon: const Icon(Icons.copy_rounded, size: 17),
+            label: const Text('复制错误'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleNavigationRequest() {
+    if (!mounted) return;
+    final controller = widget.navigationController;
+    final conversationId = controller?.requestedConversationId;
+    final serial = controller?.requestSerial ?? 0;
+    if (controller == null ||
+        conversationId == null ||
+        serial <= _handledNavigationSerial) {
+      return;
+    }
+    final conversation = _coordinator.conversationFor(conversationId);
+    if (conversation == null) return;
+    _handledNavigationSerial = serial;
+    _showArchived = false;
+    final desktop = MediaQuery.sizeOf(context).width >= 680;
+    unawaited(_openConversation(conversation, desktop: desktop));
+  }
+
   Future<void> _openConversation(
     ConversationItem conversation, {
     required bool desktop,
+    String? initialMessageId,
   }) async {
     if (desktop) {
       if (_selectedConversationId != conversation.id) {
@@ -623,10 +1099,32 @@ class _ConversationsPageState extends State<ConversationsPage> {
           currentUserDisplayName: widget.currentUserDisplayName,
           currentUserAvatarRevision: widget.currentUserAvatarRevision,
           onStartCall: widget.onStartCall,
+          onOpenDirectChat: _openDirectChatByUserId,
           hostVisible: true,
+          initialMessageId: initialMessageId,
+          savedMessagesMode: conversation.type == 'SELF',
         ),
       ),
     );
+  }
+
+  Future<void> _openDirectChatByUserId(String userId) async {
+    final target = await _coordinator.ensureDirectConversation(userId);
+    if (!mounted) return;
+    final desktop = MediaQuery.sizeOf(context).width >= 680;
+    if (desktop) {
+      _showArchived = false;
+      if (_selectedConversationId != target.id) {
+        setState(() => _selectedConversationId = target.id);
+      }
+      return;
+    }
+
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop();
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await _openConversation(target, desktop: false);
   }
 
   ConversationItem? _selectedConversation() {
@@ -650,6 +1148,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
           label: current.preferences.isPinned ? '取消置顶' : '置顶聊天',
         ),
         DdActionSheetItem(
+          value: current.preferences.isArchived ? 'unarchive' : 'archive',
+          icon: current.preferences.isArchived
+              ? Icons.unarchive_outlined
+              : Icons.archive_outlined,
+          label: current.preferences.isArchived ? '取消归档' : '归档',
+        ),
+        DdActionSheetItem(
           value: muted ? 'unmute' : 'mute-8h',
           icon: muted
               ? Icons.notifications_active_outlined
@@ -668,6 +1173,12 @@ class _ConversationsPageState extends State<ConversationsPage> {
             icon: Icons.mark_chat_read_outlined,
             label: '标为已读',
           ),
+        const DdActionSheetItem(
+          value: 'delete',
+          icon: Icons.delete_outline_rounded,
+          label: '删除会话',
+          destructive: true,
+        ),
       ],
     );
     await _applyConversationAction(current, action);
@@ -686,7 +1197,9 @@ class _ConversationsPageState extends State<ConversationsPage> {
       color: Theme.of(context).colorScheme.surface,
       elevation: 10,
       shadowColor: Colors.black.withValues(alpha: 0.22),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(DdRadii.surface),
+      ),
       menuPadding: const EdgeInsets.symmetric(vertical: 5),
       constraints: const BoxConstraints(minWidth: 190, maxWidth: 232),
       position: RelativeRect.fromRect(
@@ -700,6 +1213,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
               ? Icons.push_pin_outlined
               : Icons.push_pin_rounded,
           label: current.preferences.isPinned ? '取消置顶' : '置顶聊天',
+        ),
+        _conversationMenuItem(
+          value: current.preferences.isArchived ? 'unarchive' : 'archive',
+          icon: current.preferences.isArchived
+              ? Icons.unarchive_outlined
+              : Icons.archive_outlined,
+          label: current.preferences.isArchived ? '取消归档' : '归档',
         ),
         _conversationMenuItem(
           value: muted ? 'unmute' : 'mute-8h',
@@ -722,6 +1242,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
             label: '标为已读',
           ),
         ],
+        const PopupMenuDivider(height: 5),
+        _conversationMenuItem(
+          value: 'delete',
+          icon: Icons.delete_outline_rounded,
+          label: '删除会话',
+          danger: true,
+        ),
       ],
     );
     await _applyConversationAction(current, action);
@@ -731,8 +1258,11 @@ class _ConversationsPageState extends State<ConversationsPage> {
     required String value,
     required IconData icon,
     required String label,
+    bool danger = false,
   }) {
-    final color = Theme.of(context).colorScheme.onSurface;
+    final color = danger
+        ? DdColors.danger
+        : Theme.of(context).colorScheme.onSurface;
     return PopupMenuItem<String>(
       value: value,
       height: 40,
@@ -761,6 +1291,10 @@ class _ConversationsPageState extends State<ConversationsPage> {
             conversation,
             !conversation.preferences.isPinned,
           );
+        case 'archive':
+          await _coordinator.setArchived(conversation, true);
+        case 'unarchive':
+          await _coordinator.setArchived(conversation, false);
         case 'unmute':
           await _coordinator.clearMute(conversation);
         case 'mute-8h':
@@ -778,10 +1312,45 @@ class _ConversationsPageState extends State<ConversationsPage> {
             conversation.id,
             conversation.lastSequence,
           );
+        case 'delete':
+          final confirmed = await _confirmHideConversation(conversation);
+          if (!confirmed) return;
+          await _coordinator.hideConversation(conversation);
+          if (_selectedConversationId == conversation.id && mounted) {
+            setState(() => _selectedConversationId = null);
+          }
       }
     } catch (_) {
       // Coordinator/API state surfaces the actionable error.
     }
+  }
+
+  Future<bool> _confirmHideConversation(ConversationItem conversation) async {
+    final peerName = _conversationTitle(conversation);
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('删除会话？'),
+            content: Text(
+              '“$peerName”会从你的会话列表隐藏，历史消息不会从服务器删除。对方或你再次发送新消息后，会话会重新出现。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: DdColors.danger,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   bool _isMuted(ConversationItem conversation) =>
@@ -791,13 +1360,16 @@ class _ConversationsPageState extends State<ConversationsPage> {
   String _preview(ConversationItem conversation) {
     final message = conversation.lastMessage;
     if (message == null) return '还没有消息';
-    if (message.isRecalled) return '消息已撤回';
-    if (message.type == 'TEXT') return message.content?.text ?? '';
+    if (message.isRecalled) return '';
+    if (const {'TEXT', 'SYSTEM'}.contains(message.type)) {
+      return message.content?.text ?? '';
+    }
     return switch (message.type) {
       'IMAGE' => '[图片]',
       'GIF' => '[GIF]',
       'STICKER' => '[表情]',
       'VOICE' => '[语音]',
+      'VIDEO' => '[视频]',
       'FILE' => '[文件]',
       _ => '[${message.type}]',
     };
@@ -827,16 +1399,226 @@ class _ConversationsPageState extends State<ConversationsPage> {
   }
 }
 
+class _ConversationSwipeActions extends StatefulWidget {
+  const _ConversationSwipeActions({
+    required this.conversationId,
+    required this.child,
+    required this.pinned,
+    required this.muted,
+    required this.archived,
+    required this.onPin,
+    required this.onRead,
+    required this.onMute,
+    required this.onArchive,
+    required this.onDelete,
+  });
+
+  final String conversationId;
+  final Widget child;
+  final bool pinned;
+  final bool muted;
+  final bool archived;
+  final Future<void> Function() onPin;
+  final Future<void> Function() onRead;
+  final Future<void> Function() onMute;
+  final Future<void> Function() onArchive;
+  final Future<void> Function() onDelete;
+
+  @override
+  State<_ConversationSwipeActions> createState() =>
+      _ConversationSwipeActionsState();
+}
+
+class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
+  static const double _actionWidth = 72;
+  static const double _rightReveal = _actionWidth * 2;
+  static const double _leftReveal = _actionWidth * 3;
+  double _offset = 0;
+  bool _dragging = false;
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    _action(
+                      key: Key(
+                        'conversation-swipe-pin-${widget.conversationId}',
+                      ),
+                      color: const Color(0xFFFFA940),
+                      icon: widget.pinned
+                          ? Icons.push_pin_outlined
+                          : Icons.push_pin_rounded,
+                      label: widget.pinned ? '取消置顶' : '置顶',
+                      onTap: widget.onPin,
+                    ),
+                    _action(
+                      key: Key(
+                        'conversation-swipe-read-${widget.conversationId}',
+                      ),
+                      color: const Color(0xFF4E9BEA),
+                      icon: Icons.mark_chat_read_rounded,
+                      label: '已读',
+                      onTap: widget.onRead,
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    _action(
+                      key: Key(
+                        'conversation-swipe-mute-${widget.conversationId}',
+                      ),
+                      color: const Color(0xFF8A8A8A),
+                      icon: widget.muted
+                          ? Icons.notifications_active_rounded
+                          : Icons.notifications_off_rounded,
+                      label: widget.muted ? '取消静音' : '静音',
+                      onTap: widget.onMute,
+                    ),
+                    _action(
+                      key: Key(
+                        'conversation-swipe-archive-${widget.conversationId}',
+                      ),
+                      color: const Color(0xFF5B8FF9),
+                      icon: widget.archived
+                          ? Icons.unarchive_rounded
+                          : Icons.archive_rounded,
+                      label: widget.archived ? '取消归档' : '归档',
+                      onTap: widget.onArchive,
+                    ),
+                    _action(
+                      key: Key(
+                        'conversation-swipe-delete-${widget.conversationId}',
+                      ),
+                      color: DdColors.danger,
+                      icon: Icons.delete_outline_rounded,
+                      label: '删除',
+                      onTap: widget.onDelete,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              if (_busy) return;
+              setState(() => _dragging = true);
+            },
+            onHorizontalDragUpdate: (details) {
+              if (_busy) return;
+              setState(() {
+                _offset = (_offset + details.delta.dx).clamp(
+                  -_leftReveal,
+                  _rightReveal,
+                );
+              });
+            },
+            onHorizontalDragEnd: (details) {
+              if (_busy) return;
+              final velocity = details.primaryVelocity ?? 0;
+              var target = 0.0;
+              if (velocity > 450) {
+                target = _rightReveal;
+              } else if (velocity < -450) {
+                target = -_leftReveal;
+              } else if (_offset > 38) {
+                target = _rightReveal;
+              } else if (_offset < -38) {
+                target = -_leftReveal;
+              }
+              setState(() {
+                _dragging = false;
+                _offset = target;
+              });
+            },
+            onHorizontalDragCancel: () {
+              if (mounted) {
+                setState(() {
+                  _dragging = false;
+                  _offset = 0;
+                });
+              }
+            },
+            child: AnimatedContainer(
+              duration: _dragging
+                  ? Duration.zero
+                  : const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              transform: Matrix4.translationValues(_offset, 0, 0),
+              child: widget.child,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _action({
+    required Key key,
+    required Color color,
+    required IconData icon,
+    required String label,
+    required Future<void> Function() onTap,
+  }) {
+    return SizedBox(
+      key: key,
+      width: _actionWidth,
+      child: Material(
+        color: color,
+        child: InkWell(
+          onTap: _busy
+              ? null
+              : () async {
+                  setState(() => _busy = true);
+                  try {
+                    await onTap();
+                  } finally {
+                    if (mounted) {
+                      setState(() {
+                        _busy = false;
+                        _offset = 0;
+                      });
+                    }
+                  }
+                },
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: Colors.white, size: 22),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                maxLines: 1,
+                style: const TextStyle(color: Colors.white, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CreateMenuRow extends StatelessWidget {
   const _CreateMenuRow({
     required this.icon,
     required this.label,
-    this.trailing,
+    this.lightOnDark = false,
   });
 
   final IconData icon;
   final String label;
-  final String? trailing;
+  final bool lightOnDark;
 
   @override
   Widget build(BuildContext context) {
@@ -844,17 +1626,17 @@ class _CreateMenuRow extends StatelessWidget {
       height: 32,
       child: Row(
         children: [
-          Icon(icon, size: 18),
+          Icon(icon, size: 18, color: lightOnDark ? Colors.white : null),
           const SizedBox(width: 11),
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
-          if (trailing != null)
-            Text(
-              trailing!,
-              style: const TextStyle(
-                fontSize: 10,
-                color: DdColors.textTertiary,
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: lightOnDark ? Colors.white : null,
               ),
             ),
+          ),
         ],
       ),
     );

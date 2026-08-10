@@ -36,7 +36,7 @@ final class RealtimeClient {
   final Uri baseUri;
   final String clientId;
   final String webSocketPath;
-  final String? accessToken;
+  String? accessToken;
   final String? protocolVersion;
   final http.Client _httpClient;
   final bool _ownsHttpClient;
@@ -77,6 +77,16 @@ final class RealtimeClient {
 
   int get lastEventId => _cursor.lastEventId;
 
+  Future<void> updateAccessToken(String? value) async {
+    final normalized = value?.trim();
+    final next = normalized == null || normalized.isEmpty ? null : normalized;
+    if (accessToken == next) return;
+    accessToken = next;
+    if (_stopped) return;
+    await disconnect();
+    await connect();
+  }
+
   Future<Map<String, dynamic>> fetchHealth() async {
     final response = await _httpClient
         .get(baseUri.resolve('/health'))
@@ -113,7 +123,10 @@ final class RealtimeClient {
     _pendingChannel = null;
     if (pendingChannel != null) {
       try {
-        await pendingChannel.sink.close(status.normalClosure, 'client shutdown');
+        await pendingChannel.sink.close(
+          status.normalClosure,
+          'client shutdown',
+        );
       } catch (_) {
         // A connection still in handshake may not accept a clean close.
       }

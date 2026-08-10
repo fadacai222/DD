@@ -51,6 +51,7 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 				_, _ = pool.Exec(cleanupCtx, `DELETE FROM conversations WHERE direct_pair_key=$1`, directPairKey(left, right))
 			}
 		}
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM outbox_events WHERE aggregate_id = ANY($1::uuid[]) OR target_user_id = ANY($1::uuid[])`, userIDs)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM users WHERE id = ANY($1::uuid[])`, userIDs)
 	}()
 
@@ -59,10 +60,10 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alicePrincipal := account.Principal{UserID: alice, DeviceID: uuid.New()}
-	bobPrincipal := account.Principal{UserID: bob, DeviceID: uuid.New()}
-	carolPrincipal := account.Principal{UserID: carol, DeviceID: uuid.New()}
-	davePrincipal := account.Principal{UserID: dave, DeviceID: uuid.New()}
+	alicePrincipal := account.Principal{UserID: alice, DeviceID: insertRelationshipTestDevice(t, ctx, pool, alice, "Alice device")}
+	bobPrincipal := account.Principal{UserID: bob, DeviceID: insertRelationshipTestDevice(t, ctx, pool, bob, "Bob device")}
+	carolPrincipal := account.Principal{UserID: carol, DeviceID: insertRelationshipTestDevice(t, ctx, pool, carol, "Carol device")}
+	davePrincipal := account.Principal{UserID: dave, DeviceID: insertRelationshipTestDevice(t, ctx, pool, dave, "Dave device")}
 	bobHandle := relationshipTestHandle(t, ctx, pool, bob)
 	aliceHandle := relationshipTestHandle(t, ctx, pool, alice)
 	carolHandle := relationshipTestHandle(t, ctx, pool, carol)
@@ -70,6 +71,21 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 	search, err := service.SearchByHandle(ctx, alicePrincipal, bobHandle)
 	if err != nil || search.Relationship != "NONE" || search.User.ID != bob.String() {
 		t.Fatalf("initial search=%#v err=%v", search, err)
+	}
+
+	// Telegram-style contacts are unilateral address-book entries. Adding
+	// someone must not require their approval or create a reciprocal contact.
+	added, err := service.AddContact(ctx, davePrincipal, carol)
+	if err != nil || added.User.ID != carol.String() {
+		t.Fatalf("add unilateral contact=%#v err=%v", added, err)
+	}
+	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE owner_user_id=$1 AND contact_user_id=$2`, dave, carol, 1)
+	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE owner_user_id=$1 AND contact_user_id=$2`, carol, dave, 0)
+	if err := service.DeleteContact(ctx, davePrincipal, carol); err != nil {
+		t.Fatalf("delete unilateral contact: %v", err)
+	}
+	if err := service.DeleteContact(ctx, davePrincipal, carol); err != nil {
+		t.Fatalf("idempotent repeated delete: %v", err)
 	}
 
 	outgoing, err := service.SendRequest(ctx, alicePrincipal, SendRequestInput{TargetHandle: bobHandle, Message: "  hello Bob  "})
@@ -88,6 +104,17 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob, 2)
 	conversationID := uuid.MustParse(*mutual.ConversationID)
 	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM conversation_members WHERE conversation_id=$1`, conversationID, uuid.Nil, 2)
+	var systemType, systemText string
+	var systemSender uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		SELECT type,content_json->>'text',sender_user_id
+		FROM messages WHERE conversation_id=$1 ORDER BY sequence DESC LIMIT 1
+	`, conversationID).Scan(&systemType, &systemText, &systemSender); err != nil {
+		t.Fatalf("load friend accepted system message: %v", err)
+	}
+	if systemType != "SYSTEM" || systemText != "我刚刚同意了你的好友请求" || systemSender != bob {
+		t.Fatalf("friend accepted system message type=%q text=%q sender=%s", systemType, systemText, systemSender)
+	}
 
 	remark := "工作伙伴"
 	starred := true
@@ -105,12 +132,36 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 	if err != nil || blocked.User.ID != alice.String() {
 		t.Fatalf("block user=%#v err=%v", blocked, err)
 	}
-	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob, 0)
-	if _, err := service.SearchByHandle(ctx, alicePrincipal, bobHandle); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("blocked search error=%v", err)
+	var blockEventType string
+	var blockTarget uuid.UUID
+	var blockPayload string
+	if err := pool.QueryRow(ctx, `
+		SELECT event_type,target_user_id,payload_json::text
+		FROM outbox_events
+		WHERE event_type='RELATIONSHIP_BLOCKED_BY_PEER' AND aggregate_id=$1 AND target_user_id=$2
+		ORDER BY created_at DESC LIMIT 1
+	`, bob, alice).Scan(&blockEventType, &blockTarget, &blockPayload); err != nil {
+		t.Fatalf("load targeted block event: %v", err)
 	}
-	if _, err := service.SendRequest(ctx, alicePrincipal, SendRequestInput{TargetHandle: bobHandle}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("blocked request should stay indistinguishable from missing target, error=%v", err)
+	if blockEventType != "RELATIONSHIP_BLOCKED_BY_PEER" || blockTarget != alice || !strings.Contains(blockPayload, bob.String()) {
+		t.Fatalf("unexpected targeted block event type=%s target=%s payload=%s", blockEventType, blockTarget, blockPayload)
+	}
+	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob, 0)
+	blockedByPeer, err := service.SearchByHandle(ctx, alicePrincipal, bobHandle)
+	if err != nil || blockedByPeer.Relationship != "BLOCKED_BY_PEER" {
+		t.Fatalf("blocked-by-peer search=%#v err=%v", blockedByPeer, err)
+	}
+	blockedByMe, err := service.SearchByHandle(ctx, bobPrincipal, aliceHandle)
+	if err != nil || blockedByMe.Relationship != "BLOCKED_BY_ME" {
+		t.Fatalf("blocked-by-me search=%#v err=%v", blockedByMe, err)
+	}
+	if _, err := service.SendRequest(ctx, alicePrincipal, SendRequestInput{TargetHandle: bobHandle}); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("blocked request should fail explicitly, error=%v", err)
+	}
+	// Deleting a contact is intentionally idempotent. A peer-side delete/block
+	// can make a still-rendered contact stale before this device refreshes.
+	if err := service.DeleteContact(ctx, alicePrincipal, bob); err != nil {
+		t.Fatalf("idempotent delete after peer block: %v", err)
 	}
 	if err := service.UnblockUser(ctx, bobPrincipal, alice); err != nil {
 		t.Fatalf("unblock: %v", err)
@@ -186,6 +237,18 @@ func insertRelationshipTestUser(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO user_privacy_settings (user_id) VALUES ($1)`, id); err != nil {
 		t.Fatalf("insert privacy %s: %v", handle, err)
+	}
+	return id
+}
+
+func insertRelationshipTestDevice(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, name string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO devices(user_id,name,platform,app_version,is_verified)
+		VALUES($1,$2,'WINDOWS','test',true) RETURNING id
+	`, userID, name).Scan(&id); err != nil {
+		t.Fatalf("insert test device: %v", err)
 	}
 	return id
 }

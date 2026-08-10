@@ -1,7 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
+import '../../../core/security/dd_secure_storage.dart';
 import '../domain/messaging_models.dart';
 
 final class MessagingLocalState {
@@ -36,17 +35,17 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
   SecureMessagingLocalStore({
     required String userId,
     required String deviceId,
-    FlutterSecureStorage? storage,
-  }) : _storage = storage ?? const FlutterSecureStorage(),
+    SecureKeyValueStore? storage,
+  }) : _storage = storage ?? DdSecureStorage.shared,
        _key = 'dd.messaging.v1.$userId.$deviceId';
 
   static const int schemaVersion = 3;
-  final FlutterSecureStorage _storage;
+  final SecureKeyValueStore _storage;
   final String _key;
 
   @override
   Future<MessagingLocalState> load() async {
-    final raw = await _storage.read(key: _key);
+    final raw = await _storage.read(_key);
     if (raw == null || raw.trim().isEmpty) {
       return const MessagingLocalState(syncCursor: 0, pending: []);
     }
@@ -57,7 +56,9 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
         return const MessagingLocalState(syncCursor: 0, pending: []);
       }
       final storedVersion = decoded['schemaVersion'];
-      if (storedVersion is! int || storedVersion < 1 || storedVersion > schemaVersion) {
+      if (storedVersion is! int ||
+          storedVersion < 1 ||
+          storedVersion > schemaVersion) {
         await clear();
         return const MessagingLocalState(syncCursor: 0, pending: []);
       }
@@ -120,8 +121,8 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
     required List<String> heardVoiceMessageIds,
   }) {
     return _storage.write(
-      key: _key,
-      value: jsonEncode({
+      _key,
+      jsonEncode({
         'schemaVersion': schemaVersion,
         'syncCursor': syncCursor < 0 ? 0 : syncCursor,
         'pending': pending.map((item) => item.toJson()).toList(growable: false),
@@ -135,5 +136,5 @@ final class SecureMessagingLocalStore implements MessagingLocalStore {
   }
 
   @override
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> clear() => _storage.delete(_key);
 }

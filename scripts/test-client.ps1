@@ -10,6 +10,22 @@ $GoFmtExe = 'C:\Program Files\Go\bin\gofmt.exe'
 $FlutterExe = 'C:\dev\flutter\bin\flutter.bat'
 $DartExe = 'C:\dev\flutter\bin\cache\dart-sdk\bin\dart.exe'
 
+function Get-FreeSubstDrive {
+    $Used = @{}
+    foreach ($Line in (& subst.exe)) {
+        if ($Line -match '^([A-Z]:)') {
+            $Used[$Matches[1]] = $true
+        }
+    }
+
+    foreach ($Drive in @('O:', 'P:', 'Q:', 'R:', 'S:', 'T:')) {
+        if (-not $Used.ContainsKey($Drive) -and -not (Test-Path "$Drive\")) {
+            return $Drive
+        }
+    }
+    throw 'No free drive letter is available for the ASCII path test workaround.'
+}
+
 function Get-FreeTcpPort {
     for ($Attempt = 0; $Attempt -lt 200; $Attempt++) {
         $Candidate = Get-Random -Minimum 10000 -Maximum 65536
@@ -80,17 +96,31 @@ finally {
 Invoke-Checked $GoExe @('vet', './...') $ServerPath 'go vet failed.'
 Invoke-Checked $GoExe @('test', './...') $ServerPath 'Go tests failed.'
 
-Write-Host '[2/5] Realtime package checks'
-Invoke-Checked $DartExe @('pub', 'get') $RealtimePath 'Realtime pub get failed.'
-Invoke-Checked $DartExe @('format', '--output=none', '--set-exit-if-changed', 'lib', 'test', 'tool') $RealtimePath 'Realtime format check failed.'
-Invoke-Checked $DartExe @('analyze', '--fatal-infos') $RealtimePath 'Realtime analyze failed.'
-Invoke-Checked $DartExe @('test', '-r', 'expanded') $RealtimePath 'Realtime tests failed.'
+$SubstDrive = Get-FreeSubstDrive
+& subst.exe $SubstDrive $Root
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to map $SubstDrive to the project root for Dart/Flutter checks."
+}
+try {
+    $MappedRealtimePath = "$SubstDrive\clients\realtime_poc"
+    $MappedAppPath = "$SubstDrive\clients\app"
 
-Write-Host '[3/5] Flutter app checks'
-Invoke-Checked $FlutterExe @('pub', 'get') $AppPath 'Flutter pub get failed.'
-Invoke-Checked $DartExe @('format', '--output=none', '--set-exit-if-changed', 'lib', 'test') $AppPath 'App format check failed.'
-Invoke-Checked $DartExe @('analyze', '--fatal-infos') $AppPath 'App analyze failed.'
-Invoke-Checked $FlutterExe @('test', '--reporter', 'expanded') $AppPath 'Flutter tests failed.'
+    Write-Host "[2/5] Realtime package checks (ASCII path: $MappedRealtimePath)"
+    Invoke-Checked $DartExe @('pub', 'get') $MappedRealtimePath 'Realtime pub get failed.'
+    Invoke-Checked $DartExe @('format', '--output=none', '--set-exit-if-changed', 'lib', 'test', 'tool') $MappedRealtimePath 'Realtime format check failed.'
+    Invoke-Checked $DartExe @('analyze', '--fatal-infos') $MappedRealtimePath 'Realtime analyze failed.'
+    Invoke-Checked $DartExe @('test', '-r', 'expanded') $MappedRealtimePath 'Realtime tests failed.'
+
+    Write-Host "[3/5] Flutter app checks (ASCII path: $MappedAppPath)"
+    Invoke-Checked $FlutterExe @('pub', 'get') $MappedAppPath 'Flutter pub get failed.'
+    Invoke-Checked $DartExe @('format', '--output=none', '--set-exit-if-changed', 'lib', 'test') $MappedAppPath 'App format check failed.'
+    Invoke-Checked $DartExe @('analyze', '--fatal-infos') $MappedAppPath 'App analyze failed.'
+    Invoke-Checked $FlutterExe @('test', '--reporter', 'expanded') $MappedAppPath 'Flutter tests failed.'
+}
+finally {
+    Set-Location 'C:\'
+    & subst.exe $SubstDrive /D | Out-Null
+}
 
 Write-Host '[4/5] Live REST and WebSocket smoke test'
 Write-Host "Temporary smoke-test port: $Port"

@@ -15,6 +15,7 @@ const (
 	maxImageBytes   int64 = 25 * 1024 * 1024
 	maxGIFBytes     int64 = 50 * 1024 * 1024
 	maxVoiceBytes   int64 = 25 * 1024 * 1024
+	maxVideoBytes   int64 = 2 * 1024 * 1024 * 1024
 	maxStickerBytes int64 = 10 * 1024 * 1024
 	maxFileBytes    int64 = 2 * 1024 * 1024 * 1024
 )
@@ -39,7 +40,7 @@ func validateUploadInput(input CreateUploadInput) error {
 
 	var maxBytes int64
 	switch input.Purpose {
-	case PurposeChatImage:
+	case PurposeChatImage, PurposeMomentImage:
 		maxBytes = maxImageBytes
 		if mimeType != "image/jpeg" && mimeType != "image/png" && mimeType != "image/webp" {
 			return ErrInvalidInput
@@ -57,6 +58,13 @@ func validateUploadInput(input CreateUploadInput) error {
 	case PurposeChatVoice:
 		maxBytes = maxVoiceBytes
 		if !strings.HasPrefix(mimeType, "audio/") {
+			return ErrInvalidInput
+		}
+	case PurposeChatVideo, PurposeMomentVideo:
+		maxBytes = maxVideoBytes
+		switch mimeType {
+		case "video/mp4", "video/webm", "video/quicktime", "video/x-matroska":
+		default:
 			return ErrInvalidInput
 		}
 	case PurposeChatFile:

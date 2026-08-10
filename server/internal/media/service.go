@@ -1,9 +1,14 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,15 +19,16 @@ import (
 )
 
 const (
-	defaultUploadTTL            = 10 * time.Minute
-	defaultDownloadTTL          = 5 * time.Minute
-	maxActiveUploadsPerUser     = 32
-	maxReservedUploadBytesUser  = int64(512 * 1024 * 1024)
+	defaultUploadTTL           = 10 * time.Minute
+	defaultDownloadTTL         = 5 * time.Minute
+	maxActiveUploadsPerUser    = 32
+	maxReservedUploadBytesUser = int64(512 * 1024 * 1024)
 )
 
 type Service struct {
 	pool        *pgxpool.Pool
 	store       ObjectStore
+	httpClient  *http.Client
 	now         func() time.Time
 	uploadTTL   time.Duration
 	downloadTTL time.Duration
@@ -31,6 +37,7 @@ type Service struct {
 type Config struct {
 	Pool        *pgxpool.Pool
 	Store       ObjectStore
+	HTTPClient  *http.Client
 	Now         func() time.Time
 	UploadTTL   time.Duration
 	DownloadTTL time.Duration
@@ -52,9 +59,14 @@ func NewService(config Config) (*Service, error) {
 	if downloadTTL <= 0 || downloadTTL > 15*time.Minute {
 		downloadTTL = defaultDownloadTTL
 	}
+	httpClient := config.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &Service{
 		pool:        config.Pool,
 		store:       config.Store,
+		httpClient:  httpClient,
 		now:         now,
 		uploadTTL:   uploadTTL,
 		downloadTTL: downloadTTL,
@@ -125,6 +137,90 @@ func (service *Service) CreateUpload(ctx context.Context, principal account.Prin
 		UploadURL:       uploadURL,
 		ExpiresAt:       expiresAt,
 		RequiredHeaders: requiredHeaders,
+	}, nil
+}
+
+func (service *Service) ImportManagedSticker(ctx context.Context, input ManagedStickerInput) (MediaObject, error) {
+	if len(input.Bytes) == 0 {
+		return MediaObject{}, ErrInvalidInput
+	}
+	digest := sha256.Sum256(input.Bytes)
+	validated := normalizeUploadInput(CreateUploadInput{
+		FileName: input.FileName,
+		Size:     int64(len(input.Bytes)),
+		MIMEType: input.MIMEType,
+		SHA256:   hex.EncodeToString(digest[:]),
+		Purpose:  PurposeSticker,
+	})
+	if err := validateUploadInput(validated); err != nil {
+		return MediaObject{}, err
+	}
+	key, err := newStorageKey(PurposeSticker)
+	if err != nil {
+		return MediaObject{}, fmt.Errorf("generate managed sticker storage key: %w", err)
+	}
+	uploadURL, requiredHeaders, _, err := service.store.PresignPut(
+		key,
+		validated.MIMEType,
+		validated.SHA256,
+		service.uploadTTL,
+	)
+	if err != nil {
+		return MediaObject{}, fmt.Errorf("presign managed sticker upload: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(input.Bytes))
+	if err != nil {
+		return MediaObject{}, fmt.Errorf("create managed sticker upload request: %w", err)
+	}
+	for name, value := range requiredHeaders {
+		request.Header.Set(name, value)
+	}
+	response, err := service.httpClient.Do(request)
+	if err != nil {
+		return MediaObject{}, fmt.Errorf("upload managed sticker: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return MediaObject{}, fmt.Errorf("upload managed sticker: storage returned %d", response.StatusCode)
+	}
+	removeObject := true
+	defer func() {
+		if removeObject {
+			_ = service.store.Delete(context.Background(), key)
+		}
+	}()
+	objectInfo, err := service.store.Stat(ctx, key)
+	if err != nil {
+		return MediaObject{}, fmt.Errorf("verify managed sticker: %w", err)
+	}
+	if objectInfo.Size != validated.Size ||
+		!strings.EqualFold(strings.TrimSpace(objectInfo.ContentType), validated.MIMEType) ||
+		!strings.EqualFold(strings.TrimSpace(objectInfo.SHA256), validated.SHA256) {
+		return MediaObject{}, ErrObjectMismatch
+	}
+	now := service.now().UTC()
+	mediaID := uuid.New()
+	if _, err := service.pool.Exec(ctx, `
+		INSERT INTO media_objects(
+			id,owner_user_id,storage_key,original_name,mime_type,size_bytes,sha256,purpose,status,encryption_mode,created_at,ready_at
+		)
+		VALUES($1,NULL,$2,$3,$4,$5,$6,'STICKER','READY','NONE',$7,$7)
+	`, mediaID, key, validated.FileName, validated.MIMEType, validated.Size, validated.SHA256, now); err != nil {
+		return MediaObject{}, fmt.Errorf("persist managed sticker: %w", err)
+	}
+	removeObject = false
+	return MediaObject{
+		ID:             mediaID.String(),
+		OriginalName:   validated.FileName,
+		MIMEType:       validated.MIMEType,
+		SizeBytes:      validated.Size,
+		SHA256:         validated.SHA256,
+		Purpose:        PurposeSticker,
+		Status:         StatusReady,
+		EncryptionMode: "NONE",
+		CreatedAt:      now,
+		ReadyAt:        &now,
 	}, nil
 }
 
@@ -225,12 +321,12 @@ func (service *Service) GetMedia(ctx context.Context, principal account.Principa
 	}
 	var result MediaObject
 	var readyAt *time.Time
-	var ownerID uuid.UUID
+	var ownerID string
 	var purpose Purpose
 	var status Status
 	var canAccess bool
 	err := service.pool.QueryRow(ctx, `
-		SELECT m.id,m.owner_user_id,m.original_name,m.mime_type,m.size_bytes,m.sha256,m.purpose,m.status,m.encryption_mode,m.created_at,m.ready_at,
+		SELECT m.id,COALESCE(m.owner_user_id::text,''),m.original_name,m.mime_type,m.size_bytes,m.sha256,m.purpose,m.status,m.encryption_mode,m.created_at,m.ready_at,
 		       (m.owner_user_id=$2 OR EXISTS(
 				SELECT 1
 				FROM message_media mm
@@ -238,6 +334,28 @@ func (service *Service) GetMedia(ctx context.Context, principal account.Principa
 				JOIN conversation_members cm ON cm.conversation_id=msg.conversation_id AND cm.user_id=$2 AND cm.status='ACTIVE'
 				LEFT JOIN message_local_deletions ld ON ld.message_id=msg.id AND ld.user_id=$2
 				WHERE mm.media_id=m.id AND ld.message_id IS NULL
+		   ) OR EXISTS(
+				SELECT 1 FROM custom_stickers cs
+				WHERE cs.owner_user_id=$2 AND cs.media_id=m.id AND cs.deleted_at IS NULL
+		   ) OR EXISTS(
+				SELECT 1
+				FROM telegram_sticker_items tsi
+				JOIN user_sticker_packs usp ON usp.pack_id=tsi.pack_id AND usp.user_id=$2
+				WHERE tsi.media_id=m.id
+		   ) OR EXISTS(
+				SELECT 1 FROM moment_media mmoment
+				JOIN moments moment ON moment.id=mmoment.moment_id AND moment.status='ACTIVE'
+				WHERE mmoment.media_id=m.id AND (
+				  moment.author_user_id=$2 OR (
+				    EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$2 AND c.contact_user_id=moment.author_user_id)
+				    AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=$2 AND b.blocked_user_id=moment.author_user_id) OR (b.owner_user_id=moment.author_user_id AND b.blocked_user_id=$2))
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$2 AND p.target_user_id=moment.author_user_id AND p.hide_target=true)
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=moment.author_user_id AND p.target_user_id=$2 AND p.hide_from_target=true)
+				    AND (moment.visibility='ALL_CONTACTS'
+				      OR (moment.visibility='PRIVATE' AND EXISTS(SELECT 1 FROM moment_visibility_users v WHERE v.moment_id=moment.id AND v.user_id=$2 AND v.mode='INCLUDED'))
+				      OR (moment.visibility='EXCLUDE' AND NOT EXISTS(SELECT 1 FROM moment_visibility_users v WHERE v.moment_id=moment.id AND v.user_id=$2 AND v.mode='EXCLUDED')))
+				  )
+				)
 		   )) AS can_access
 		FROM media_objects m
 		WHERE m.id=$1 AND m.deleted_at IS NULL
@@ -251,7 +369,7 @@ func (service *Service) GetMedia(ctx context.Context, principal account.Principa
 	if !canAccess {
 		return MediaObject{}, ErrForbidden
 	}
-	result.OwnerUserID = ownerID.String()
+	result.OwnerUserID = ownerID
 	result.Purpose = purpose
 	result.Status = status
 	result.ReadyAt = readyAt
@@ -274,6 +392,28 @@ func (service *Service) CreateDownloadURL(ctx context.Context, principal account
 				JOIN conversation_members cm ON cm.conversation_id=msg.conversation_id AND cm.user_id=$2 AND cm.status='ACTIVE'
 				LEFT JOIN message_local_deletions ld ON ld.message_id=msg.id AND ld.user_id=$2
 				WHERE mm.media_id=m.id AND ld.message_id IS NULL
+		   ) OR EXISTS(
+				SELECT 1 FROM custom_stickers cs
+				WHERE cs.owner_user_id=$2 AND cs.media_id=m.id AND cs.deleted_at IS NULL
+		   ) OR EXISTS(
+				SELECT 1
+				FROM telegram_sticker_items tsi
+				JOIN user_sticker_packs usp ON usp.pack_id=tsi.pack_id AND usp.user_id=$2
+				WHERE tsi.media_id=m.id
+		   ) OR EXISTS(
+				SELECT 1 FROM moment_media mmoment
+				JOIN moments moment ON moment.id=mmoment.moment_id AND moment.status='ACTIVE'
+				WHERE mmoment.media_id=m.id AND (
+				  moment.author_user_id=$2 OR (
+				    EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$2 AND c.contact_user_id=moment.author_user_id)
+				    AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=$2 AND b.blocked_user_id=moment.author_user_id) OR (b.owner_user_id=moment.author_user_id AND b.blocked_user_id=$2))
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$2 AND p.target_user_id=moment.author_user_id AND p.hide_target=true)
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=moment.author_user_id AND p.target_user_id=$2 AND p.hide_from_target=true)
+				    AND (moment.visibility='ALL_CONTACTS'
+				      OR (moment.visibility='PRIVATE' AND EXISTS(SELECT 1 FROM moment_visibility_users v WHERE v.moment_id=moment.id AND v.user_id=$2 AND v.mode='INCLUDED'))
+				      OR (moment.visibility='EXCLUDE' AND NOT EXISTS(SELECT 1 FROM moment_visibility_users v WHERE v.moment_id=moment.id AND v.user_id=$2 AND v.mode='EXCLUDED')))
+				  )
+				)
 		   )) AS can_access
 		FROM media_objects m
 		WHERE m.id=$1 AND m.deleted_at IS NULL

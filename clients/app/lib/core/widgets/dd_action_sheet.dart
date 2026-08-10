@@ -27,35 +27,43 @@ Future<T?> showDdActionSheet<T>(
   return showModalBottomSheet<T>(
     context: context,
     useSafeArea: true,
+    isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.28),
-    builder: (sheetContext) => Align(
-      alignment: Alignment.bottomCenter,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: Container(
-          margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Theme.of(sheetContext).colorScheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.16),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
-              ),
-            ],
+    builder: (sheetContext) => LayoutBuilder(
+      builder: (context, constraints) => Align(
+        alignment: Alignment.bottomCenter,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 420,
+            maxHeight: constraints.maxHeight * 0.82,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var index = 0; index < items.length; index++) ...[
-                _ActionSheetRow<T>(item: items[index]),
-                if (index != items.length - 1)
-                  const Divider(height: 1, indent: 52),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: Theme.of(sheetContext).colorScheme.surface,
+              borderRadius: BorderRadius.circular(DdRadii.sheet),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.16),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
+                ),
               ],
-            ],
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var index = 0; index < items.length; index++) ...[
+                    _ActionSheetRow<T>(item: items[index]),
+                    if (index != items.length - 1)
+                      const Divider(height: 1, indent: 52),
+                  ],
+                ],
+              ),
+            ),
           ),
         ),
       ),

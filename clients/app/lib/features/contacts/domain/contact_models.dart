@@ -19,6 +19,22 @@ final class ContactUser {
   final String bio;
 }
 
+final class ContactMentionSuggestion {
+  const ContactMentionSuggestion({
+    required this.user,
+    required this.relationship,
+  });
+
+  factory ContactMentionSuggestion.fromJson(Map<String, dynamic> json) =>
+      ContactMentionSuggestion(
+        user: ContactUser.fromJson(json['user'] as Map<String, dynamic>),
+        relationship: (json['relationship'] as String?) ?? 'NONE',
+      );
+
+  final ContactUser user;
+  final String relationship;
+}
+
 final class ContactSearchResult {
   const ContactSearchResult({required this.user, required this.relationship});
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../../theme/app_theme.dart';
 import '../realtime_debug_controller.dart';
 import 'connection_status_badge.dart';
 
@@ -30,7 +31,7 @@ class RealtimeSettingsPanel extends StatelessWidget {
                 DecoratedBox(
                   decoration: BoxDecoration(
                     color: theme.colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(DdRadii.control),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(10),

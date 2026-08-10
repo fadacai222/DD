@@ -13,6 +13,12 @@ abstract interface class ContactsGateway {
     required String handle,
   });
 
+  Future<ContactSearchResult> getUserById({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  });
+
   Future<ContactRequestItem> sendRequest({
     required Uri origin,
     required String accessToken,
@@ -47,6 +53,12 @@ abstract interface class ContactsGateway {
   Future<RelationshipPage<ContactItem>> listContacts({
     required Uri origin,
     required String accessToken,
+  });
+
+  Future<ContactItem> addContact({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
   });
 
   Future<ContactItem> updateContact({
@@ -121,6 +133,52 @@ final class ContactsApiClient implements ContactsGateway {
     );
     final data = _decodeData(response, expectedStatuses: const {200});
     return ContactSearchResult.fromJson(data);
+  }
+
+  @override
+  Future<ContactSearchResult> getUserById({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async {
+    final encoded = Uri.encodeComponent(userId.trim());
+    final response = await _authorized(
+      origin,
+      '/api/v1/users/$encoded',
+      accessToken,
+    );
+    final data = _decodeData(response, expectedStatuses: const {200});
+    return ContactSearchResult.fromJson(data);
+  }
+
+  Future<List<ContactMentionSuggestion>> suggestMentions({
+    required Uri origin,
+    required String accessToken,
+    required String query,
+    required String conversationId,
+    int limit = 8,
+  }) async {
+    final parameters = <String, String>{
+      'q': query.trim(),
+      'limit': '$limit',
+      if (conversationId.trim().isNotEmpty)
+        'conversationId': conversationId.trim(),
+    };
+    final encodedQuery = Uri(queryParameters: parameters).query;
+    final response = await _authorized(
+      origin,
+      '/api/v1/users/mention-suggestions?$encodedQuery',
+      accessToken,
+    );
+    final data = _decodeData(response, expectedStatuses: const {200});
+    final rawItems = data['items'];
+    if (rawItems is! List) {
+      throw const FormatException('Mention suggestion items are malformed');
+    }
+    return rawItems
+        .whereType<Map<String, dynamic>>()
+        .map(ContactMentionSuggestion.fromJson)
+        .toList(growable: false);
   }
 
   @override
@@ -231,6 +289,23 @@ final class ContactsApiClient implements ContactsGateway {
     );
     final data = _decodeData(response, expectedStatuses: const {200});
     return _decodePage(data, ContactItem.fromJson);
+  }
+
+  @override
+  Future<ContactItem> addContact({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/contacts/$userId',
+      accessToken,
+      method: 'PUT',
+    );
+    return ContactItem.fromJson(
+      _decodeData(response, expectedStatuses: const {200}),
+    );
   }
 
   @override

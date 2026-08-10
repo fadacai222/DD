@@ -23,6 +23,8 @@ type AuthService interface {
 	AuthenticateAccessToken(ctx context.Context, raw string) (account.Principal, error)
 	GetMe(ctx context.Context, principal account.Principal) (account.Me, error)
 	UpdateMe(ctx context.Context, principal account.Principal, input account.UpdateMeInput) (account.Me, error)
+	SendEmailChangeCode(ctx context.Context, principal account.Principal, email string) error
+	ChangeEmail(ctx context.Context, principal account.Principal, input account.ChangeEmailInput) (account.Me, error)
 	PutProfileAvatar(ctx context.Context, principal account.Principal, contentType string, image []byte) (time.Time, error)
 	GetProfileAvatar(ctx context.Context, userID uuid.UUID) (account.ProfileAvatar, error)
 	DeleteProfileAvatar(ctx context.Context, principal account.Principal) error
