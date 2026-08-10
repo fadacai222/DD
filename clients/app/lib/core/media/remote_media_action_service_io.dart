@@ -7,24 +7,42 @@ import 'package:http/http.dart' as http;
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../features/messaging/data/media_api_client.dart';
+import '../../features/messaging/data/resumable_media_downloader.dart';
 import 'media_export_service.dart';
 
 final class RemoteMediaActionService {
-  RemoteMediaActionService({TargetPlatform? platform})
-    : _platform = platform ?? defaultTargetPlatform;
+  RemoteMediaActionService({
+    TargetPlatform? platform,
+    ResumableMediaDownloader? downloader,
+  }) : _platform = platform ?? defaultTargetPlatform,
+       _downloader = downloader ?? ResumableMediaDownloader();
 
   static const MethodChannel _channel = MethodChannel('dd/media_export');
   final TargetPlatform _platform;
+  final ResumableMediaDownloader _downloader;
 
   Future<String> openFile({
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
   }) async {
     final fileName = MediaExportService.safeFileName(suggestedName);
+    final file = await _downloadTransferFile(
+      url: url,
+      transferKey: transferKey,
+      fileName: fileName,
+      expectedBytes: expectedBytes,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
     if (_platform == TargetPlatform.android) {
-      final opened = await _channel.invokeMethod<bool>('openRemoteFile', {
-        'url': url.toString(),
+      final opened = await _channel.invokeMethod<bool>('openLocalFile', {
+        'path': file.path,
         'mimeType': mimeType,
         'fileName': fileName,
       });
@@ -36,7 +54,6 @@ final class RemoteMediaActionService {
       }
       return '已交给系统应用打开';
     }
-    final file = await _cacheRemoteFile(url, fileName);
     if (_platform == TargetPlatform.macOS) {
       await Process.start('open', [file.path]);
     } else if (_platform == TargetPlatform.linux) {
@@ -53,12 +70,29 @@ final class RemoteMediaActionService {
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
     void Function(int received, int? total)? onProgress,
   }) async {
     final fileName = MediaExportService.safeFileName(suggestedName);
+    final location = _platform == TargetPlatform.android
+        ? null
+        : await getSaveLocation(suggestedName: fileName);
+    if (_platform != TargetPlatform.android && location == null) {
+      throw const MediaExportCancelled();
+    }
+    final file = await _downloadTransferFile(
+      url: url,
+      transferKey: transferKey,
+      fileName: fileName,
+      expectedBytes: expectedBytes,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
     if (_platform == TargetPlatform.android) {
-      final uri = await _channel.invokeMethod<String>('saveRemoteFileToDownloads', {
-        'url': url.toString(),
+      final uri = await _channel.invokeMethod<String>('saveLocalFileToDownloads', {
+        'path': file.path,
         'mimeType': mimeType,
         'fileName': fileName,
       });
@@ -70,9 +104,7 @@ final class RemoteMediaActionService {
       }
       return '文件已保存到下载目录';
     }
-    final location = await getSaveLocation(suggestedName: fileName);
-    if (location == null) throw const MediaExportCancelled();
-    await _downloadToFile(url, File(location.path), onProgress: onProgress);
+    await file.copy(location!.path);
     return '文件已保存';
   }
 
@@ -80,11 +112,23 @@ final class RemoteMediaActionService {
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
   }) async {
     final fileName = MediaExportService.safeFileName(suggestedName);
+    final file = await _downloadTransferFile(
+      url: url,
+      transferKey: transferKey,
+      fileName: fileName,
+      expectedBytes: expectedBytes,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
     if (_platform == TargetPlatform.android) {
-      final shared = await _channel.invokeMethod<bool>('shareRemoteFile', {
-        'url': url.toString(),
+      final shared = await _channel.invokeMethod<bool>('shareLocalFile', {
+        'path': file.path,
         'mimeType': mimeType,
         'fileName': fileName,
       });
@@ -96,7 +140,6 @@ final class RemoteMediaActionService {
       }
       return '已打开系统分享';
     }
-    final file = await _cacheRemoteFile(url, fileName);
     await Pasteboard.writeFiles(<String>[file.path]);
     return '当前桌面端已复制文件，可直接粘贴到支持文件的应用';
   }
@@ -160,15 +203,31 @@ final class RemoteMediaActionService {
     return '视频已复制';
   }
 
-  Future<File> _cacheRemoteFile(Uri url, String fileName) async {
-    final root = await getTemporaryDirectory();
+  Future<File> _downloadTransferFile({
+    required Uri url,
+    required String transferKey,
+    required String fileName,
+    required int? expectedBytes,
+    required MediaDownloadCancellation? cancellation,
+    required void Function(int received, int? total)? onProgress,
+  }) async {
+    final root = await getApplicationSupportDirectory();
     final directory = Directory(
-      '${root.path}${Platform.pathSeparator}DD${Platform.pathSeparator}shared_files',
+      '${root.path}${Platform.pathSeparator}DD${Platform.pathSeparator}transfers',
     );
     if (!await directory.exists()) await directory.create(recursive: true);
-    final file = File('${directory.path}${Platform.pathSeparator}$fileName');
-    await _downloadToFile(url, file);
-    return file;
+    final safeKey = MediaExportService.safeFileName(transferKey);
+    final target = File(
+      '${directory.path}${Platform.pathSeparator}$safeKey-$fileName',
+    );
+    final result = await _downloader.download(
+      resolveUrl: () async => url,
+      destinationPath: target.path,
+      expectedBytes: expectedBytes,
+      cancellation: cancellation,
+      onProgress: onProgress,
+    );
+    return File(result.path);
   }
 
   Future<void> _downloadToFile(

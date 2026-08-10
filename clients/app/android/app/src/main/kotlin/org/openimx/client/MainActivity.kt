@@ -27,6 +27,9 @@ class MainActivity : FlutterActivity() {
                     "saveRemoteFileToDownloads" -> saveRemoteFileToDownloads(call, result)
                     "openRemoteFile" -> openRemoteFile(call, result)
                     "shareRemoteFile" -> shareRemoteFile(call, result)
+                    "saveLocalFileToDownloads" -> saveLocalFileToDownloads(call, result)
+                    "openLocalFile" -> openLocalFile(call, result)
+                    "shareLocalFile" -> shareLocalFile(call, result)
                     "copyRemoteFileToClipboard" -> copyRemoteFileToClipboard(call, result)
                     else -> result.notImplemented()
                 }
@@ -201,6 +204,118 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }.start()
+    }
+
+    private fun saveLocalFileToDownloads(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            result.error(
+                "MEDIASTORE_UNSUPPORTED",
+                "Android 10 以下版本请使用系统文件选择器保存文件。",
+                null,
+            )
+            return
+        }
+        val path = call.argument<String>("path")
+        val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+        val fileName = safeFileName(call.argument<String>("fileName") ?: "DD-file.bin")
+        val source = path?.let(::File)
+        if (source == null || !source.isFile) {
+            result.error("LOCAL_FILE_MISSING", "本地缓存文件不存在。", null)
+            return
+        }
+        Thread {
+            try {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, mimeType)
+                    put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS + "/DD",
+                    )
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    values,
+                ) ?: throw IllegalStateException("无法创建下载文件记录")
+                try {
+                    contentResolver.openOutputStream(uri, "w").use { output ->
+                        requireNotNull(output) { "无法打开下载目录写入流" }
+                        source.inputStream().buffered().use { input -> input.copyTo(output) }
+                        output.flush()
+                    }
+                    val completed = ContentValues().apply {
+                        put(MediaStore.Downloads.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, completed, null, null)
+                    runOnUiThread { result.success(uri.toString()) }
+                } catch (error: Throwable) {
+                    contentResolver.delete(uri, null, null)
+                    throw error
+                }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    result.error(
+                        "MEDIA_EXPORT_FAILED",
+                        error.message ?: "文件保存失败",
+                        null,
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun openLocalFile(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        val local = localSharedFile(call, result) ?: return
+        val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(local, mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (intent.resolveActivity(packageManager) == null) {
+                throw IllegalStateException("没有可打开此文件类型的应用")
+            }
+            startActivity(intent)
+            result.success(true)
+        } catch (error: Throwable) {
+            result.error("MEDIA_OPEN_FAILED", error.message ?: "文件打开失败", null)
+        }
+    }
+
+    private fun shareLocalFile(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        val local = localSharedFile(call, result) ?: return
+        val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, local)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newUri(contentResolver, "DD file", local)
+            }
+            startActivity(Intent.createChooser(intent, "分享文件"))
+            result.success(true)
+        } catch (error: Throwable) {
+            result.error("MEDIA_SHARE_FAILED", error.message ?: "文件分享失败", null)
+        }
+    }
+
+    private fun localSharedFile(
+        call: io.flutter.plugin.common.MethodCall,
+        result: MethodChannel.Result,
+    ): android.net.Uri? {
+        val path = call.argument<String>("path")
+        val source = path?.let(::File)
+        if (source == null || !source.isFile) {
+            result.error("LOCAL_FILE_MISSING", "本地缓存文件不存在。", null)
+            return null
+        }
+        return try {
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", source)
+        } catch (error: Throwable) {
+            result.error("LOCAL_FILE_SHARE_FAILED", error.message ?: "无法共享本地文件", null)
+            null
+        }
     }
 
     private fun openRemoteFile(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {

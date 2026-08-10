@@ -1602,6 +1602,8 @@ class _TextChatPageState extends State<TextChatPage>
           url: url,
           mimeType: mimeType,
           suggestedName: fileName,
+          transferKey: mediaId,
+          expectedBytes: content.sizeBytes,
         ),
       );
       if (mounted) _showImageError(result);
@@ -1627,8 +1629,7 @@ class _TextChatPageState extends State<TextChatPage>
         ? 'application/octet-stream'
         : content.mimeType!.trim();
     final cancellation = MediaDownloadCancellation();
-    final trackProgress =
-        kIsWeb || defaultTargetPlatform != TargetPlatform.android;
+    final trackProgress = !kIsWeb;
     if (trackProgress) {
       setState(() {
         _fileDownloadCancellations[message.id] = cancellation;
@@ -1642,6 +1643,9 @@ class _TextChatPageState extends State<TextChatPage>
           url: url,
           mimeType: mimeType,
           suggestedName: fileName,
+          transferKey: mediaId,
+          expectedBytes: content.sizeBytes,
+          cancellation: cancellation,
           onProgress: (received, total) {
             if (!mounted || cancellation.isCancelled) return;
             if (total == null || total <= 0) return;
@@ -1691,6 +1695,8 @@ class _TextChatPageState extends State<TextChatPage>
           url: url,
           mimeType: mimeType,
           suggestedName: fileName,
+          transferKey: mediaId,
+          expectedBytes: content.sizeBytes,
         ),
       );
       if (mounted) _showImageError(result);

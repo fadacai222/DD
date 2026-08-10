@@ -2,6 +2,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import '../../features/messaging/data/media_api_client.dart';
 import 'media_export_service.dart';
 
 final class RemoteMediaActionService {
@@ -9,6 +10,10 @@ final class RemoteMediaActionService {
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
   }) async {
     await Clipboard.setData(ClipboardData(text: url.toString()));
     return '当前浏览器限制直接打开远程文件，已复制临时下载链接';
@@ -18,6 +23,9 @@ final class RemoteMediaActionService {
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
     void Function(int received, int? total)? onProgress,
   }) async {
     final response = await http.get(url);
@@ -40,6 +48,10 @@ final class RemoteMediaActionService {
     required Uri url,
     required String mimeType,
     required String suggestedName,
+    required String transferKey,
+    int? expectedBytes,
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
   }) async {
     await Clipboard.setData(ClipboardData(text: url.toString()));
     return '当前浏览器限制系统文件分享，已复制临时下载链接';
