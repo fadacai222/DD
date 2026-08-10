@@ -215,6 +215,26 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	if _, err := service.AuthenticateAccessToken(ctx, loggedIn.Tokens.AccessToken); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("revoked device access token error = %v", err)
 	}
+	cleared, err := service.ClearRevokedDevices(ctx, principal)
+	if err != nil || cleared < 1 {
+		t.Fatalf("clear revoked device history count=%d err=%v", cleared, err)
+	}
+	visibleDevices, err := service.ListDevices(ctx, principal)
+	if err != nil {
+		t.Fatalf("list devices after cleanup: %v", err)
+	}
+	for _, device := range visibleDevices {
+		if device.RevokedAt != nil {
+			t.Fatalf("revoked device remained visible after cleanup: %#v", device)
+		}
+	}
+	if clearedAgain, err := service.ClearRevokedDevices(ctx, principal); err != nil || clearedAgain != 0 {
+		t.Fatalf("idempotent clear count=%d err=%v", clearedAgain, err)
+	}
+	var preservedDeviceCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM devices WHERE id=$1`, loginDeviceID).Scan(&preservedDeviceCount); err != nil || preservedDeviceCount != 1 {
+		t.Fatalf("revoked audit device must be preserved count=%d err=%v", preservedDeviceCount, err)
+	}
 
 	if err := service.SendPasswordResetCode(ctx, email); err != nil {
 		t.Fatalf("send password reset code: %v", err)

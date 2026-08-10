@@ -184,7 +184,9 @@ func (service *Service) UpdateMe(ctx context.Context, principal Principal, input
 func (service *Service) ListDevices(ctx context.Context, principal Principal) ([]ManagedDevice, error) {
 	rows, err := service.pool.Query(ctx, `
 		SELECT id, name, platform, app_version, created_at, last_seen_at, revoked_at
-		FROM devices WHERE user_id = $1 ORDER BY last_seen_at DESC, created_at DESC
+		FROM devices
+		WHERE user_id = $1 AND revoked_history_cleared_at IS NULL
+		ORDER BY last_seen_at DESC, created_at DESC
 	`, principal.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
@@ -202,6 +204,20 @@ func (service *Service) ListDevices(ctx context.Context, principal Principal) ([
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
+}
+
+func (service *Service) ClearRevokedDevices(ctx context.Context, principal Principal) (int64, error) {
+	result, err := service.pool.Exec(ctx, `
+		UPDATE devices
+		SET revoked_history_cleared_at = $2
+		WHERE user_id = $1
+		  AND revoked_at IS NOT NULL
+		  AND revoked_history_cleared_at IS NULL
+	`, principal.UserID, service.now().UTC())
+	if err != nil {
+		return 0, fmt.Errorf("clear revoked device history: %w", err)
+	}
+	return result.RowsAffected(), nil
 }
 
 func (service *Service) RevokeDevice(ctx context.Context, principal Principal, deviceID uuid.UUID) error {

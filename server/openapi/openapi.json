@@ -368,6 +368,19 @@
         }
       }
     },
+    "/api/v1/devices/revoked": {
+      "delete": {
+        "operationId": "clearRevokedDeviceHistory",
+        "summary": "Hide revoked device history from the current user's device list",
+        "description": "Marks only the authenticated user's revoked device records as cleared. Device audit rows are preserved because messages and calls may still reference them.",
+        "tags": ["Auth"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Revoked device history cleared", "content": {"application/json": {"schema": {"type": "object", "required": ["data"], "properties": {"data": {"type": "object", "required": ["clearedCount"], "properties": {"clearedCount": {"type": "integer", "format": "int64", "minimum": 0}}}}}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/devices/{deviceId}": {
       "delete": {
         "operationId": "revokeDevice",

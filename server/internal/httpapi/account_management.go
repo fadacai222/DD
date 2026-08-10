@@ -236,6 +236,15 @@ func (s *server) handleDeviceByID(response http.ResponseWriter, request *http.Re
 		return
 	}
 	rawID := strings.TrimPrefix(request.URL.Path, "/api/v1/devices/")
+	if rawID == "revoked" {
+		count, err := s.auth.ClearRevokedDevices(request.Context(), principal)
+		if err != nil {
+			s.writeAuthError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, map[string]any{"clearedCount": count})
+		return
+	}
 	deviceID, err := uuid.Parse(rawID)
 	if err != nil {
 		writeAPIError(response, http.StatusBadRequest, "INVALID_DEVICE_ID", "Device id is invalid")

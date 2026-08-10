@@ -542,6 +542,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   }
 
   Widget _deviceSettings() {
+    final hasRevoked = _devices.any((device) => device.revoked);
     return Column(
       children: [
         if (_devices.isEmpty)
@@ -552,13 +553,24 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
             if (index != _devices.length - 1) const Divider(height: 1),
           ],
         const SizedBox(height: 14),
-        Align(
-          alignment: Alignment.centerRight,
-          child: OutlinedButton.icon(
-            onPressed: _busy ? null : _logoutAll,
-            icon: const Icon(Icons.phonelink_erase_rounded, size: 18),
-            label: const Text('退出全部设备'),
-          ),
+        Wrap(
+          alignment: WrapAlignment.end,
+          spacing: 10,
+          runSpacing: 8,
+          children: [
+            if (hasRevoked)
+              OutlinedButton.icon(
+                key: const Key('account-clear-revoked-devices'),
+                onPressed: _busy ? null : _confirmClearRevokedDevices,
+                icon: const Icon(Icons.cleaning_services_outlined, size: 18),
+                label: const Text('清理已退出设备'),
+              ),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _logoutAll,
+              icon: const Icon(Icons.phonelink_erase_rounded, size: 18),
+              label: const Text('退出全部设备'),
+            ),
+          ],
         ),
       ],
     );
@@ -691,6 +703,47 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                 : item,
           )
           .toList(growable: false);
+    });
+  });
+
+  Future<void> _confirmClearRevokedDevices() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清理已退出设备？'),
+        content: const Text(
+          '只会从设备列表隐藏已经退出的历史记录。当前设备和仍有效的其他设备不会受影响，聊天记录也不会被删除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('account-confirm-clear-revoked-devices'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _clearRevokedDevices();
+  }
+
+  Future<void> _clearRevokedDevices() => _run(() async {
+    final count = await widget.gateway.clearRevokedDevices(
+      origin: widget.origin,
+      accessToken: _accessToken,
+    );
+    if (!mounted) return;
+    setState(() {
+      _devices = _devices
+          .where((device) => !device.revoked)
+          .toList(growable: false);
+      _message = count == 0
+          ? '没有需要清理的已退出设备。'
+          : '已清理 $count 条已退出设备记录。';
     });
   });
 

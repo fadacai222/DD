@@ -93,6 +93,11 @@ abstract interface class AuthGateway {
     required String deviceId,
   });
 
+  Future<int> clearRevokedDevices({
+    required Uri origin,
+    required String accessToken,
+  });
+
   Future<void> logoutAll({required Uri origin, required String accessToken});
 
   void close();
@@ -397,6 +402,30 @@ final class AuthApiClient implements AuthGateway {
       method: 'DELETE',
     );
     if (response.statusCode != 200) throw _exception(response);
+  }
+
+  @override
+  Future<int> clearRevokedDevices({
+    required Uri origin,
+    required String accessToken,
+  }) async {
+    final response = await _authorized(
+      origin,
+      '/api/v1/devices/revoked',
+      accessToken,
+      method: 'DELETE',
+    );
+    if (response.statusCode != 200) throw _exception(response);
+    final body = _decodeObject(response.body);
+    final data = body['data'];
+    if (data is! Map<String, dynamic>) {
+      throw const FormatException('Device cleanup response is malformed');
+    }
+    final count = data['clearedCount'];
+    if (count is! num || count < 0) {
+      throw const FormatException('Device cleanup count is malformed');
+    }
+    return count.toInt();
   }
 
   @override

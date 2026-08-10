@@ -20,8 +20,9 @@ type fakeAuthService struct {
 	refreshErr    error
 	loginResult   *account.AuthSession
 	refreshResult *account.AuthSession
-	lastEmail     string
-	lastRefresh   string
+	lastEmail         string
+	lastRefresh       string
+	clearRevokedCount int64
 }
 
 func (fake *fakeAuthService) SendRegistrationCode(_ context.Context, email, _ string) error {
@@ -80,11 +81,43 @@ func (fake *fakeAuthService) DeleteProfileAvatar(_ context.Context, _ account.Pr
 func (fake *fakeAuthService) ListDevices(_ context.Context, _ account.Principal) ([]account.ManagedDevice, error) {
 	return nil, nil
 }
+func (fake *fakeAuthService) ClearRevokedDevices(_ context.Context, _ account.Principal) (int64, error) {
+	return fake.clearRevokedCount, nil
+}
 func (fake *fakeAuthService) RevokeDevice(_ context.Context, _ account.Principal, _ uuid.UUID) error {
 	return nil
 }
 func (fake *fakeAuthService) RevokeAllDevices(_ context.Context, _ account.Principal) error {
 	return nil
+}
+
+func TestDeviceRevokedHistoryCleanupIsAuthenticatedAndIdempotent(t *testing.T) {
+	fake := &fakeAuthService{clearRevokedCount: 5}
+	handler := NewHandler(Config{AuthService: fake})
+
+	unauthorized := httptest.NewRequest(http.MethodDelete, "/api/v1/devices/revoked", nil)
+	unauthorizedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorizedResponse, unauthorized)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", unauthorizedResponse.Code, unauthorizedResponse.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/devices/revoked", nil)
+	request.Header.Set("Authorization", "Bearer access")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"clearedCount":5`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	fake.clearRevokedCount = 0
+	second := httptest.NewRequest(http.MethodDelete, "/api/v1/devices/revoked", nil)
+	second.Header.Set("Authorization", "Bearer access")
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, second)
+	if secondResponse.Code != http.StatusOK || !strings.Contains(secondResponse.Body.String(), `"clearedCount":0`) {
+		t.Fatalf("second status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
 }
 
 func TestAuthEmailCodeEndpointAcceptsRegistrationRequest(t *testing.T) {

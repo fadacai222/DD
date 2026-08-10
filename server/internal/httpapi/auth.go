@@ -29,6 +29,7 @@ type AuthService interface {
 	GetProfileAvatar(ctx context.Context, userID uuid.UUID) (account.ProfileAvatar, error)
 	DeleteProfileAvatar(ctx context.Context, principal account.Principal) error
 	ListDevices(ctx context.Context, principal account.Principal) ([]account.ManagedDevice, error)
+	ClearRevokedDevices(ctx context.Context, principal account.Principal) (int64, error)
 	RevokeDevice(ctx context.Context, principal account.Principal, deviceID uuid.UUID) error
 	RevokeAllDevices(ctx context.Context, principal account.Principal) error
 }

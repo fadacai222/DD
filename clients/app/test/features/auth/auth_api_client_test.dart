@@ -115,6 +115,34 @@ void main() {
     expect(updatedAt, DateTime.utc(2026, 8, 8, 9));
   });
 
+  test('revoked device cleanup uses authenticated delete and parses count', () async {
+    late http.Request captured;
+    final client = AuthApiClient(
+      httpClient: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'data': {'clearedCount': 3},
+            'requestId': 'req_device_cleanup',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(client.close);
+
+    final count = await client.clearRevokedDevices(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'access-token',
+    );
+
+    expect(captured.method, 'DELETE');
+    expect(captured.url.path, '/api/v1/devices/revoked');
+    expect(captured.headers['authorization'], 'Bearer access-token');
+    expect(count, 3);
+  });
+
   test('origin rejects paths credentials queries and fragments', () {
     for (final value in [
       'http://user:pass@example.com',

@@ -268,6 +268,12 @@ final class _FakeAuthGateway implements AuthGateway {
   }) async {}
 
   @override
+  Future<int> clearRevokedDevices({
+    required Uri origin,
+    required String accessToken,
+  }) async => 0;
+
+  @override
   Future<void> logoutAll({
     required Uri origin,
     required String accessToken,

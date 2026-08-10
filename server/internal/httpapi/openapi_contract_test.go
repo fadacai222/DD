@@ -175,6 +175,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/me/avatar":                                          {"put", "delete"},
 		"/api/v1/avatars/{userId}":                                   {"get"},
 		"/api/v1/devices":                                            {"get"},
+		"/api/v1/devices/revoked":                                    {"delete"},
 		"/api/v1/devices/{deviceId}":                                 {"delete"},
 		"/api/v1/users/by-handle/{handle}":                           {"get"},
 		"/api/v1/users/mention-suggestions":                          {"get"},
