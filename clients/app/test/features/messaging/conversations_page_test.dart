@@ -298,13 +298,19 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const Key('archived-conversations-entry')),
-      findsOneWidget,
+    final archiveEntry = find.byKey(
+      const Key('archived-conversations-entry'),
     );
+    final savedEntry = find.byKey(
+      const Key('saved-messages-conversation-entry'),
+    );
+    expect(archiveEntry, findsOneWidget);
+    expect(savedEntry, findsOneWidget);
+    expect(tester.getSize(archiveEntry).height, lessThan(52));
+    expect(tester.getTopLeft(archiveEntry).dy, lessThan(tester.getTopLeft(savedEntry).dy));
     expect(find.byKey(const Key('conversation-conversation-1')), findsNothing);
 
-    await tester.tap(find.byKey(const Key('archived-conversations-entry')));
+    await tester.tap(archiveEntry);
     await tester.pumpAndSettle();
     expect(
       find.byKey(const Key('conversation-conversation-1')),

@@ -558,20 +558,24 @@ class _ConversationsPageState extends State<ConversationsPage> {
       child: ListView.builder(
         physics: const AlwaysScrollableScrollPhysics(),
         itemCount: conversations.length + leadingCount,
-        itemExtent: 68,
         itemBuilder: (context, index) {
           var offset = 0;
-          if (showSavedEntry) {
-            if (index == 0) return _savedMessagesEntry(desktop: desktop);
-            offset++;
-          }
           if (showArchiveEntry) {
-            if (index == offset) return _archiveEntry(archivedCount);
+            if (index == 0) {
+              return _archiveEntry(archivedCount, desktop: desktop);
+            }
             offset++;
           }
-          return _conversationTile(
-            conversations[index - offset],
-            desktop: desktop,
+          if (showSavedEntry) {
+            if (index == offset) return _savedMessagesEntry(desktop: desktop);
+            offset++;
+          }
+          return SizedBox(
+            height: 68,
+            child: _conversationTile(
+              conversations[index - offset],
+              desktop: desktop,
+            ),
           );
         },
       ),
@@ -593,11 +597,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
       child: InkWell(
         key: const Key('saved-messages-conversation-entry'),
         onTap: () => unawaited(_openSavedMessages(desktop: desktop)),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            children: [
-              Container(
+        child: SizedBox(
+          height: 68,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                Container(
                 width: 46,
                 height: 46,
                 decoration: BoxDecoration(
@@ -652,20 +658,21 @@ class _ConversationsPageState extends State<ConversationsPage> {
                 ),
               ),
               const SizedBox(width: 5),
-              Icon(
-                Icons.push_pin_rounded,
-                key: const Key('saved-messages-pin'),
-                size: 14,
-                color: DdColors.textTertiary,
-              ),
-            ],
+                Icon(
+                  Icons.push_pin_rounded,
+                  key: const Key('saved-messages-pin'),
+                  size: 14,
+                  color: DdColors.textTertiary,
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _archiveEntry(int count) {
+  Widget _archiveEntry(int count, {required bool desktop}) {
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: InkWell(
@@ -674,34 +681,39 @@ class _ConversationsPageState extends State<ConversationsPage> {
           _showArchived = true;
           _selectedConversationId = null;
         }),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            children: [
-              const SizedBox(
-                width: 46,
-                height: 46,
-                child: Icon(
-                  Icons.archive_outlined,
-                  size: 25,
-                  color: DdColors.textSecondary,
+        child: SizedBox(
+          height: desktop ? 40 : 44,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: desktop ? 12 : 14),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: desktop ? 30 : 34,
+                  child: Icon(
+                    Icons.archive_outlined,
+                    size: desktop ? 19 : 21,
+                    color: DdColors.textSecondary,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  '已归档',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    '已归档',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                 ),
-              ),
-              Text(
-                '$count',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: DdColors.textTertiary,
+                Text(
+                  '$count',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: DdColors.textTertiary,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
