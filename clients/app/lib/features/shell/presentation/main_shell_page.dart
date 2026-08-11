@@ -28,6 +28,7 @@ import '../../contacts/presentation/peer_profile_page.dart';
 import '../../messaging/application/messaging_coordinator.dart';
 import '../../messaging/presentation/conversations_page.dart';
 import '../../messaging/presentation/conversations_page_controller.dart';
+import '../../messaging/presentation/desktop_video_pip.dart';
 import '../../messaging/presentation/group_chats_page.dart';
 import '../../messaging/presentation/saved_messages_page.dart';
 import '../../messaging/presentation/text_chat_page.dart';
@@ -153,28 +154,34 @@ class _MainShellPageState extends State<MainShellPage>
           final pages = _buildPages();
           final pageStack = IndexedStack(index: _index, children: pages);
           if (desktop) {
-            return Row(
+            return Stack(
+              fit: StackFit.expand,
               children: [
-                AnimatedBuilder(
-                  animation: _messagingCoordinator,
-                  builder: (context, _) => _DesktopRail(
-                    origin: widget.origin,
-                    session: widget.session,
-                    avatarRevision: _avatarRevision,
-                    unreadCount: _messagingCoordinator.totalUnreadCount,
-                    selectedIndex: _index,
-                    onSelected: _selectMainSection,
-                    onSettings: _openAccountManagement,
-                  ),
+                Row(
+                  children: [
+                    AnimatedBuilder(
+                      animation: _messagingCoordinator,
+                      builder: (context, _) => _DesktopRail(
+                        origin: widget.origin,
+                        session: widget.session,
+                        avatarRevision: _avatarRevision,
+                        unreadCount: _messagingCoordinator.totalUnreadCount,
+                        selectedIndex: _index,
+                        onSelected: _selectMainSection,
+                        onSettings: _openAccountManagement,
+                      ),
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      thickness: 0.5,
+                      color: DdDesktopTokens.borderSubtle(
+                        Theme.of(context).brightness,
+                      ),
+                    ),
+                    Expanded(child: SafeArea(left: false, child: pageStack)),
+                  ],
                 ),
-                VerticalDivider(
-                  width: 1,
-                  thickness: 0.5,
-                  color: DdDesktopTokens.borderSubtle(
-                    Theme.of(context).brightness,
-                  ),
-                ),
-                Expanded(child: SafeArea(left: false, child: pageStack)),
+                const DesktopVideoPipHost(),
               ],
             );
           }

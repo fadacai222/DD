@@ -46,11 +46,13 @@ import '../domain/sticker_models.dart';
 import 'chat_background_settings_page.dart';
 import 'chat_details_page.dart';
 import 'chat_wallpaper_surface.dart';
+import 'desktop_video_pip.dart';
 import 'mention_composer_controller.dart';
 import 'mention_rich_text.dart';
 import 'mention_suggestion_overlay.dart';
 import 'sticker_library_sheet.dart';
 import 'video_viewer_page.dart';
+import 'widgets/inline_video_preview.dart';
 import 'widgets/media_transfer_progress.dart';
 
 class TextChatPage extends StatefulWidget {
@@ -1951,63 +1953,14 @@ class _TextChatPageState extends State<TextChatPage>
               if (snapshot.hasError) return _imageLoadFailure(posterMediaId);
               return _imageLoadingSurface();
             }
-            return GestureDetector(
+            return InlineVideoPreview(
               key: Key('chat-video-${message.id}'),
-              behavior: HitTestBehavior.opaque,
-              onTap: () => unawaited(_openVideoViewer(message)),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.memory(
-                    snapshot.data!,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    filterQuality: FilterQuality.medium,
-                  ),
-                  const Center(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Color(0x99000000),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Icon(
-                          Icons.play_arrow_rounded,
-                          color: Colors.white,
-                          size: 34,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 8,
-                    bottom: 7,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Color(0x99000000),
-                        borderRadius: BorderRadius.all(
-                          Radius.circular(DdRadii.pill),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 3,
-                        ),
-                        child: Text(
-                          _formatMediaDuration(duration),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              playbackId: message.id,
+              posterBytes: snapshot.data!,
+              declaredDuration: duration,
+              sourceResolver: () => _resolveVideoPlaybackSource(message),
+              onOpenFull: () => unawaited(_openVideoViewer(message)),
+              scrollListenable: _scrollController,
             );
           },
         ),
@@ -2035,19 +1988,32 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Future<void> _openVideoViewer(ChatMessage message) async {
+  Future<Uri> _resolveVideoPlaybackSource(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) {
+      throw const FormatException('视频媒体引用无效。');
+    }
+    final cached = await _videoFileCache.cachedUri(
+      mediaId,
+      expectedSizeBytes: content.sizeBytes ?? 0,
+    );
+    if (cached != null) return cached;
+    return (await _downloadGrantFor(mediaId)).url;
+  }
+
+  Future<void> _openVideoViewer(
+    ChatMessage message, {
+    Duration initialPosition = Duration.zero,
+    bool autoPlay = true,
+  }) async {
     final content = message.content;
     final mediaId = content?.mediaId;
     if (content == null || mediaId == null || mediaId.isEmpty) return;
     try {
       final expectedSizeBytes = content.sizeBytes ?? 0;
-      final cached = await _videoFileCache.cachedUri(
-        mediaId,
-        expectedSizeBytes: expectedSizeBytes,
-      );
-      final initialGrant = cached == null
-          ? await _downloadGrantFor(mediaId)
-          : null;
+      final source = await _resolveVideoPlaybackSource(message);
+      final cached = source.scheme == 'file' ? source : null;
       if (!mounted) return;
       final fileName = (content.fileName ?? '').trim().isEmpty
           ? 'DD-video-${message.id}.mp4'
@@ -2059,7 +2025,7 @@ class _TextChatPageState extends State<TextChatPage>
         MaterialPageRoute<void>(
           fullscreenDialog: true,
           builder: (_) => VideoViewerPage(
-            url: cached ?? initialGrant!.url,
+            url: source,
             fileName: fileName,
             mimeType: mimeType,
             remoteUrlResolver: () =>
@@ -2075,12 +2041,45 @@ class _TextChatPageState extends State<TextChatPage>
                     expectedSizeBytes: expectedSizeBytes,
                     onProgress: onProgress,
                   ),
+            initialPosition: initialPosition,
+            autoPlay: autoPlay,
+            onPictureInPicture:
+                !kIsWeb && defaultTargetPlatform == TargetPlatform.windows
+                ? (position, playing) =>
+                      _startDesktopVideoPip(message, position, playing)
+                : null,
           ),
         ),
       );
     } catch (_) {
       if (mounted) _showImageError('视频加载失败，请稍后重试。');
     }
+  }
+
+  Future<void> _startDesktopVideoPip(
+    ChatMessage message,
+    Duration position,
+    bool playing,
+  ) async {
+    final content = message.content;
+    final title = (content?.fileName ?? '').trim().isEmpty
+        ? 'DD 视频'
+        : content!.fileName!.trim();
+    DesktopVideoPipController.shared.open(
+      DesktopVideoPipRequest(
+        id: message.id,
+        title: title,
+        sourceResolver: () => _resolveVideoPlaybackSource(message),
+        initialPosition: position,
+        initialPlaying: playing,
+        onRestore: (restoredPosition, restoredPlaying) => _openVideoViewer(
+          message,
+          initialPosition: restoredPosition,
+          autoPlay: restoredPlaying,
+        ),
+      ),
+    );
+    if (mounted) await Navigator.of(context).maybePop();
   }
 
   Future<void> _ensureAutoVideoCached(ChatMessage message) async {
@@ -2165,17 +2164,6 @@ class _TextChatPageState extends State<TextChatPage>
         rethrow;
       }
     }
-  }
-
-  String _formatMediaDuration(Duration duration) {
-    final seconds = duration.inSeconds.clamp(0, 24 * 60 * 60 - 1);
-    final hours = seconds ~/ 3600;
-    final minutes = (seconds % 3600) ~/ 60;
-    final rest = seconds % 60;
-    if (hours > 0) {
-      return '$hours:${minutes.toString().padLeft(2, '0')}:${rest.toString().padLeft(2, '0')}';
-    }
-    return '$minutes:${rest.toString().padLeft(2, '0')}';
   }
 
   String _imageExtension(String mimeType) => switch (mimeType.toLowerCase()) {

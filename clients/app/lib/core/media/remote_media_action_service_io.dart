@@ -191,6 +191,38 @@ final class RemoteMediaActionService {
     return '视频已保存';
   }
 
+  Future<String> shareVideo({
+    required Uri url,
+    required String mimeType,
+    required String suggestedName,
+  }) async {
+    final fileName = MediaExportService.safeFileName(suggestedName);
+    if (_platform == TargetPlatform.android) {
+      final shared = await _channel.invokeMethod<bool>('shareRemoteFile', {
+        'url': url.toString(),
+        'mimeType': mimeType,
+        'fileName': fileName,
+      });
+      if (shared != true) {
+        throw PlatformException(
+          code: 'MEDIA_SHARE_FAILED',
+          message: 'Android 视频分享失败。',
+        );
+      }
+      return '已打开系统分享';
+    }
+    final file = await _downloadTransferFile(
+      url: url,
+      transferKey: 'video-share-${url.hashCode}',
+      fileName: fileName,
+      expectedBytes: null,
+      cancellation: null,
+      onProgress: null,
+    );
+    await Pasteboard.writeFiles(<String>[file.path]);
+    return '视频文件已复制，可粘贴到支持文件的应用';
+  }
+
   Future<String> copyVideo({
     required Uri url,
     required String mimeType,

@@ -96,6 +96,15 @@ final class RemoteMediaActionService {
     return '已开始下载视频';
   }
 
+  Future<String> shareVideo({
+    required Uri url,
+    required String mimeType,
+    required String suggestedName,
+  }) async {
+    await Clipboard.setData(ClipboardData(text: url.toString()));
+    return '当前浏览器限制系统视频分享，已复制临时下载链接';
+  }
+
   Future<String> copyVideo({
     required Uri url,
     required String mimeType,
