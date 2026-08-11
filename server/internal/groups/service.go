@@ -500,6 +500,9 @@ func (service *Service) RemoveMember(ctx context.Context, principal account.Prin
 	`, groupID, targetUserID, now); err != nil {
 		return fmt.Errorf("remove group member: %w", err)
 	}
+	if err := detachActiveGroupCallParticipantTx(ctx, tx, groupID, targetUserID, now); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE groups SET updated_at=$2 WHERE conversation_id=$1`, groupID, now); err != nil {
 		return fmt.Errorf("touch group after removal: %w", err)
 	}
@@ -609,6 +612,9 @@ func (service *Service) Leave(ctx context.Context, principal account.Principal, 
 	`, groupID, principal.UserID, now); err != nil {
 		return fmt.Errorf("leave group: %w", err)
 	}
+	if err := detachActiveGroupCallParticipantTx(ctx, tx, groupID, principal.UserID, now); err != nil {
+		return err
+	}
 	if err := insertGroupOutboxTx(ctx, tx, groupID, "GROUP_MEMBER_LEFT", &principal.UserID, map[string]any{
 		"groupId": groupID.String(), "userId": principal.UserID.String(),
 	}, now); err != nil {
@@ -699,6 +705,9 @@ func (service *Service) Dissolve(ctx context.Context, principal account.Principa
 		memberIDs = append(memberIDs, userID)
 	}
 	rows.Close()
+	if err := terminateActiveGroupCallTx(ctx, tx, groupID, now); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE groups SET status='DISSOLVED',dissolved_at=$2,updated_at=$2
 		WHERE conversation_id=$1 AND status='ACTIVE'

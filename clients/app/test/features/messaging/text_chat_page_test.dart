@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/core/media/camera_capture_service.dart';
 import 'package:im_client/core/security/dd_secure_storage.dart';
+import 'package:im_client/features/calls/data/group_call_api_client.dart';
+import 'package:im_client/features/calls/domain/group_call_models.dart';
 import 'package:im_client/features/contacts/domain/contact_models.dart';
 import 'package:im_client/features/groups/data/groups_api_client.dart';
 import 'package:im_client/features/groups/domain/group_models.dart';
@@ -1623,6 +1625,7 @@ void main() {
           conversation: _groupConversation(),
           currentUserId: 'user-a',
           groupsGateway: _ChatGroupsGateway(),
+          groupCallGateway: _EmptyGroupCallGateway(),
           onStartCall: (_, _, _) async {},
         ),
       ),
@@ -1633,8 +1636,10 @@ void main() {
     expect(find.text('3 位成员'), findsOneWidget);
     expect(find.text('小陈'), findsOneWidget);
     expect(find.text('大家好'), findsOneWidget);
-    expect(find.byIcon(Icons.call_outlined), findsNothing);
-    expect(find.byIcon(Icons.videocam_outlined), findsNothing);
+    expect(find.byKey(const Key('chat-audio-call-mobile')), findsNothing);
+    expect(find.byKey(const Key('chat-video-call-mobile')), findsNothing);
+    expect(find.byKey(const Key('group-call-start-audio')), findsOneWidget);
+    expect(find.byKey(const Key('group-call-start-video')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
@@ -1707,6 +1712,21 @@ final class _SecureMemoryStore implements SecureKeyValueStore {
 
   @override
   Future<void> write(String key, String value) async => values[key] = value;
+}
+
+final class _EmptyGroupCallGateway implements GroupCallGateway {
+  @override
+  Future<GroupCallInfo?> active({
+    required Uri origin,
+    required String accessToken,
+    required String groupId,
+  }) async => null;
+
+  @override
+  void close() {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 final class _ChatGroupsGateway implements GroupsGateway {

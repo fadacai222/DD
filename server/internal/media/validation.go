@@ -16,7 +16,7 @@ const (
 	maxGIFBytes     int64 = 50 * 1024 * 1024
 	maxVoiceBytes   int64 = 25 * 1024 * 1024
 	maxVideoBytes   int64 = 2 * 1024 * 1024 * 1024
-	maxStickerBytes int64 = 10 * 1024 * 1024
+	maxStickerBytes int64 = 64 * 1024 * 1024
 	maxFileBytes    int64 = 2 * 1024 * 1024 * 1024
 )
 

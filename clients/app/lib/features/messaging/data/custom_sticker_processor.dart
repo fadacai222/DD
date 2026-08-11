@@ -44,8 +44,8 @@ Future<PreparedCustomSticker> prepareCustomSticker(
   _throwIfCancelled(cancellation);
 
   final lower = file.name.toLowerCase();
-  if (lower.endsWith('.gif')) {
-    final prefix = await _readPrefix(file, 16);
+  final prefix = await _readPrefix(file, 16);
+  if (lower.endsWith('.gif') || _looksLikeGif(prefix)) {
     final dimensions = _gifDimensions(prefix);
     _validateDimensions(dimensions.$1, dimensions.$2);
     return PreparedCustomSticker(
@@ -142,6 +142,12 @@ Future<Uint8List> _readPrefix(XFile file, int count) async {
     if (bytes.length >= count) break;
   }
   return bytes.takeBytes();
+}
+
+bool _looksLikeGif(Uint8List bytes) {
+  if (bytes.length < 6) return false;
+  final signature = String.fromCharCodes(bytes.sublist(0, 6));
+  return signature == 'GIF87a' || signature == 'GIF89a';
 }
 
 (int, int) _gifDimensions(Uint8List bytes) {

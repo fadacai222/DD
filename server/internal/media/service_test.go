@@ -25,6 +25,15 @@ func TestValidateUploadInputByPurpose(t *testing.T) {
 			wantErr: ErrInvalidInput,
 		},
 		{
+			name:  "sticker accepts configured 64 MiB ceiling",
+			input: CreateUploadInput{FileName: "large.gif", Size: maxStickerBytes, MIMEType: "image/gif", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
+		},
+		{
+			name:    "sticker rejects above 64 MiB ceiling",
+			input:   CreateUploadInput{FileName: "too-large.gif", Size: maxStickerBytes + 1, MIMEType: "image/gif", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
+			wantErr: ErrQuotaExceeded,
+		},
+		{
 			name:    "voice rejects oversized",
 			input:   CreateUploadInput{FileName: "voice.m4a", Size: maxVoiceBytes + 1, MIMEType: "audio/mp4", SHA256: strings.Repeat("d", 64), Purpose: PurposeChatVoice},
 			wantErr: ErrQuotaExceeded,

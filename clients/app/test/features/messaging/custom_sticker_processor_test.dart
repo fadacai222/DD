@@ -2,9 +2,9 @@ import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:image/image.dart' as img;
 import 'package:im_client/features/messaging/data/custom_sticker_processor.dart';
 import 'package:im_client/features/messaging/data/media_api_client.dart';
+import 'package:image/image.dart' as img;
 
 void main() {
   test('static sticker is resized and encoded as transparent-safe PNG', () async {

@@ -17,7 +17,10 @@ import '../../../core/media/remote_media_action_service.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
+import '../../calls/data/group_call_api_client.dart';
 import '../../calls/domain/call_session.dart';
+import '../../calls/domain/group_call_models.dart';
+import '../../calls/presentation/group_call_page.dart';
 import '../../contacts/data/contacts_api_client.dart';
 import '../../contacts/domain/contact_models.dart';
 import '../../contacts/presentation/peer_profile_page.dart';
@@ -78,6 +81,7 @@ class TextChatPage extends StatefulWidget {
     this.mediaPreferencesStore,
     this.cameraCapture,
     this.inspectorController,
+    this.groupCallGateway,
   });
 
   final MessagingCoordinator coordinator;
@@ -99,6 +103,7 @@ class TextChatPage extends StatefulWidget {
   final MediaAutoDownloadStore? mediaPreferencesStore;
   final CameraCaptureGateway? cameraCapture;
   final DesktopInspectorController? inspectorController;
+  final GroupCallGateway? groupCallGateway;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -112,6 +117,11 @@ class _TextChatPageState extends State<TextChatPage>
   late final ChatAppearanceStore _appearanceStore;
   late final MediaApiClient _mediaApi;
   late final CameraCaptureGateway _cameraCapture;
+  late final GroupCallGateway _groupCallGateway;
+  late final bool _ownsGroupCallGateway;
+  GroupCallInfo? _activeGroupCall;
+  bool _groupCallBusy = false;
+  Timer? _groupCallRefreshTimer;
   late final MediaAutoDownloadStore _mediaPreferencesStore;
   MediaAutoDownloadPreferences _mediaPreferences =
       const MediaAutoDownloadPreferences();
@@ -193,6 +203,15 @@ class _TextChatPageState extends State<TextChatPage>
     _mediaApi = MediaApiClient();
     _uploadTransfers = MediaTransferController(maxConcurrent: 3);
     _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
+    _ownsGroupCallGateway = widget.groupCallGateway == null;
+    _groupCallGateway = widget.groupCallGateway ?? GroupCallApiClient();
+    if (widget.conversation.type == 'GROUP') {
+      unawaited(_refreshActiveGroupCall());
+      _groupCallRefreshTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => unawaited(_refreshActiveGroupCall()),
+      );
+    }
     _mediaPreferencesStore = widget.mediaPreferencesStore ??
         MediaAutoDownloadStore.shared(widget.currentUserId);
     _mediaPreferences = _mediaPreferencesStore.value;
@@ -313,7 +332,9 @@ class _TextChatPageState extends State<TextChatPage>
     _composer.dispose();
     _scrollController.dispose();
     _mediaPreferencesStore.removeListener(_onMediaPreferencesChanged);
+    _groupCallRefreshTimer?.cancel();
     _uploadTransfers.dispose();
+    if (_ownsGroupCallGateway) _groupCallGateway.close();
     _mediaApi.close();
     _contactsApi.close();
     if (_ownsGroupsApi) _groupsApi.close();
@@ -2744,6 +2765,7 @@ class _TextChatPageState extends State<TextChatPage>
               if (editingMessage != null) _editPreview(editingMessage),
               if (replyingTo != null && editingMessage == null)
                 _replyPreview(replyingTo),
+              if (widget.conversation.type == 'GROUP') _groupCallBanner(),
               AnimatedBuilder(
                 animation: _uploadTransfers,
                 builder: (context, _) => _uploadTransferBanners(),
@@ -3914,6 +3936,179 @@ class _TextChatPageState extends State<TextChatPage>
     }
   }
 
+  Widget _groupCallBanner() {
+    final active = _activeGroupCall;
+    return Container(
+      key: const Key('group-call-banner'),
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.fromLTRB(10, 7, 8, 7),
+      decoration: BoxDecoration(
+        color: active == null
+            ? Theme.of(context).colorScheme.surface.withValues(alpha: 0.94)
+            : DdColors.green.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            active?.isVideo == true
+                ? Icons.video_call_rounded
+                : Icons.call_rounded,
+            size: 19,
+            color: active == null ? DdColors.textSecondary : DdColors.green,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              active == null
+                  ? '发起群通话'
+                  : '${active.isVideo ? '群视频通话' : '群语音通话'}进行中 · ${active.participants.length}/${active.maxParticipants} 人',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          if (_groupCallBusy)
+            const SizedBox.square(
+              dimension: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else if (active != null)
+            TextButton(
+              key: const Key('group-call-join-active'),
+              onPressed: _joinActiveGroupCall,
+              child: const Text('加入'),
+            )
+          else ...[
+            IconButton(
+              key: const Key('group-call-start-audio'),
+              tooltip: '发起群语音通话',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _startGroupCall('AUDIO'),
+              icon: const Icon(Icons.call_outlined, size: 20),
+            ),
+            IconButton(
+              key: const Key('group-call-start-video'),
+              tooltip: '发起群视频通话',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _startGroupCall('VIDEO'),
+              icon: const Icon(Icons.videocam_outlined, size: 20),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _refreshActiveGroupCall() async {
+    if (widget.conversation.type != 'GROUP') return;
+    try {
+      final active = await widget.coordinator.withAuthorizedToken(
+        (token) => _groupCallGateway.active(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          groupId: widget.conversation.id,
+        ),
+      );
+      if (mounted) setState(() => _activeGroupCall = active);
+    } catch (_) {
+      // Active-call discovery is best effort; the chat itself must stay usable.
+    }
+  }
+
+  Future<bool> _confirmStartGroupCall(String kind) async {
+    final video = kind == 'VIDEO';
+    final memberCount = _groupMembers.isNotEmpty
+        ? _groupMembers.length
+        : widget.conversation.group?.memberCount ?? 0;
+    return await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(video ? '发起群视频通话？' : '发起群语音通话？'),
+            content: Text(
+              '当前群共有 $memberCount 位成员。发起后会通过 DD 实时通道通知在线成员；'
+              '会话免打扰只抑制提醒，不影响成员主动加入。离线系统 Push 仍由 P10 Push 能力负责。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                key: const Key('confirm-start-group-call'),
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('发起'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _startGroupCall(String kind) async {
+    if (_groupCallBusy || !mounted) return;
+    if (!await _confirmStartGroupCall(kind) || !mounted) return;
+    setState(() => _groupCallBusy = true);
+    try {
+      final joined = await widget.coordinator.withAuthorizedToken(
+        (token) => _groupCallGateway.start(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          groupId: widget.conversation.id,
+          kind: kind,
+        ),
+      );
+      if (!mounted) return;
+      setState(() => _activeGroupCall = joined.call);
+      await _openGroupCall(joined);
+    } on GroupCallApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('群通话发起失败，请稍后重试。');
+    } finally {
+      if (mounted) setState(() => _groupCallBusy = false);
+      unawaited(_refreshActiveGroupCall());
+    }
+  }
+
+  Future<void> _joinActiveGroupCall() async {
+    final active = _activeGroupCall;
+    if (active == null || _groupCallBusy || !mounted) return;
+    setState(() => _groupCallBusy = true);
+    try {
+      final joined = await widget.coordinator.withAuthorizedToken(
+        (token) => _groupCallGateway.join(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          groupId: widget.conversation.id,
+          callId: active.id,
+        ),
+      );
+      if (!mounted) return;
+      await _openGroupCall(joined);
+    } on GroupCallApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('加入群通话失败，请稍后重试。');
+    } finally {
+      if (mounted) setState(() => _groupCallBusy = false);
+      unawaited(_refreshActiveGroupCall());
+    }
+  }
+
+  Future<void> _openGroupCall(GroupCallJoinInfo joined) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => GroupCallPage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          groupName: widget.conversation.group?.name ?? '群聊',
+          join: joined,
+          gateway: _groupCallGateway,
+        ),
+      ),
+    );
+  }
+
   Future<void> _startCall(CallKind kind) async {
     final conversation =
         widget.coordinator.conversationFor(widget.conversation.id) ??
@@ -4269,64 +4464,128 @@ class _TextChatPageState extends State<TextChatPage>
     if (_stickerSending) return null;
     const typeGroup = XTypeGroup(
       label: '自定义表情',
-      extensions: <String>['png', 'webp', 'gif'],
-      mimeTypes: <String>['image/png', 'image/webp', 'image/gif'],
+      extensions: <String>['png', 'jpg', 'jpeg', 'webp', 'gif'],
+      mimeTypes: <String>[
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+      ],
     );
     final file = await openFile(acceptedTypeGroups: const [typeGroup]);
     if (file == null || !mounted) return null;
-    final sourceLength = await file.length();
-    if (!mounted) return null;
-    if (sourceLength <= 0 || sourceLength > 10 * 1024 * 1024) {
-      _showImageError('自定义表情必须小于 10 MiB 且不能为空。');
-      return null;
-    }
+
+    final cancellation = MediaUploadCancellation();
+    final transferState = ValueNotifier<MediaTransferState>(
+      const MediaTransferState(phase: MediaTransferPhase.preparing),
+    );
     setState(() => _stickerSending = true);
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _StickerTransferDialog(
+          state: transferState,
+          fileName: file.name.isEmpty ? '自定义表情' : file.name,
+          onCancel: cancellation.cancel,
+        ),
+      ),
+    );
+
     try {
-      final source = await file.readAsBytes();
-      final metadata = await inspectChatVisual(source);
-      if (metadata.width > 4096 || metadata.height > 4096) {
-        throw const FormatException('自定义表情最大支持 4096×4096。');
-      }
-      final lowerName = file.name.toLowerCase();
-      final mimeType = lowerName.endsWith('.gif')
-          ? 'image/gif'
-          : lowerName.endsWith('.webp')
-          ? 'image/webp'
-          : lowerName.endsWith('.png')
-          ? 'image/png'
-          : '';
-      if (mimeType.isEmpty) {
-        throw const FormatException('自定义表情只支持 PNG、WebP、GIF。');
-      }
+      final prepared = await prepareCustomSticker(
+        file,
+        cancellation: cancellation,
+        onProgress: (processed, total) {
+          if (transferState.value.phase != MediaTransferPhase.preparing) {
+            return;
+          }
+          transferState.value = MediaTransferState(
+            phase: MediaTransferPhase.preparing,
+            transferredBytes: processed,
+            totalBytes: total,
+          );
+        },
+      );
+      if (cancellation.isCancelled) throw const MediaUploadCancelled();
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.uploading,
+        totalBytes: prepared.sizeBytes,
+      );
       final grant = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadMedia(
+        (token) => _mediaApi.uploadStream(
           origin: widget.coordinator.origin,
           accessToken: token,
-          bytes: source,
-          fileName: file.name.isEmpty ? 'custom-sticker.webp' : file.name,
-          mimeType: mimeType,
+          streamFactory: prepared.streamFactory,
+          size: prepared.sizeBytes,
+          fileName: prepared.fileName,
+          mimeType: prepared.mimeType,
           purpose: 'STICKER',
+          cancellation: cancellation,
+          onProgress: (sent, total) {
+            transferState.value = MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              transferredBytes: sent,
+              totalBytes: total,
+            );
+          },
         ),
       );
-      return await widget.coordinator.withAuthorizedToken(
+      if (cancellation.isCancelled) throw const MediaUploadCancelled();
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.committing,
+        transferredBytes: prepared.sizeBytes,
+        totalBytes: prepared.sizeBytes,
+      );
+      final item = await widget.coordinator.withAuthorizedToken(
         (token) => gateway.createCustomSticker(
           origin: widget.coordinator.origin,
           accessToken: token,
           mediaId: grant.mediaId,
-          width: metadata.width,
-          height: metadata.height,
+          width: prepared.width,
+          height: prepared.height,
         ),
       );
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.done,
+        transferredBytes: prepared.sizeBytes,
+        totalBytes: prepared.sizeBytes,
+      );
+      return item;
+    } on MediaUploadCancelled {
+      transferState.value = const MediaTransferState(
+        phase: MediaTransferPhase.canceled,
+      );
     } on StickerApiException catch (error) {
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.failed,
+        errorMessage: error.message,
+      );
       if (mounted) _showImageError(error.message);
     } on MessagingApiException catch (error) {
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.failed,
+        errorMessage: error.message,
+      );
       if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
+      transferState.value = MediaTransferState(
+        phase: MediaTransferPhase.failed,
+        errorMessage: error.message,
+      );
       if (mounted) _showImageError(error.message);
     } catch (_) {
+      transferState.value = const MediaTransferState(
+        phase: MediaTransferPhase.failed,
+        errorMessage: '自定义表情添加失败，请稍后重试。',
+      );
       if (mounted) _showImageError('自定义表情添加失败，请稍后重试。');
     } finally {
-      if (mounted) setState(() => _stickerSending = false);
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        setState(() => _stickerSending = false);
+      }
+      transferState.dispose();
     }
     return null;
   }

@@ -66,6 +66,10 @@ func (s *server) handleGroupByID(response http.ResponseWriter, request *http.Req
 	}
 	raw := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/v1/groups/"), "/")
 	parts := strings.Split(raw, "/")
+	if len(parts) >= 2 && parts[1] == "calls" {
+		s.handleGroupCalls(response, request, principal, parts)
+		return
+	}
 	if len(parts) < 1 || len(parts) > 4 || strings.TrimSpace(parts[0]) == "" {
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 		return
