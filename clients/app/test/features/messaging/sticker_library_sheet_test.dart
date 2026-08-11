@@ -182,6 +182,23 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('emoji library exposes standard category navigation', (
+    tester,
+  ) async {
+    await _openSheet(tester, _FakeStickerGateway());
+
+    expect(find.byKey(const Key('emoji-category-tabs')), findsOneWidget);
+    expect(
+      find.byKey(const Key('emoji-category-smileysPeople')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const Key('emoji-category-flags')));
+    await tester.pump();
+
+    expect(find.text('🇱🇰'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('large custom sticker grid scrolls without overflow', (
     tester,
   ) async {

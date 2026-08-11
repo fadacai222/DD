@@ -38,6 +38,7 @@ import '../data/messaging_api_client.dart' show MessagingApiException;
 import '../data/sticker_api_client.dart';
 import '../data/video_file_cache.dart';
 import '../data/video_media_probe.dart';
+import '../domain/emoji_catalog.dart';
 import '../domain/media_transfer_state.dart';
 import '../domain/messaging_models.dart';
 import '../domain/sticker_models.dart';
@@ -97,49 +98,6 @@ class TextChatPage extends StatefulWidget {
 
 class _TextChatPageState extends State<TextChatPage>
     with WidgetsBindingObserver {
-  static const _emoji = <String>[
-    '😀',
-    '😃',
-    '😄',
-    '😁',
-    '😆',
-    '🥹',
-    '😂',
-    '🙂',
-    '🙃',
-    '😉',
-    '😊',
-    '🥰',
-    '😍',
-    '😘',
-    '😋',
-    '😎',
-    '🤔',
-    '🫡',
-    '😴',
-    '😭',
-    '😤',
-    '😡',
-    '🤯',
-    '🥳',
-    '👍',
-    '👎',
-    '👌',
-    '✌️',
-    '🤝',
-    '👏',
-    '🙏',
-    '💪',
-    '❤️',
-    '💔',
-    '🔥',
-    '✨',
-    '🎉',
-    '💯',
-    '👀',
-    '🚀',
-  ];
-
   late final TextEditingController _composer;
   late final FocusNode _composerFocusNode;
   late final ScrollController _scrollController;
@@ -3816,7 +3774,8 @@ class _TextChatPageState extends State<TextChatPage>
       builder: (_) => StickerLibrarySheet(
         origin: widget.coordinator.origin,
         accessToken: widget.coordinator.accessToken,
-        emoji: _emoji,
+        emoji: EmojiCatalog.all,
+        emojiCategories: EmojiCatalog.categories,
         recentEmoji: widget.coordinator.recentEmoji,
         mediaBytesLoader: _mediaBytesFor,
         onAddCustomSticker: _pickAndCreateCustomSticker,

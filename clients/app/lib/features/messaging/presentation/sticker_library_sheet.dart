@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../../core/logging/client_log.dart';
 import '../../../theme/app_theme.dart';
 import '../data/sticker_api_client.dart';
+import '../domain/emoji_catalog.dart';
 import '../domain/sticker_models.dart';
 import '../domain/telegram_sticker_link.dart';
 
@@ -16,6 +17,7 @@ class StickerLibrarySheet extends StatefulWidget {
     required this.accessToken,
     required this.emoji,
     required this.recentEmoji,
+    this.emojiCategories,
     required this.mediaBytesLoader,
     required this.onAddCustomSticker,
     this.initialTabKey = 'emoji',
@@ -27,6 +29,7 @@ class StickerLibrarySheet extends StatefulWidget {
   final String accessToken;
   final List<String> emoji;
   final List<String> recentEmoji;
+  final List<EmojiCategoryData>? emojiCategories;
   final Future<Uint8List> Function(String mediaId) mediaBytesLoader;
   final Future<CustomStickerItem?> Function(StickerGateway gateway)
   onAddCustomSticker;
@@ -44,6 +47,7 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
   List<CustomStickerItem> _custom = const [];
   List<StickerPackItemGroup> _packs = const [];
   int _selectedTab = 0;
+  int _selectedEmojiCategory = 0;
   bool _restoredInitialTab = false;
   bool _loading = true;
   bool _busy = false;
@@ -321,9 +325,59 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
   }
 
   Widget _emojiGrid() {
+    final categories = widget.emojiCategories ?? EmojiCatalog.categories;
+    final category = categories.isEmpty
+        ? null
+        : categories[_selectedEmojiCategory.clamp(0, categories.length - 1)];
+    final items = category?.items ?? widget.emoji;
     return CustomScrollView(
       key: const Key('sticker-emoji-grid'),
       slivers: [
+        if (categories.isNotEmpty)
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 48,
+              child: ListView.builder(
+                key: const Key('emoji-category-tabs'),
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                itemCount: categories.length,
+                itemBuilder: (context, index) {
+                  final item = categories[index];
+                  final selected = index == _selectedEmojiCategory;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: Tooltip(
+                      message: item.label,
+                      child: InkWell(
+                        key: Key('emoji-category-${item.key.name}'),
+                        borderRadius: BorderRadius.circular(DdRadii.pill),
+                        onTap: () => setState(() => _selectedEmojiCategory = index),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 120),
+                          width: 44,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? DdColors.green.withValues(alpha: 0.13)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(DdRadii.pill),
+                          ),
+                          child: Text(
+                            item.icon,
+                            style: TextStyle(
+                              fontSize: 22,
+                              color: selected ? DdColors.greenPressed : null,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
         if (widget.recentEmoji.isNotEmpty) ...[
           const SliverToBoxAdapter(
             child: Padding(
@@ -351,8 +405,8 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
               maxCrossAxisExtent: 52,
               mainAxisExtent: 48,
             ),
-            itemCount: widget.emoji.length,
-            itemBuilder: (_, index) => _emojiCell(widget.emoji[index]),
+            itemCount: items.length,
+            itemBuilder: (_, index) => _emojiCell(items[index]),
           ),
         ),
       ],
