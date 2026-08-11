@@ -24,6 +24,7 @@ class PeerProfilePage extends StatefulWidget {
     this.onOpenMomentPrivacy,
     this.contact,
     this.gateway,
+    this.embedded = false,
   });
 
   final Uri origin;
@@ -38,6 +39,7 @@ class PeerProfilePage extends StatefulWidget {
   final Future<void> Function()? onOpenMomentPrivacy;
   final ContactItem? contact;
   final ContactsGateway? gateway;
+  final bool embedded;
 
   @override
   State<PeerProfilePage> createState() => _PeerProfilePageState();
@@ -485,6 +487,7 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
     return Scaffold(
       backgroundColor: pageBackground,
       appBar: AppBar(
+        automaticallyImplyLeading: !widget.embedded,
         backgroundColor: pageBackground,
         surfaceTintColor: Colors.transparent,
         title: const Text('详细资料'),

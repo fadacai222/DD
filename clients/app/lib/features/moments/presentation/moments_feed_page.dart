@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:typed_data';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+
+import '../../../core/media/avatar_image_processor.dart';
 
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
@@ -9,6 +13,7 @@ import '../../messaging/data/messaging_api_client.dart';
 import '../../messaging/presentation/video_viewer_page.dart';
 import '../data/moments_api_client.dart';
 import '../domain/moment_models.dart';
+import 'moment_cover_crop_page.dart';
 import 'moment_publish_page.dart';
 
 class MomentsFeedPage extends StatefulWidget {
@@ -50,12 +55,18 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   final Map<String, Future<MediaDownloadGrant>> _downloadGrants = {};
   final Map<String, Future<MediaObjectInfo>> _mediaInfo = {};
   List<MomentItem> _items = const [];
+  MomentProfile? _profile;
+  Future<Uint8List>? _coverBytes;
+  bool _coverSaving = false;
   bool _loading = true;
   bool _loadingMore = false;
   bool _hasMore = true;
   String? _error;
 
   bool get _isPersonalFeed => widget.authorId?.trim().isNotEmpty == true;
+  String get _profileUserId => _isPersonalFeed
+      ? widget.authorId!.trim()
+      : widget.currentUserId;
 
   @override
   void initState() {
@@ -186,75 +197,145 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   }
 
   Widget _personalHeader() {
+    final profile = _profile;
     final authorId = widget.authorId?.trim() ?? '';
-    final displayName = widget.authorDisplayName?.trim().isNotEmpty == true
+    final displayName = profile?.user.displayName.trim().isNotEmpty == true
+        ? profile!.user.displayName.trim()
+        : widget.authorDisplayName?.trim().isNotEmpty == true
         ? widget.authorDisplayName!.trim()
         : '对方';
     return Material(
       key: const Key('moments-personal-header'),
       color: Theme.of(context).colorScheme.surface,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-        child: Row(
-          children: [
-            ClipOval(
-              child: ProfileAvatar(
-                origin: widget.origin,
-                accessToken: widget.accessToken,
-                userId: authorId,
-                displayName: displayName,
-                size: 56,
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    displayName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
+      child: Column(
+        children: [
+          _coverSurface(
+            userId: authorId,
+            displayName: displayName,
+            avatarRevision: 0,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
+            child: Row(
+              children: [
+                ClipOval(
+                  child: ProfileAvatar(
+                    origin: widget.origin,
+                    accessToken: widget.accessToken,
+                    userId: authorId,
+                    displayName: displayName,
+                    size: 52,
                   ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    '仅显示当前对你可见的动态',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: DdColors.textSecondary,
-                    ),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      const Text(
+                        '仅显示当前对你可见的动态',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _cover() {
-    final dark = Theme.of(context).brightness == Brightness.dark;
+  Widget _cover() => _coverSurface(
+    userId: widget.currentUserId,
+    displayName: widget.currentUserDisplayName.isEmpty
+        ? '我'
+        : widget.currentUserDisplayName,
+    avatarRevision: widget.currentUserAvatarRevision,
+  );
+
+  Widget _coverSurface({
+    required String userId,
+    required String displayName,
+    required int avatarRevision,
+  }) {
+    final profile = _profile;
+    final canEdit = profile?.canEdit == true && !_coverSaving;
     return SizedBox(
       height: 188,
       child: Stack(
         fit: StackFit.expand,
         children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: dark
-                    ? const [Color(0xFF26343A), Color(0xFF111718)]
-                    : const [Color(0xFF9FB4B2), Color(0xFF536A69)],
+          _coverBackground(),
+          if (canEdit)
+            Positioned.fill(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const Key('moments-edit-cover'),
+                  onTap: () => unawaited(_editCover()),
+                  child: Align(
+                    alignment: Alignment.topRight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.48),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 5,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_coverSaving)
+                                const SizedBox.square(
+                                  dimension: 13,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              else
+                                const Icon(
+                                  Icons.camera_alt_rounded,
+                                  size: 15,
+                                  color: Colors.white,
+                                ),
+                              const SizedBox(width: 5),
+                              const Text(
+                                '更换封面',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
           Positioned(
             right: 18,
             bottom: 14,
@@ -262,18 +343,22 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text(
-                  widget.currentUserDisplayName.isEmpty ? '我' : widget.currentUserDisplayName,
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600, shadows: [Shadow(color: Colors.black38, blurRadius: 3)]),
+                  displayName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    shadows: [Shadow(color: Colors.black38, blurRadius: 3)],
+                  ),
                 ),
                 const SizedBox(width: 10),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(5),
+                ClipOval(
                   child: ProfileAvatar(
                     origin: widget.origin,
                     accessToken: widget.accessToken,
-                    userId: widget.currentUserId,
-                    displayName: widget.currentUserDisplayName,
-                    revision: widget.currentUserAvatarRevision,
+                    userId: userId,
+                    displayName: displayName,
+                    revision: avatarRevision,
                     size: 58,
                   ),
                 ),
@@ -281,6 +366,42 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _coverBackground() {
+    final mediaId = _profile?.coverMediaId.trim() ?? '';
+    if (mediaId.isEmpty) return _defaultCoverBackground();
+    _coverBytes ??= _downloadCover(mediaId);
+    return FutureBuilder<Uint8List>(
+      future: _coverBytes,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null || bytes.isEmpty || snapshot.hasError) {
+          return _defaultCoverBackground();
+        }
+        return Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.medium,
+          gaplessPlayback: true,
+        );
+      },
+    );
+  }
+
+  Widget _defaultCoverBackground() {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: dark
+              ? const [Color(0xFF26343A), Color(0xFF111718)]
+              : const [Color(0xFF9FB4B2), Color(0xFF536A69)],
+        ),
       ),
     );
   }
@@ -467,6 +588,73 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     );
   }
 
+  Future<Uint8List> _downloadCover(String mediaId) async {
+    final grant = await _downloadGrant(mediaId);
+    return _media.downloadMedia(url: grant.url);
+  }
+
+  Future<void> _editCover() async {
+    if (_profile?.canEdit != true || _coverSaving) return;
+    final file = await openFile(
+      acceptedTypeGroups: const <XTypeGroup>[
+        XTypeGroup(
+          label: '朋友圈封面',
+          extensions: <String>['jpg', 'jpeg', 'png', 'webp'],
+          mimeTypes: <String>['image/jpeg', 'image/png', 'image/webp'],
+        ),
+      ],
+    );
+    if (file == null || !mounted) return;
+    setState(() {
+      _coverSaving = true;
+      _error = null;
+    });
+    try {
+      final source = await file.readAsBytes();
+      final preview = await prepareAvatarCropPreview(source);
+      if (!mounted) return;
+      final crop = await Navigator.of(context).push<MomentCoverCropResult>(
+        MaterialPageRoute<MomentCoverCropResult>(
+          fullscreenDialog: true,
+          builder: (_) => MomentCoverCropPage(
+            previewBytes: preview.bytes,
+            width: preview.width,
+            height: preview.height,
+          ),
+        ),
+      );
+      if (crop == null || !mounted) return;
+      final processed = await processMomentCoverImage(source, crop);
+      final media = await _authorized(
+        (token) => _media.uploadMedia(
+          origin: widget.origin,
+          accessToken: token,
+          bytes: processed,
+          fileName: 'moments-cover-${widget.currentUserId}.jpg',
+          mimeType: 'image/jpeg',
+          purpose: 'MOMENT_COVER',
+        ),
+      );
+      final profile = await _authorized(
+        (token) => _gateway.updateProfile(
+          origin: widget.origin,
+          accessToken: token,
+          userId: widget.currentUserId,
+          coverMediaId: media.mediaId,
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _profile = profile;
+        _coverBytes = Future<Uint8List>.value(processed);
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = _friendlyError(error));
+    } finally {
+      if (mounted) setState(() => _coverSaving = false);
+    }
+  }
+
   Future<MediaObjectInfo> _mediaInfoFor(String mediaId) {
     return _mediaInfo.putIfAbsent(mediaId, () => _loadMediaInfo(mediaId));
   }
@@ -516,6 +704,13 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
       });
     }
     try {
+      final profile = await _authorized(
+        (token) => _gateway.getProfile(
+          origin: widget.origin,
+          accessToken: token,
+          userId: _profileUserId,
+        ),
+      );
       final items = await _authorized(
         (token) => _gateway.listFeed(
           origin: widget.origin,
@@ -526,6 +721,8 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
       );
       if (!mounted) return;
       setState(() {
+        _profile = profile;
+        _coverBytes = null;
         _items = items;
         _hasMore = items.length >= 30;
         _downloadGrants.clear();

@@ -202,6 +202,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/moments/{momentId}/like":                            {"put", "delete"},
 		"/api/v1/moments/{momentId}/comments":                        {"post"},
 		"/api/v1/moments/{momentId}/comments/{commentId}":            {"delete"},
+		"/api/v1/moments/profile/{userId}":                           {"get", "patch"},
 		"/api/v1/moment-preferences":                                 {"get"},
 		"/api/v1/moment-preferences/{userId}":                        {"patch"},
 		"/api/v1/qr/me":                                              {"get"},

@@ -31,18 +31,20 @@ type UserPreview struct {
 }
 
 type Group struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Announcement string     `json:"announcement"`
-	JoinMode     string     `json:"joinMode"`
-	Status       string     `json:"status"`
-	MemberCount  int        `json:"memberCount"`
-	OwnerUserID  string     `json:"ownerUserId"`
-	MyRole       string     `json:"myRole"`
-	MyNickname   string     `json:"myNickname"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	DissolvedAt  *time.Time `json:"dissolvedAt,omitempty"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Announcement   string     `json:"announcement"`
+	JoinMode       string     `json:"joinMode"`
+	Status         string     `json:"status"`
+	MemberCount    int        `json:"memberCount"`
+	AvatarMediaID  string     `json:"avatarMediaId,omitempty"`
+	AvatarRevision int64      `json:"avatarRevision"`
+	OwnerUserID    string     `json:"ownerUserId"`
+	MyRole         string     `json:"myRole"`
+	MyNickname     string     `json:"myNickname"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	DissolvedAt    *time.Time `json:"dissolvedAt,omitempty"`
 }
 
 type GroupMember struct {
@@ -69,9 +71,10 @@ type CreateGroupInput struct {
 }
 
 type UpdateGroupInput struct {
-	Name         *string `json:"name"`
-	Announcement *string `json:"announcement"`
-	JoinMode     *string `json:"joinMode"`
+	Name          *string `json:"name"`
+	Announcement  *string `json:"announcement"`
+	JoinMode      *string `json:"joinMode"`
+	AvatarMediaID *string `json:"avatarMediaId"`
 }
 
 type InviteMembersInput struct {

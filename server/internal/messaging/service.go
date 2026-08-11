@@ -585,6 +585,7 @@ func (service *Service) loadGroupPreview(ctx context.Context, conversationID uui
 	if err := service.pool.QueryRow(ctx, `
 		SELECT g.conversation_id::text,g.name,
 		       (SELECT count(*) FROM conversation_members m WHERE m.conversation_id=g.conversation_id AND m.status='ACTIVE'),
+		       COALESCE(g.avatar_media_id::text,''),g.avatar_revision,
 		       COALESCE((
 		         SELECT jsonb_agg(
 		           jsonb_build_object(
@@ -608,6 +609,8 @@ func (service *Service) loadGroupPreview(ctx context.Context, conversationID uui
 		&group.ID,
 		&group.Name,
 		&group.MemberCount,
+		&group.AvatarMediaID,
+		&group.AvatarRevision,
 		&avatarMembersJSON,
 	); errors.Is(err, pgx.ErrNoRows) {
 		return GroupPreview{}, ErrNotFound

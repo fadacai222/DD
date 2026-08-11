@@ -27,6 +27,7 @@ abstract interface class GroupsGateway {
     String? name,
     String? announcement,
     String? joinMode,
+    String? avatarMediaId,
   });
 
   Future<List<GroupMemberItem>> listMembers({
@@ -163,6 +164,7 @@ final class GroupsApiClient implements GroupsGateway {
     String? name,
     String? announcement,
     String? joinMode,
+    String? avatarMediaId,
   }) async => GroupInfo.fromJson(
     await _requestData(
       origin: origin,
@@ -173,6 +175,7 @@ final class GroupsApiClient implements GroupsGateway {
         'name': ?name,
         'announcement': ?announcement,
         'joinMode': ?joinMode,
+        'avatarMediaId': ?avatarMediaId,
       },
       expectedStatuses: const {200},
     ),

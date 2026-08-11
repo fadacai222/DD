@@ -545,6 +545,115 @@ func (service *Service) ListPreferences(ctx context.Context, principal account.P
 	return items, nil
 }
 
+func (service *Service) GetProfile(ctx context.Context, principal account.Principal, targetID uuid.UUID) (Profile, error) {
+	if targetID == uuid.Nil {
+		return Profile{}, ErrInvalidInput
+	}
+	var profile Profile
+	var canView bool
+	err := service.pool.QueryRow(ctx, `
+		SELECT u.id::text,u.handle_normalized,u.display_name,
+		       COALESCE(u.moment_cover_media_id::text,''),u.moment_cover_revision,
+		       (u.id=$1 OR (
+		         EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$1 AND c.contact_user_id=u.id)
+		         AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=$1 AND b.blocked_user_id=u.id) OR (b.owner_user_id=u.id AND b.blocked_user_id=$1))
+		         AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$1 AND p.target_user_id=u.id AND p.hide_target=true)
+		         AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=u.id AND p.target_user_id=$1 AND p.hide_from_target=true)
+		       ))
+		FROM users u
+		WHERE u.id=$2 AND u.status='ACTIVE'
+	`, principal.UserID, targetID).Scan(
+		&profile.User.ID,
+		&profile.User.Handle,
+		&profile.User.DisplayName,
+		&profile.CoverMediaID,
+		&profile.CoverRevision,
+		&canView,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Profile{}, ErrNotFound
+	}
+	if err != nil {
+		return Profile{}, fmt.Errorf("load moment profile: %w", err)
+	}
+	if !canView {
+		return Profile{}, ErrNotFound
+	}
+	profile.CanEdit = targetID == principal.UserID
+	return profile, nil
+}
+
+func (service *Service) UpdateProfile(ctx context.Context, principal account.Principal, input UpdateProfileInput) (Profile, []uuid.UUID, error) {
+	now := service.now().UTC()
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return Profile{}, nil, fmt.Errorf("begin moment profile update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var coverMediaID *uuid.UUID
+	value := strings.TrimSpace(input.CoverMediaID)
+	if value != "" {
+		parsed, parseErr := uuid.Parse(value)
+		if parseErr != nil {
+			return Profile{}, nil, ErrInvalidInput
+		}
+		var ready bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM media_objects
+				WHERE id=$1 AND owner_user_id=$2 AND purpose='MOMENT_COVER'
+				  AND status='READY' AND deleted_at IS NULL
+			)
+		`, parsed, principal.UserID).Scan(&ready); err != nil {
+			return Profile{}, nil, fmt.Errorf("verify moment cover media: %w", err)
+		}
+		if !ready {
+			return Profile{}, nil, ErrInvalidInput
+		}
+		coverMediaID = &parsed
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users
+		SET moment_cover_media_id=$2,moment_cover_revision=moment_cover_revision+1,updated_at=$3
+		WHERE id=$1 AND status='ACTIVE'
+	`, principal.UserID, coverMediaID, now); err != nil {
+		return Profile{}, nil, fmt.Errorf("update moment cover: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT c.owner_user_id
+		FROM contacts c
+		WHERE c.contact_user_id=$1
+		  AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=c.owner_user_id AND b.blocked_user_id=$1) OR (b.owner_user_id=$1 AND b.blocked_user_id=c.owner_user_id))
+		  AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=c.owner_user_id AND p.target_user_id=$1 AND p.hide_target=true)
+		  AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$1 AND p.target_user_id=c.owner_user_id AND p.hide_from_target=true)
+	`, principal.UserID)
+	if err != nil {
+		return Profile{}, nil, fmt.Errorf("list moment profile recipients: %w", err)
+	}
+	recipients := []uuid.UUID{principal.UserID}
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			rows.Close()
+			return Profile{}, nil, fmt.Errorf("scan moment profile recipient: %w", err)
+		}
+		recipients = appendUniqueUUID(recipients, userID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Profile{}, nil, fmt.Errorf("iterate moment profile recipients: %w", err)
+	}
+	if err := insertMomentOutboxTx(ctx, tx, principal.UserID, "MOMENT_PROFILE_UPDATED", recipients, now); err != nil {
+		return Profile{}, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Profile{}, nil, fmt.Errorf("commit moment profile update: %w", err)
+	}
+	profile, err := service.GetProfile(ctx, principal, principal.UserID)
+	return profile, recipients, err
+}
+
 func normalizeCreateInput(raw CreateInput) (CreateInput, []uuid.UUID, []uuid.UUID, error) {
 	input := raw
 	input.Text = strings.TrimSpace(input.Text)

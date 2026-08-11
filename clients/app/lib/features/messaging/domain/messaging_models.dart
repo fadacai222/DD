@@ -22,6 +22,8 @@ final class MessagingGroupPreview {
     required this.id,
     required this.name,
     required this.memberCount,
+    this.avatarMediaId = '',
+    this.avatarRevision = 0,
     this.avatarMembers = const [],
   });
 
@@ -30,12 +32,18 @@ final class MessagingGroupPreview {
         id: _requiredString(json, 'id'),
         name: _requiredString(json, 'name'),
         memberCount: _requiredInt(json, 'memberCount'),
+        avatarMediaId: json['avatarMediaId']?.toString() ?? '',
+        avatarRevision: json['avatarRevision'] is int
+            ? json['avatarRevision'] as int
+            : 0,
         avatarMembers: _decodeGroupAvatarMembers(json['avatarMembers']),
       );
 
   final String id;
   final String name;
   final int memberCount;
+  final String avatarMediaId;
+  final int avatarRevision;
   final List<MessagingUserPreview> avatarMembers;
 }
 

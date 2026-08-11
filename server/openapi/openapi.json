@@ -958,6 +958,34 @@
         }
       }
     },
+    "/api/v1/moments/profile/{userId}": {
+      "get": {
+        "operationId": "getMomentProfile",
+        "summary": "Get a visible user's Moments cover profile",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "responses": {
+          "200": {"description": "Visible Moments profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentProfileResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "User does not exist or is not visible under Moments privacy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "updateMomentProfile",
+        "summary": "Update the authenticated user's Moments cover",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UserId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateMomentProfileRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated Moments profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentProfileResponse"}}}},
+          "400": {"description": "Cover media is invalid or not READY MOMENT_COVER media owned by caller", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Only the authenticated user's own profile may be updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/moment-preferences": {
       "get": {
         "operationId": "listMomentRelationshipPreferences",
@@ -1856,7 +1884,7 @@
           "size": {"type": "integer", "format": "int64", "minimum": 1},
           "mimeType": {"type": "string", "minLength": 1, "maxLength": 120},
           "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
-          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO"]}
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO", "GROUP_AVATAR", "MOMENT_COVER"]}
         }
       },
       "MediaUploadGrant": {
@@ -1886,7 +1914,7 @@
           "mimeType": {"type": "string"},
           "sizeBytes": {"type": "integer", "format": "int64", "minimum": 0},
           "sha256": {"type": "string"},
-          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO"]},
+          "purpose": {"type": "string", "enum": ["CHAT_IMAGE", "CHAT_FILE", "CHAT_VOICE", "CHAT_VIDEO", "STICKER", "GIF", "MOMENT_IMAGE", "MOMENT_VIDEO", "GROUP_AVATAR", "MOMENT_COVER"]},
           "status": {"type": "string", "enum": ["UPLOADING", "READY", "QUARANTINED", "FAILED", "DELETED"]},
           "encryptionMode": {"type": "string"},
           "createdAt": {"type": "string", "format": "date-time"},
@@ -2462,6 +2490,24 @@
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/MomentListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
+      "MomentProfile": {
+        "type": "object", "additionalProperties": false,
+        "required": ["user", "coverRevision", "canEdit"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/MomentUserPreview"},
+          "coverMediaId": {"type": "string", "format": "uuid"},
+          "coverRevision": {"type": "integer", "format": "int64", "minimum": 0},
+          "canEdit": {"type": "boolean"}
+        }
+      },
+      "MomentProfileResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MomentProfile"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "UpdateMomentProfileRequest": {
+        "type": "object", "additionalProperties": false, "required": ["coverMediaId"],
+        "properties": {"coverMediaId": {"type": "string", "description": "READY MOMENT_COVER media UUID owned by caller; empty string removes the cover."}}
+      },
       "CreateMomentRequest": {
         "type": "object", "additionalProperties": false,
         "properties": {
@@ -2658,7 +2704,7 @@
       },
       "Group": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "name", "announcement", "joinMode", "status", "memberCount", "ownerUserId", "myRole", "myNickname", "createdAt", "updatedAt"],
+        "required": ["id", "name", "announcement", "joinMode", "status", "memberCount", "avatarRevision", "ownerUserId", "myRole", "myNickname", "createdAt", "updatedAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "name": {"type": "string", "minLength": 1, "maxLength": 80},
@@ -2666,6 +2712,8 @@
           "joinMode": {"type": "string", "enum": ["INVITE_ONLY", "APPROVAL"]},
           "status": {"type": "string", "enum": ["ACTIVE", "DISSOLVED"]},
           "memberCount": {"type": "integer", "minimum": 0, "maximum": 500},
+          "avatarMediaId": {"type": "string", "format": "uuid"},
+          "avatarRevision": {"type": "integer", "format": "int64", "minimum": 0},
           "ownerUserId": {"type": "string", "format": "uuid"},
           "myRole": {"type": "string", "enum": ["OWNER", "ADMIN", "MEMBER"]},
           "myNickname": {"type": "string", "maxLength": 80},
@@ -2690,7 +2738,8 @@
         "properties": {
           "name": {"type": "string", "minLength": 1, "maxLength": 80},
           "announcement": {"type": "string", "maxLength": 1000},
-          "joinMode": {"type": "string", "enum": ["INVITE_ONLY", "APPROVAL"]}
+          "joinMode": {"type": "string", "enum": ["INVITE_ONLY", "APPROVAL"]},
+          "avatarMediaId": {"type": "string", "description": "READY GROUP_AVATAR media UUID owned by caller; empty string removes the avatar."}
         }
       },
       "InviteGroupMembersRequest": {
@@ -2760,11 +2809,13 @@
         "properties": {"data": {"$ref": "#/components/schemas/GroupJoinRequestListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
       "MessagingGroupPreview": {
-        "type": "object", "additionalProperties": false, "required": ["id", "name", "memberCount", "avatarMembers"],
+        "type": "object", "additionalProperties": false, "required": ["id", "name", "memberCount", "avatarRevision", "avatarMembers"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "name": {"type": "string", "minLength": 1, "maxLength": 80},
           "memberCount": {"type": "integer", "minimum": 0, "maximum": 500},
+          "avatarMediaId": {"type": "string", "format": "uuid"},
+          "avatarRevision": {"type": "integer", "format": "int64", "minimum": 0},
           "avatarMembers": {"type": "array", "maxItems": 4, "items": {"$ref": "#/components/schemas/MessagingUserPreview"}}
         }
       },

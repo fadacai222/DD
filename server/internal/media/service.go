@@ -343,6 +343,22 @@ func (service *Service) GetMedia(ctx context.Context, principal account.Principa
 				JOIN user_sticker_packs usp ON usp.pack_id=tsi.pack_id AND usp.user_id=$2
 				WHERE tsi.media_id=m.id
 		   ) OR EXISTS(
+				SELECT 1
+				FROM groups gavatar
+				JOIN conversation_members gmember ON gmember.conversation_id=gavatar.conversation_id
+				WHERE gavatar.avatar_media_id=m.id AND gavatar.status='ACTIVE'
+				  AND gmember.user_id=$2 AND gmember.status='ACTIVE'
+		   ) OR EXISTS(
+				SELECT 1 FROM users cover_user
+				WHERE cover_user.moment_cover_media_id=m.id AND cover_user.status='ACTIVE' AND (
+				  cover_user.id=$2 OR (
+				    EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$2 AND c.contact_user_id=cover_user.id)
+				    AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=$2 AND b.blocked_user_id=cover_user.id) OR (b.owner_user_id=cover_user.id AND b.blocked_user_id=$2))
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$2 AND p.target_user_id=cover_user.id AND p.hide_target=true)
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=cover_user.id AND p.target_user_id=$2 AND p.hide_from_target=true)
+				  )
+				)
+		   ) OR EXISTS(
 				SELECT 1 FROM moment_media mmoment
 				JOIN moments moment ON moment.id=mmoment.moment_id AND moment.status='ACTIVE'
 				WHERE mmoment.media_id=m.id AND (
@@ -400,6 +416,22 @@ func (service *Service) CreateDownloadURL(ctx context.Context, principal account
 				FROM telegram_sticker_items tsi
 				JOIN user_sticker_packs usp ON usp.pack_id=tsi.pack_id AND usp.user_id=$2
 				WHERE tsi.media_id=m.id
+		   ) OR EXISTS(
+				SELECT 1
+				FROM groups gavatar
+				JOIN conversation_members gmember ON gmember.conversation_id=gavatar.conversation_id
+				WHERE gavatar.avatar_media_id=m.id AND gavatar.status='ACTIVE'
+				  AND gmember.user_id=$2 AND gmember.status='ACTIVE'
+		   ) OR EXISTS(
+				SELECT 1 FROM users cover_user
+				WHERE cover_user.moment_cover_media_id=m.id AND cover_user.status='ACTIVE' AND (
+				  cover_user.id=$2 OR (
+				    EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$2 AND c.contact_user_id=cover_user.id)
+				    AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.owner_user_id=$2 AND b.blocked_user_id=cover_user.id) OR (b.owner_user_id=cover_user.id AND b.blocked_user_id=$2))
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=$2 AND p.target_user_id=cover_user.id AND p.hide_target=true)
+				    AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=cover_user.id AND p.target_user_id=$2 AND p.hide_from_target=true)
+				  )
+				)
 		   ) OR EXISTS(
 				SELECT 1 FROM moment_media mmoment
 				JOIN moments moment ON moment.id=mmoment.moment_id AND moment.status='ACTIVE'

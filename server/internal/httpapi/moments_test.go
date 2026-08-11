@@ -21,6 +21,8 @@ type fakeMomentsService struct {
 	lastAuthorID *uuid.UUID
 	recipients   []uuid.UUID
 	item         moments.Moment
+	profile      moments.Profile
+	profileInput moments.UpdateProfileInput
 	err          error
 }
 
@@ -60,13 +62,20 @@ func (f *fakeMomentsService) SetPreference(_ context.Context, _ account.Principa
 func (f *fakeMomentsService) ListPreferences(_ context.Context, _ account.Principal) ([]moments.Preference, error) {
 	return []moments.Preference{}, f.err
 }
+func (f *fakeMomentsService) GetProfile(_ context.Context, _ account.Principal, _ uuid.UUID) (moments.Profile, error) {
+	return f.profile, f.err
+}
+func (f *fakeMomentsService) UpdateProfile(_ context.Context, _ account.Principal, input moments.UpdateProfileInput) (moments.Profile, []uuid.UUID, error) {
+	f.profileInput = input
+	return f.profile, f.recipients, f.err
+}
 
 func TestMomentsCreateAndLikeUseAuthenticatedSurface(t *testing.T) {
 	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	momentID := uuid.New()
 	peerID := uuid.New()
 	fake := &fakeMomentsService{
-		item: moments.Moment{ID: momentID.String(), Author: moments.UserPreview{ID: principal.UserID.String(), Handle: "alice", DisplayName: "Alice"}, MediaIDs: []string{}, LikeUsers: []moments.UserPreview{}, Comments: []moments.Comment{}, CreatedAt: time.Now().UTC()},
+		item:       moments.Moment{ID: momentID.String(), Author: moments.UserPreview{ID: principal.UserID.String(), Handle: "alice", DisplayName: "Alice"}, MediaIDs: []string{}, LikeUsers: []moments.UserPreview{}, Comments: []moments.Comment{}, CreatedAt: time.Now().UTC()},
 		recipients: []uuid.UUID{principal.UserID, peerID},
 	}
 	handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, MomentsService: fake})
@@ -94,6 +103,48 @@ func TestMomentsCreateAndLikeUseAuthenticatedSurface(t *testing.T) {
 	handler.ServeHTTP(unlikeResponse, unlike)
 	if unlikeResponse.Code != http.StatusOK || fake.lastLiked == nil || *fake.lastLiked {
 		t.Fatalf("unlike status=%d liked=%v body=%s", unlikeResponse.Code, fake.lastLiked, unlikeResponse.Body.String())
+	}
+}
+
+func TestMomentsProfileGetAndPatchUseAuthenticatedOwner(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	coverID := uuid.New().String()
+	fake := &fakeMomentsService{
+		profile: moments.Profile{
+			User:          moments.UserPreview{ID: principal.UserID.String(), Handle: "alice", DisplayName: "Alice"},
+			CoverMediaID:  coverID,
+			CoverRevision: 3,
+			CanEdit:       true,
+		},
+		recipients: []uuid.UUID{principal.UserID},
+	}
+	handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, MomentsService: fake})
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/moments/profile/"+principal.UserID.String(), nil)
+	getRequest.Header.Set("Authorization", "Bearer access")
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("get profile status=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/moments/profile/"+principal.UserID.String(), strings.NewReader(`{"coverMediaId":"`+coverID+`"}`))
+	patchRequest.Header.Set("Authorization", "Bearer access")
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	handler.ServeHTTP(patchResponse, patchRequest)
+	if patchResponse.Code != http.StatusOK || fake.profileInput.CoverMediaID != coverID {
+		t.Fatalf("patch profile status=%d input=%+v body=%s", patchResponse.Code, fake.profileInput, patchResponse.Body.String())
+	}
+
+	peerID := uuid.New()
+	forbidden := httptest.NewRequest(http.MethodPatch, "/api/v1/moments/profile/"+peerID.String(), strings.NewReader(`{"coverMediaId":""}`))
+	forbidden.Header.Set("Authorization", "Bearer access")
+	forbidden.Header.Set("Content-Type", "application/json")
+	forbiddenResponse := httptest.NewRecorder()
+	handler.ServeHTTP(forbiddenResponse, forbidden)
+	if forbiddenResponse.Code != http.StatusForbidden {
+		t.Fatalf("peer profile patch status=%d body=%s", forbiddenResponse.Code, forbiddenResponse.Body.String())
 	}
 }
 

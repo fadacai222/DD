@@ -37,6 +37,7 @@ void main() {
     expect(find.byKey(const Key('moments-publish')), findsNothing);
     expect(find.byKey(const Key('moments-privacy')), findsNothing);
     expect(find.byKey(const Key('moments-personal-header')), findsOneWidget);
+    expect(find.byKey(const Key('moments-edit-cover')), findsNothing);
     expect(find.text('测试朋友圈正文'), findsOneWidget);
   });
 
@@ -64,6 +65,7 @@ void main() {
     expect(find.text('测试朋友圈正文'), findsOneWidget);
     expect(find.text('Bob'), findsWidgets);
     expect(find.byKey(const Key('moment-moment-1')), findsOneWidget);
+    expect(find.byKey(const Key('moments-edit-cover')), findsOneWidget);
 
     expect(find.byKey(const Key('moment-like-moment-1')), findsOneWidget);
     expect(find.byKey(const Key('moment-comment-moment-1')), findsOneWidget);
@@ -405,6 +407,35 @@ final class _FakeMomentsGateway implements MomentsGateway {
     required bool hideTarget,
     required bool hideFromTarget,
   }) => throw UnimplementedError();
+
+  @override
+  Future<MomentProfile> getProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async => MomentProfile(
+    user: MomentUserPreview(
+      id: userId,
+      handle: userId == 'user-a' ? 'alice' : 'bob',
+      displayName: userId == 'user-a' ? 'Alice' : 'Bob',
+    ),
+    coverMediaId: '',
+    coverRevision: 0,
+    canEdit: userId == 'user-a',
+  );
+
+  @override
+  Future<MomentProfile> updateProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required String coverMediaId,
+  }) async => MomentProfile(
+    user: MomentUserPreview(id: userId, handle: 'alice', displayName: 'Alice'),
+    coverMediaId: coverMediaId,
+    coverRevision: 1,
+    canEdit: true,
+  );
 
   @override
   void close() {}

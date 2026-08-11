@@ -28,6 +28,12 @@ void main() {
     expect(find.text('研发群'), findsWidgets);
     expect(find.text('3 位成员 · 群主'), findsOneWidget);
     expect(find.byKey(const Key('group-details-invite')), findsOneWidget);
+    expect(
+      tester.widget<InkWell>(
+        find.byKey(const Key('group-details-avatar')),
+      ).onTap,
+      isNotNull,
+    );
     expect(find.byKey(const Key('group-details-name')), findsOneWidget);
     expect(find.byKey(const Key('group-details-announcement')), findsOneWidget);
     expect(find.byKey(const Key('group-details-join-mode')), findsOneWidget);
@@ -62,6 +68,12 @@ void main() {
 
     expect(find.text('3 位成员 · 成员'), findsOneWidget);
     expect(find.byKey(const Key('group-details-invite')), findsNothing);
+    expect(
+      tester.widget<InkWell>(
+        find.byKey(const Key('group-details-avatar')),
+      ).onTap,
+      isNull,
+    );
     expect(find.byKey(const Key('group-details-nickname')), findsOneWidget);
     await tester.scrollUntilVisible(
       find.byKey(const Key('group-details-leave')),

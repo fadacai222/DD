@@ -15,10 +15,14 @@ class ConversationMediaPage extends StatefulWidget {
     super.key,
     required this.coordinator,
     required this.conversation,
+    this.embedded = false,
+    this.onSelected,
   });
 
   final MessagingCoordinator coordinator;
   final ConversationItem conversation;
+  final bool embedded;
+  final ValueChanged<String>? onSelected;
 
   @override
   State<ConversationMediaPage> createState() => _ConversationMediaPageState();
@@ -44,7 +48,7 @@ class _ConversationMediaPageState extends State<ConversationMediaPage> {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
+    final page = DefaultTabController(
       length: 3,
       child: Scaffold(
         appBar: AppBar(
@@ -115,6 +119,22 @@ class _ConversationMediaPageState extends State<ConversationMediaPage> {
             );
           },
         ),
+      ),
+    );
+    if (!widget.embedded) return page;
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(text: '图片'),
+              Tab(text: '视频'),
+              Tab(text: '文件'),
+            ],
+          ),
+          Expanded(child: (page.child as Scaffold).body!),
+        ],
       ),
     );
   }
@@ -288,7 +308,14 @@ class _ConversationMediaPageState extends State<ConversationMediaPage> {
                 : '${_formatBytes(content!.sizeBytes!)} · 定位到原消息',
           ),
           trailing: const Icon(Icons.chevron_right_rounded),
-          onTap: () => Navigator.of(context).pop(message.id),
+          onTap: () {
+            final callback = widget.onSelected;
+            if (callback != null) {
+              callback(message.id);
+            } else {
+              Navigator.of(context).pop(message.id);
+            }
+          },
         );
       },
     );

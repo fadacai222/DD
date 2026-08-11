@@ -71,6 +71,19 @@ abstract interface class MomentsGateway {
     required bool hideFromTarget,
   });
 
+  Future<MomentProfile> getProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  });
+
+  Future<MomentProfile> updateProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required String coverMediaId,
+  });
+
   void close();
 }
 
@@ -242,6 +255,38 @@ final class MomentsApiClient implements MomentsGateway {
         .map(MomentPreference.fromJson)
         .toList(growable: false);
   }
+
+  @override
+  Future<MomentProfile> getProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async => MomentProfile.fromJson(
+    _decodeData(
+      await _client.get(
+        normalizeAuthOrigin(origin).resolve('/api/v1/moments/profile/$userId'),
+        headers: _headers(accessToken),
+      ),
+      const {200},
+    ),
+  );
+
+  @override
+  Future<MomentProfile> updateProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required String coverMediaId,
+  }) async => MomentProfile.fromJson(
+    _decodeData(
+      await _client.patch(
+        normalizeAuthOrigin(origin).resolve('/api/v1/moments/profile/$userId'),
+        headers: _jsonHeaders(accessToken),
+        body: jsonEncode({'coverMediaId': coverMediaId}),
+      ),
+      const {200},
+    ),
+  );
 
   @override
   Future<MomentPreference> setPreference({

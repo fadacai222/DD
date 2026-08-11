@@ -19,14 +19,16 @@ var (
 type Purpose string
 
 const (
-	PurposeChatImage Purpose = "CHAT_IMAGE"
-	PurposeChatFile  Purpose = "CHAT_FILE"
-	PurposeChatVoice Purpose = "CHAT_VOICE"
+	PurposeChatImage   Purpose = "CHAT_IMAGE"
+	PurposeChatFile    Purpose = "CHAT_FILE"
+	PurposeChatVoice   Purpose = "CHAT_VOICE"
 	PurposeChatVideo   Purpose = "CHAT_VIDEO"
 	PurposeSticker     Purpose = "STICKER"
 	PurposeGIF         Purpose = "GIF"
 	PurposeMomentImage Purpose = "MOMENT_IMAGE"
 	PurposeMomentVideo Purpose = "MOMENT_VIDEO"
+	PurposeGroupAvatar Purpose = "GROUP_AVATAR"
+	PurposeMomentCover Purpose = "MOMENT_COVER"
 )
 
 type Status string

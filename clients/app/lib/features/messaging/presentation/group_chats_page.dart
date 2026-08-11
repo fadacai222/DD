@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../theme/app_theme.dart';
 import '../domain/messaging_models.dart';
-import 'widgets/group_avatar_mosaic.dart';
+import 'widgets/group_avatar.dart';
 
 class GroupChatsPage extends StatefulWidget {
   const GroupChatsPage({
@@ -126,10 +126,13 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                                 ),
                                 child: Row(
                                   children: [
-                                    GroupAvatarMosaic(
+                                    GroupAvatar(
                                       origin: widget.origin,
                                       accessToken: widget.accessToken,
+                                      groupId: group.id,
                                       groupName: group.name,
+                                      avatarMediaId: group.avatarMediaId,
+                                      avatarRevision: group.avatarRevision,
                                       members: group.avatarMembers,
                                       size: 40,
                                     ),

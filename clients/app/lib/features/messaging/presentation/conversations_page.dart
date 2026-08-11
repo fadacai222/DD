@@ -14,10 +14,11 @@ import '../../groups/presentation/create_group_page.dart';
 import '../application/messaging_coordinator.dart';
 import '../domain/messaging_models.dart';
 import 'conversations_page_controller.dart';
+import 'desktop_inspector.dart';
 import 'messaging_search_page.dart';
 import 'saved_messages_page.dart';
 import 'text_chat_page.dart';
-import 'widgets/group_avatar_mosaic.dart';
+import 'widgets/group_avatar.dart';
 
 class ConversationsPage extends StatefulWidget {
   const ConversationsPage({
@@ -62,6 +63,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
   late final MessagingCoordinator _coordinator;
   late final bool _ownsCoordinator;
   late final TextEditingController _searchController;
+  late final DesktopInspectorController _inspector;
   String _query = '';
   String? _selectedConversationId;
   bool _showArchived = false;
@@ -80,6 +82,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
           deviceId: widget.deviceId,
         );
     _searchController = TextEditingController();
+    _inspector = DesktopInspectorController();
     widget.navigationController?.addListener(_handleNavigationRequest);
     if (_ownsCoordinator) unawaited(_coordinator.initialize());
     WidgetsBinding.instance.addPostFrameCallback(
@@ -106,6 +109,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
   void dispose() {
     widget.navigationController?.removeListener(_handleNavigationRequest);
     _searchController.dispose();
+    _inspector.dispose();
     if (_ownsCoordinator) _coordinator.dispose();
     super.dispose();
   }
@@ -195,45 +199,76 @@ class _ConversationsPageState extends State<ConversationsPage> {
 
   Widget _buildDesktop(BuildContext context) {
     final selected = _selectedConversation();
-    return Row(
-      children: [
-        SizedBox(
-          key: const Key('desktop-conversation-sidebar'),
-          width: DdDesktopTokens.sidebarWidth,
-          child: ColoredBox(
-            color: DdDesktopTokens.sidebarSurface(
-              Theme.of(context).brightness,
-            ),
-            child: Column(
-              children: [
-                _desktopListHeader(),
-                if (_coordinator.errorMessage != null) _buildErrorBar(context),
-                if (_coordinator.busy)
-                  const LinearProgressIndicator(minHeight: 1),
-                Expanded(child: _conversationList(context, desktop: true)),
-              ],
-            ),
-          ),
-        ),
-        const VerticalDivider(width: 1, thickness: 0.5),
-        Expanded(
-          child: selected == null
-              ? _desktopEmptyState(context)
-              : TextChatPage(
-                  key: ValueKey('desktop-chat-${selected.id}'),
-                  coordinator: _coordinator,
-                  conversation: selected,
-                  currentUserId: widget.currentUserId,
-                  currentUserDisplayName: widget.currentUserDisplayName,
-                  currentUserAvatarRevision: widget.currentUserAvatarRevision,
-                  onStartCall: widget.onStartCall,
-                  onOpenDirectChat: _openDirectChatByUserId,
-                  hostVisible: widget.hostVisible,
-                  embedded: true,
-                  savedMessagesMode: selected.type == 'SELF',
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final inlineInspector = constraints.maxWidth >= 1120;
+        final core = Row(
+          children: [
+            SizedBox(
+              key: const Key('desktop-conversation-sidebar'),
+              width: DdDesktopTokens.sidebarWidth,
+              child: ColoredBox(
+                color: DdDesktopTokens.sidebarSurface(
+                  Theme.of(context).brightness,
                 ),
-        ),
-      ],
+                child: Column(
+                  children: [
+                    _desktopListHeader(),
+                    if (_coordinator.errorMessage != null)
+                      _buildErrorBar(context),
+                    if (_coordinator.busy)
+                      const LinearProgressIndicator(minHeight: 1),
+                    Expanded(child: _conversationList(context, desktop: true)),
+                  ],
+                ),
+              ),
+            ),
+            const VerticalDivider(width: 1, thickness: 0.5),
+            Expanded(
+              child: selected == null
+                  ? _desktopEmptyState(context)
+                  : TextChatPage(
+                      key: ValueKey('desktop-chat-${selected.id}'),
+                      coordinator: _coordinator,
+                      conversation: selected,
+                      currentUserId: widget.currentUserId,
+                      currentUserDisplayName: widget.currentUserDisplayName,
+                      currentUserAvatarRevision: widget.currentUserAvatarRevision,
+                      onStartCall: widget.onStartCall,
+                      onOpenDirectChat: _openDirectChatByUserId,
+                      hostVisible: widget.hostVisible,
+                      embedded: true,
+                      savedMessagesMode: selected.type == 'SELF',
+                      inspectorController: _inspector,
+                    ),
+            ),
+            if (inlineInspector)
+              AnimatedBuilder(
+                animation: _inspector,
+                builder: (context, _) => _inspector.isOpen
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const VerticalDivider(width: 1, thickness: 0.5),
+                          RightInspectorPane(controller: _inspector),
+                        ],
+                      )
+                    : const SizedBox.shrink(),
+              ),
+          ],
+        );
+        return AnimatedBuilder(
+          animation: _inspector,
+          builder: (context, _) => Stack(
+            fit: StackFit.expand,
+            children: [
+              core,
+              if (!inlineInspector)
+                DesktopInspectorOverlay(controller: _inspector),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -778,10 +813,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
             child: Row(
               children: [
                 conversation.type == 'GROUP'
-                    ? GroupAvatarMosaic(
+                    ? GroupAvatar(
                         origin: widget.origin,
                         accessToken: widget.accessToken,
+                        groupId: conversation.group?.id ?? conversation.id,
                         groupName: title,
+                        avatarMediaId: conversation.group?.avatarMediaId ?? '',
+                        avatarRevision: conversation.group?.avatarRevision ?? 0,
                         members: conversation.group?.avatarMembers ?? const [],
                       )
                     : _avatar(peer?.id ?? '', title),
@@ -1085,6 +1123,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
   }) async {
     if (desktop) {
       if (_selectedConversationId != conversation.id) {
+        _inspector.close();
         setState(() => _selectedConversationId = conversation.id);
       }
       return;
@@ -1114,6 +1153,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
     if (desktop) {
       _showArchived = false;
       if (_selectedConversationId != target.id) {
+        _inspector.close();
         setState(() => _selectedConversationId = target.id);
       }
       return;

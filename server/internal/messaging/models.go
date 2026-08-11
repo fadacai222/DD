@@ -131,10 +131,12 @@ type ConversationPreferences struct {
 }
 
 type GroupPreview struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	MemberCount   int           `json:"memberCount"`
-	AvatarMembers []UserPreview `json:"avatarMembers"`
+	ID             string        `json:"id"`
+	Name           string        `json:"name"`
+	MemberCount    int           `json:"memberCount"`
+	AvatarMediaID  string        `json:"avatarMediaId,omitempty"`
+	AvatarRevision int64         `json:"avatarRevision"`
+	AvatarMembers  []UserPreview `json:"avatarMembers"`
 }
 
 type Conversation struct {

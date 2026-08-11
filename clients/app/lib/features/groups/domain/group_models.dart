@@ -25,6 +25,8 @@ final class GroupInfo {
     required this.joinMode,
     required this.status,
     required this.memberCount,
+    this.avatarMediaId = '',
+    this.avatarRevision = 0,
     required this.ownerUserId,
     required this.myRole,
     required this.myNickname,
@@ -39,6 +41,10 @@ final class GroupInfo {
     joinMode: _requiredString(json, 'joinMode'),
     status: _requiredString(json, 'status'),
     memberCount: _requiredInt(json, 'memberCount'),
+    avatarMediaId: json['avatarMediaId']?.toString() ?? '',
+    avatarRevision: json['avatarRevision'] is int
+        ? json['avatarRevision'] as int
+        : 0,
     ownerUserId: _requiredString(json, 'ownerUserId'),
     myRole: _requiredString(json, 'myRole'),
     myNickname: json['myNickname']?.toString() ?? '',
@@ -52,6 +58,8 @@ final class GroupInfo {
   final String joinMode;
   final String status;
   final int memberCount;
+  final String avatarMediaId;
+  final int avatarRevision;
   final String ownerUserId;
   final String myRole;
   final String myNickname;

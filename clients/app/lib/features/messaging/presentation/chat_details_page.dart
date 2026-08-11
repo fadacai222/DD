@@ -23,6 +23,10 @@ class ChatDetailsPage extends StatefulWidget {
     required this.onOpenProfile,
     this.onOpenMomentPrivacy,
     this.onChangeBackground,
+    this.onOpenSearch,
+    this.onOpenMedia,
+    this.embedded = false,
+    this.onResult,
   });
 
   final MessagingCoordinator coordinator;
@@ -30,6 +34,10 @@ class ChatDetailsPage extends StatefulWidget {
   final Future<void> Function() onOpenProfile;
   final Future<void> Function()? onOpenMomentPrivacy;
   final Future<void> Function()? onChangeBackground;
+  final Future<void> Function()? onOpenSearch;
+  final Future<void> Function()? onOpenMedia;
+  final bool embedded;
+  final ValueChanged<ChatDetailsResult>? onResult;
 
   @override
   State<ChatDetailsPage> createState() => _ChatDetailsPageState();
@@ -54,7 +62,7 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
       builder: (context, _) {
         final conversation = _conversation;
         final peer = conversation.peer;
-        return Scaffold(
+        final page = Scaffold(
           appBar: AppBar(
             title: const Text(
               '聊天详情',
@@ -175,6 +183,7 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
             ],
           ),
         );
+        return widget.embedded ? page.body! : page;
       },
     );
   }
@@ -278,19 +287,29 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
   });
 
   Future<void> _openSearch() async {
+    final callback = widget.onOpenSearch;
+    if (callback != null) {
+      await callback();
+      return;
+    }
     final selected = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
-        builder: (_) => _ConversationMessageSearchPage(
+        builder: (_) => ConversationMessageSearchPage(
           coordinator: widget.coordinator,
           conversation: _conversation,
         ),
       ),
     );
     if (selected == null || !mounted) return;
-    Navigator.of(context).pop(ChatDetailsResult(messageId: selected));
+    _complete(ChatDetailsResult(messageId: selected));
   }
 
   Future<void> _openMedia() async {
+    final callback = widget.onOpenMedia;
+    if (callback != null) {
+      await callback();
+      return;
+    }
     final selected = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
         builder: (_) => ConversationMediaPage(
@@ -300,7 +319,7 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
       ),
     );
     if (selected == null || !mounted) return;
-    Navigator.of(context).pop(ChatDetailsResult(messageId: selected));
+    _complete(ChatDetailsResult(messageId: selected));
   }
 
   Future<void> _confirmHide() async {
@@ -327,11 +346,18 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
     await _run(() async {
       await widget.coordinator.hideConversation(_conversation);
       if (mounted) {
-        Navigator.of(
-          context,
-        ).pop(const ChatDetailsResult(conversationHidden: true));
+        _complete(const ChatDetailsResult(conversationHidden: true));
       }
     });
+  }
+
+  void _complete(ChatDetailsResult result) {
+    final callback = widget.onResult;
+    if (callback != null) {
+      callback(result);
+      return;
+    }
+    Navigator.of(context).pop(result);
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -350,22 +376,27 @@ class _ChatDetailsPageState extends State<ChatDetailsPage> {
   }
 }
 
-class _ConversationMessageSearchPage extends StatefulWidget {
-  const _ConversationMessageSearchPage({
+class ConversationMessageSearchPage extends StatefulWidget {
+  const ConversationMessageSearchPage({
+    super.key,
     required this.coordinator,
     required this.conversation,
+    this.embedded = false,
+    this.onSelected,
   });
 
   final MessagingCoordinator coordinator;
   final ConversationItem conversation;
+  final bool embedded;
+  final ValueChanged<String>? onSelected;
 
   @override
-  State<_ConversationMessageSearchPage> createState() =>
+  State<ConversationMessageSearchPage> createState() =>
       _ConversationMessageSearchPageState();
 }
 
 class _ConversationMessageSearchPageState
-    extends State<_ConversationMessageSearchPage> {
+    extends State<ConversationMessageSearchPage> {
   late final TextEditingController _query;
   List<MessageSearchHit> _hits = const [];
   bool _busy = false;
@@ -386,9 +417,7 @@ class _ConversationMessageSearchPageState
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('查找聊天记录')),
-      body: Column(
+    final body = Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -449,13 +478,24 @@ class _ConversationMessageSearchPageState
                         subtitle: Text(
                           _formatTime(message.createdAt.toLocal()),
                         ),
-                        onTap: () => Navigator.pop(context, message.id),
+                        onTap: () {
+                          final callback = widget.onSelected;
+                          if (callback != null) {
+                            callback(message.id);
+                          } else {
+                            Navigator.pop(context, message.id);
+                          }
+                        },
                       );
                     },
                   ),
           ),
         ],
-      ),
+      );
+    if (widget.embedded) return body;
+    return Scaffold(
+      appBar: AppBar(title: const Text('查找聊天记录')),
+      body: body,
     );
   }
 

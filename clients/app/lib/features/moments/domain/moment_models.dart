@@ -85,6 +85,29 @@ final class MomentItem {
   final DateTime createdAt;
 }
 
+final class MomentProfile {
+  const MomentProfile({
+    required this.user,
+    required this.coverMediaId,
+    required this.coverRevision,
+    required this.canEdit,
+  });
+
+  factory MomentProfile.fromJson(Map<String, dynamic> json) => MomentProfile(
+    user: MomentUserPreview.fromJson(json['user'] as Map<String, dynamic>),
+    coverMediaId: json['coverMediaId']?.toString() ?? '',
+    coverRevision: json['coverRevision'] is int
+        ? json['coverRevision'] as int
+        : 0,
+    canEdit: json['canEdit'] as bool? ?? false,
+  );
+
+  final MomentUserPreview user;
+  final String coverMediaId;
+  final int coverRevision;
+  final bool canEdit;
+}
+
 final class MomentPreference {
   const MomentPreference({
     required this.target,

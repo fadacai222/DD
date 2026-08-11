@@ -78,6 +78,40 @@ void main() {
     expect(jsonDecode(captured.body), {'joinMode': 'APPROVAL'});
   });
 
+  test('updates group avatar using only explicit media reference', () async {
+    late http.Request captured;
+    final avatarId = '018f0000-0000-7000-8000-000000000099';
+    final client = GroupsApiClient(
+      httpClient: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'data': _groupJson(
+              avatarMediaId: avatarId,
+              avatarRevision: 4,
+            ),
+            'requestId': 'req-group-avatar',
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    addTearDown(client.close);
+
+    final group = await client.updateGroup(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      groupId: '018f0000-0000-7000-8000-000000000001',
+      avatarMediaId: avatarId,
+    );
+
+    expect(captured.method, 'PATCH');
+    expect(jsonDecode(captured.body), {'avatarMediaId': avatarId});
+    expect(group.avatarMediaId, avatarId);
+    expect(group.avatarRevision, 4);
+  });
+
   test('lists group members and preserves role and nickname', () async {
     final client = GroupsApiClient(
       httpClient: MockClient(
@@ -148,13 +182,19 @@ void main() {
   });
 }
 
-Map<String, dynamic> _groupJson({String joinMode = 'INVITE_ONLY'}) => {
+Map<String, dynamic> _groupJson({
+  String joinMode = 'INVITE_ONLY',
+  String avatarMediaId = '',
+  int avatarRevision = 0,
+}) => {
   'id': '018f0000-0000-7000-8000-000000000001',
   'name': '项目群',
   'announcement': '',
   'joinMode': joinMode,
   'status': 'ACTIVE',
   'memberCount': 3,
+  if (avatarMediaId.isNotEmpty) 'avatarMediaId': avatarMediaId,
+  'avatarRevision': avatarRevision,
   'ownerUserId': '018f0000-0000-7000-8000-000000000010',
   'myRole': 'OWNER',
   'myNickname': '',

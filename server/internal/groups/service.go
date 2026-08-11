@@ -119,10 +119,12 @@ func (service *Service) Update(ctx context.Context, principal account.Principal,
 	}
 
 	var name, announcement, joinMode string
+	var avatarMediaID *uuid.UUID
+	var avatarRevision int64
 	if err := tx.QueryRow(ctx, `
-		SELECT name,announcement,join_mode FROM groups
+		SELECT name,announcement,join_mode,avatar_media_id,avatar_revision FROM groups
 		WHERE conversation_id=$1 AND status='ACTIVE' FOR UPDATE
-	`, groupID).Scan(&name, &announcement, &joinMode); errors.Is(err, pgx.ErrNoRows) {
+	`, groupID).Scan(&name, &announcement, &joinMode, &avatarMediaID, &avatarRevision); errors.Is(err, pgx.ErrNoRows) {
 		return Group{}, ErrNotFound
 	} else if err != nil {
 		return Group{}, fmt.Errorf("load group for update: %w", err)
@@ -145,10 +147,38 @@ func (service *Service) Update(ctx context.Context, principal account.Principal,
 			return Group{}, ErrInvalidInput
 		}
 	}
+	if raw.AvatarMediaID != nil {
+		value := strings.TrimSpace(*raw.AvatarMediaID)
+		if value == "" {
+			avatarMediaID = nil
+			avatarRevision++
+		} else {
+			parsed, parseErr := uuid.Parse(value)
+			if parseErr != nil {
+				return Group{}, ErrInvalidInput
+			}
+			var ready bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM media_objects
+					WHERE id=$1 AND owner_user_id=$2 AND purpose='GROUP_AVATAR'
+					  AND status='READY' AND deleted_at IS NULL
+				)
+			`, parsed, principal.UserID).Scan(&ready); err != nil {
+				return Group{}, fmt.Errorf("verify group avatar media: %w", err)
+			}
+			if !ready {
+				return Group{}, ErrInvalidInput
+			}
+			avatarMediaID = &parsed
+			avatarRevision++
+		}
+	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE groups SET name=$2,announcement=$3,join_mode=$4,updated_at=$5
+		UPDATE groups
+		SET name=$2,announcement=$3,join_mode=$4,avatar_media_id=$5,avatar_revision=$6,updated_at=$7
 		WHERE conversation_id=$1 AND status='ACTIVE'
-	`, groupID, name, announcement, joinMode, now); err != nil {
+	`, groupID, name, announcement, joinMode, avatarMediaID, avatarRevision, now); err != nil {
 		return Group{}, fmt.Errorf("update group metadata: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE conversations SET updated_at=$2 WHERE id=$1`, groupID, now); err != nil {
@@ -156,6 +186,7 @@ func (service *Service) Update(ctx context.Context, principal account.Principal,
 	}
 	if err := insertGroupOutboxTx(ctx, tx, groupID, "GROUP_UPDATED", nil, map[string]any{
 		"groupId": groupID.String(), "name": name,
+		"avatarMediaId": avatarMediaID, "avatarRevision": avatarRevision,
 	}, now); err != nil {
 		return Group{}, err
 	}
@@ -886,13 +917,14 @@ func loadGroup(ctx context.Context, queryer interface {
 	err := queryer.QueryRow(ctx, `
 		SELECT g.conversation_id::text,g.name,g.announcement,g.join_mode,g.status,
 		       (SELECT count(*) FROM conversation_members m WHERE m.conversation_id=g.conversation_id AND m.status='ACTIVE'),
+		       COALESCE(g.avatar_media_id::text,''),g.avatar_revision,
 		       owner.user_id::text,mine.role,COALESCE(profile.nickname,''),g.created_at,g.updated_at,g.dissolved_at
 		FROM groups g
 		JOIN conversation_members mine ON mine.conversation_id=g.conversation_id AND mine.user_id=$2 AND mine.status='ACTIVE'
 		JOIN conversation_members owner ON owner.conversation_id=g.conversation_id AND owner.role='OWNER' AND owner.status='ACTIVE'
 		LEFT JOIN group_member_profiles profile ON profile.conversation_id=g.conversation_id AND profile.user_id=$2
 		WHERE g.conversation_id=$1 AND g.status='ACTIVE'
-	`, groupID, userID).Scan(&item.ID, &item.Name, &item.Announcement, &item.JoinMode, &item.Status, &item.MemberCount, &item.OwnerUserID, &item.MyRole, &item.MyNickname, &item.CreatedAt, &item.UpdatedAt, &item.DissolvedAt)
+	`, groupID, userID).Scan(&item.ID, &item.Name, &item.Announcement, &item.JoinMode, &item.Status, &item.MemberCount, &item.AvatarMediaID, &item.AvatarRevision, &item.OwnerUserID, &item.MyRole, &item.MyNickname, &item.CreatedAt, &item.UpdatedAt, &item.DissolvedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Group{}, ErrNotFound
 	}

@@ -68,3 +68,14 @@ type Preference struct {
 	HideFromTarget bool        `json:"hideFromTarget"`
 	UpdatedAt      time.Time   `json:"updatedAt"`
 }
+
+type Profile struct {
+	User          UserPreview `json:"user"`
+	CoverMediaID  string      `json:"coverMediaId,omitempty"`
+	CoverRevision int64       `json:"coverRevision"`
+	CanEdit       bool        `json:"canEdit"`
+}
+
+type UpdateProfileInput struct {
+	CoverMediaID string `json:"coverMediaId"`
+}

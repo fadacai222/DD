@@ -22,6 +22,8 @@ type MomentsService interface {
 	DeleteComment(ctx context.Context, principal account.Principal, momentID, commentID uuid.UUID) (moments.Moment, []uuid.UUID, error)
 	SetPreference(ctx context.Context, principal account.Principal, targetID uuid.UUID, input moments.PreferenceInput) (moments.Preference, error)
 	ListPreferences(ctx context.Context, principal account.Principal) ([]moments.Preference, error)
+	GetProfile(ctx context.Context, principal account.Principal, targetID uuid.UUID) (moments.Profile, error)
+	UpdateProfile(ctx context.Context, principal account.Principal, input moments.UpdateProfileInput) (moments.Profile, []uuid.UUID, error)
 }
 
 func (s *server) handleMoments(response http.ResponseWriter, request *http.Request) {
@@ -96,6 +98,45 @@ func (s *server) handleMomentByID(response http.ResponseWriter, request *http.Re
 	}
 	raw := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/v1/moments/"), "/")
 	parts := strings.Split(raw, "/")
+	if len(parts) == 2 && parts[0] == "profile" {
+		targetID, err := uuid.Parse(parts[1])
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", "userId must be a UUID")
+			return
+		}
+		switch request.Method {
+		case http.MethodGet:
+			profile, err := s.moments.GetProfile(request.Context(), principal, targetID)
+			if err != nil {
+				s.writeMomentsError(response, request, err)
+				return
+			}
+			writeSuccess(response, http.StatusOK, profile)
+		case http.MethodPatch:
+			if targetID != principal.UserID {
+				writeAPIError(response, http.StatusForbidden, "MOMENT_FORBIDDEN", "Only your own Moments profile can be updated")
+				return
+			}
+			if !requireJSON(response, request) {
+				return
+			}
+			var input moments.UpdateProfileInput
+			if err := decodeSingleJSON(response, request, &input); err != nil {
+				writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", err.Error())
+				return
+			}
+			profile, recipients, err := s.moments.UpdateProfile(request.Context(), principal, input)
+			if err != nil {
+				s.writeMomentsError(response, request, err)
+				return
+			}
+			s.publishEventAvailable(recipients, "moment-profile-updated")
+			writeSuccess(response, http.StatusOK, profile)
+		default:
+			methodNotAllowed(response, http.MethodGet, http.MethodPatch)
+		}
+		return
+	}
 	if len(parts) < 1 || len(parts) > 3 || strings.TrimSpace(parts[0]) == "" {
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 		return

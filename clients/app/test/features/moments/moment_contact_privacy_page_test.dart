@@ -130,5 +130,30 @@ final class _PrivacyGateway implements MomentsGateway {
   }) => throw UnimplementedError();
 
   @override
+  Future<MomentProfile> getProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async => MomentProfile(
+    user: MomentUserPreview(id: userId, handle: 'user', displayName: 'User'),
+    coverMediaId: '',
+    coverRevision: 0,
+    canEdit: false,
+  );
+
+  @override
+  Future<MomentProfile> updateProfile({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required String coverMediaId,
+  }) async => MomentProfile(
+    user: MomentUserPreview(id: userId, handle: 'user', displayName: 'User'),
+    coverMediaId: coverMediaId,
+    coverRevision: 1,
+    canEdit: true,
+  );
+
+  @override
   void close() {}
 }

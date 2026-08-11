@@ -1,6 +1,12 @@
 import 'dart:async';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../../core/media/avatar_crop_page.dart';
+import '../../../core/media/avatar_image_processor.dart';
+import '../../../core/media/camera_capture_service.dart';
 
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
@@ -8,6 +14,9 @@ import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../contacts/data/contacts_api_client.dart';
 import '../../contacts/domain/contact_models.dart';
 import '../../messaging/application/messaging_coordinator.dart';
+import '../../messaging/data/media_api_client.dart';
+import '../../messaging/domain/messaging_models.dart';
+import '../../messaging/presentation/widgets/group_avatar.dart';
 import '../data/groups_api_client.dart';
 import '../domain/group_models.dart';
 
@@ -25,6 +34,10 @@ class GroupDetailsPage extends StatefulWidget {
     required this.currentUserId,
     this.gateway,
     this.contactsGateway,
+    this.mediaApi,
+    this.cameraCapture,
+    this.embedded = false,
+    this.onResult,
   });
 
   final MessagingCoordinator coordinator;
@@ -32,6 +45,10 @@ class GroupDetailsPage extends StatefulWidget {
   final String currentUserId;
   final GroupsGateway? gateway;
   final ContactsGateway? contactsGateway;
+  final MediaApiClient? mediaApi;
+  final CameraCaptureGateway? cameraCapture;
+  final bool embedded;
+  final ValueChanged<GroupDetailsResult>? onResult;
 
   @override
   State<GroupDetailsPage> createState() => _GroupDetailsPageState();
@@ -42,6 +59,9 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
   late final ContactsGateway _contacts;
   late final bool _ownsGateway;
   late final bool _ownsContacts;
+  late final MediaApiClient _mediaApi;
+  late final bool _ownsMediaApi;
+  late final CameraCaptureGateway _cameraCapture;
   GroupInfo? _group;
   List<GroupMemberItem> _members = const [];
   List<GroupJoinRequestItem> _requests = const [];
@@ -56,6 +76,9 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
     _ownsContacts = widget.contactsGateway == null;
     _gateway = widget.gateway ?? GroupsApiClient();
     _contacts = widget.contactsGateway ?? ContactsApiClient();
+    _ownsMediaApi = widget.mediaApi == null;
+    _mediaApi = widget.mediaApi ?? MediaApiClient();
+    _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     unawaited(_load());
   }
 
@@ -63,6 +86,7 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
   void dispose() {
     if (_ownsGateway) _gateway.close();
     if (_ownsContacts) _contacts.close();
+    if (_ownsMediaApi) _mediaApi.close();
     super.dispose();
   }
 
@@ -136,7 +160,7 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
   @override
   Widget build(BuildContext context) {
     final group = _group;
-    return Scaffold(
+    final page = Scaffold(
       appBar: AppBar(
         title: const Text('群聊信息'),
         actions: [
@@ -230,6 +254,7 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
               ),
             ),
     );
+    return widget.embedded ? page.body! : page;
   }
 
   Widget _failedState() => Center(
@@ -254,17 +279,51 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
       padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
       child: Column(
         children: [
-          Container(
-            width: 78,
-            height: 78,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: const Color(0xFF5D8FB8),
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: Text(
-              group.name.characters.firstOrNull ?? '群',
-              style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w600),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const Key('group-details-avatar'),
+              customBorder: const CircleBorder(),
+              onTap: group.canManage && !_busy
+                  ? () => unawaited(_editGroupAvatar(group))
+                  : null,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  GroupAvatar(
+                    origin: widget.coordinator.origin,
+                    accessToken: widget.coordinator.accessToken,
+                    groupId: group.id,
+                    groupName: group.name,
+                    avatarMediaId: group.avatarMediaId,
+                    avatarRevision: group.avatarRevision,
+                    members: _members
+                        .map(
+                          (item) => MessagingUserPreview(
+                            id: item.user.id,
+                            handle: item.user.handle,
+                            displayName: item.user.displayName,
+                          ),
+                        )
+                        .toList(growable: false),
+                    size: 78,
+                  ),
+                  if (group.canManage)
+                    const Positioned(
+                      right: -2,
+                      bottom: -2,
+                      child: CircleAvatar(
+                        radius: 13,
+                        backgroundColor: DdColors.green,
+                        child: Icon(
+                          Icons.camera_alt_rounded,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -415,6 +474,110 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
       );
     } finally {
       controller.dispose();
+    }
+  }
+
+  Future<void> _editGroupAvatar(GroupInfo group) async {
+    if (!group.canManage || _busy) return;
+    final actions = <DdActionSheetItem<String>>[
+      const DdActionSheetItem(
+        value: 'album',
+        icon: Icons.photo_library_outlined,
+        label: '从相册选择',
+      ),
+      if (_cameraCapture.isSupported)
+        const DdActionSheetItem(
+          value: 'camera',
+          icon: Icons.photo_camera_outlined,
+          label: '拍摄',
+        ),
+      if (group.avatarMediaId.isNotEmpty)
+        const DdActionSheetItem(
+          value: 'remove',
+          icon: Icons.delete_outline_rounded,
+          label: '移除群头像',
+          destructive: true,
+        ),
+    ];
+    final action = await showDdActionSheet<String>(context, items: actions);
+    if (!mounted || action == null) return;
+    if (action == 'remove') {
+      await _run(() async {
+        final updated = await _authorized(
+          (token) => _gateway.updateGroup(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            groupId: group.id,
+            avatarMediaId: '',
+          ),
+        );
+        if (!mounted) return;
+        setState(() => _group = updated);
+        await widget.coordinator.refreshConversations();
+      });
+      return;
+    }
+
+    XFile? file;
+    try {
+      if (action == 'camera') {
+        file = await _cameraCapture.capturePhoto();
+      } else {
+        file = await openFile(
+          acceptedTypeGroups: const <XTypeGroup>[
+            XTypeGroup(
+              label: '图片',
+              extensions: <String>['jpg', 'jpeg', 'png', 'webp'],
+              mimeTypes: <String>[
+                'image/jpeg',
+                'image/png',
+                'image/webp',
+              ],
+            ),
+          ],
+        );
+      }
+      if (file == null || !mounted) return;
+      final source = await file.readAsBytes();
+      final preview = await prepareAvatarCropPreview(source);
+      if (!mounted) return;
+      final crop = await Navigator.of(context).push<AvatarCropSelection>(
+        MaterialPageRoute<AvatarCropSelection>(
+          fullscreenDialog: true,
+          builder: (_) => AvatarCropPage(preview: preview),
+        ),
+      );
+      if (crop == null || !mounted) return;
+      final processed = await processAvatarImage(source, crop: crop);
+      await _run(() async {
+        final media = await _authorized(
+          (token) => _mediaApi.uploadMedia(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            bytes: processed.bytes,
+            fileName: 'group-avatar-${group.id}.jpg',
+            mimeType: processed.contentType,
+            purpose: 'GROUP_AVATAR',
+          ),
+        );
+        final updated = await _authorized(
+          (token) => _gateway.updateGroup(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            groupId: group.id,
+            avatarMediaId: media.mediaId,
+          ),
+        );
+        if (!mounted) return;
+        setState(() => _group = updated);
+        await widget.coordinator.refreshConversations();
+      });
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? '群头像操作失败。');
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } catch (error) {
+      if (mounted) setState(() => _error = '群头像更新失败：$error');
     }
   }
 
@@ -598,7 +761,7 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
     await _run(() async {
       await _authorized((token) => _gateway.leaveGroup(origin: widget.coordinator.origin, accessToken: token, groupId: group.id));
       await widget.coordinator.syncNow();
-      if (mounted) Navigator.of(context).pop(const GroupDetailsResult(membershipEnded: true));
+      if (mounted) _complete(const GroupDetailsResult(membershipEnded: true));
     });
   }
 
@@ -608,8 +771,17 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
     await _run(() async {
       await _authorized((token) => _gateway.dissolveGroup(origin: widget.coordinator.origin, accessToken: token, groupId: group.id));
       await widget.coordinator.syncNow();
-      if (mounted) Navigator.of(context).pop(const GroupDetailsResult(membershipEnded: true));
+      if (mounted) _complete(const GroupDetailsResult(membershipEnded: true));
     });
+  }
+
+  void _complete(GroupDetailsResult result) {
+    final callback = widget.onResult;
+    if (callback != null) {
+      callback(result);
+      return;
+    }
+    Navigator.of(context).pop(result);
   }
 
   String _roleLabel(String role) => switch (role) {
@@ -700,8 +872,4 @@ class _GroupInvitePickerState extends State<_GroupInvitePicker> {
       ),
     );
   }
-}
-
-extension on Characters {
-  String? get firstOrNull => isEmpty ? null : first;
 }

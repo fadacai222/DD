@@ -46,6 +46,8 @@ import '../domain/sticker_models.dart';
 import 'chat_background_settings_page.dart';
 import 'chat_details_page.dart';
 import 'chat_wallpaper_surface.dart';
+import 'conversation_media_page.dart';
+import 'desktop_inspector.dart';
 import 'desktop_video_pip.dart';
 import 'mention_composer_controller.dart';
 import 'mention_rich_text.dart';
@@ -74,6 +76,7 @@ class TextChatPage extends StatefulWidget {
     this.groupsGateway,
     this.mediaPreferencesStore,
     this.cameraCapture,
+    this.inspectorController,
   });
 
   final MessagingCoordinator coordinator;
@@ -94,6 +97,7 @@ class TextChatPage extends StatefulWidget {
   final GroupsGateway? groupsGateway;
   final MediaAutoDownloadStore? mediaPreferencesStore;
   final CameraCaptureGateway? cameraCapture;
+  final DesktopInspectorController? inspectorController;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -3457,6 +3461,26 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _openPeerMoments(String userId, String displayName) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
+    final inspector = widget.inspectorController;
+    if (inspector != null) {
+      inspector.push(
+        DesktopInspectorEntry(
+          id: 'moments:$normalized',
+          title: '$displayName的朋友圈',
+          builder: (_) => MomentsFeedPage(
+            origin: widget.coordinator.origin,
+            accessToken: widget.coordinator.accessToken,
+            currentUserId: widget.currentUserId,
+            currentUserDisplayName: widget.currentUserDisplayName,
+            authorId: normalized,
+            authorDisplayName: displayName,
+            onUnauthorized:
+                widget.coordinator.onUnauthorized ?? () async => null,
+          ),
+        ),
+      );
+      return;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => MomentsFeedPage(
@@ -3479,6 +3503,24 @@ class _TextChatPageState extends State<TextChatPage>
   ) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
+    final inspector = widget.inspectorController;
+    if (inspector != null) {
+      inspector.push(
+        DesktopInspectorEntry(
+          id: 'moment-privacy:$normalized',
+          title: '朋友圈权限',
+          builder: (_) => MomentContactPrivacyPage(
+            origin: widget.coordinator.origin,
+            accessToken: widget.coordinator.accessToken,
+            targetUserId: normalized,
+            targetDisplayName: displayName,
+            onUnauthorized:
+                widget.coordinator.onUnauthorized ?? () async => null,
+          ),
+        ),
+      );
+      return;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => MomentContactPrivacyPage(
@@ -3496,6 +3538,33 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _openMentionProfile(String userId) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
+    final inspector = widget.inspectorController;
+    if (inspector != null) {
+      inspector.open(
+        DesktopInspectorEntry(
+          id: 'peer:$normalized',
+          title: '详细资料',
+          builder: (_) => PeerProfilePage(
+            origin: widget.coordinator.origin,
+            accessToken: widget.coordinator.accessToken,
+            userId: normalized,
+            handle: '',
+            displayName: '用户',
+            embedded: true,
+            onOpenMoments: () => _openPeerMoments(normalized, '用户'),
+            onOpenMomentPrivacy: () =>
+                _openPeerMomentPrivacy(normalized, '用户'),
+            onMessage: widget.onOpenDirectChat == null
+                ? null
+                : () async {
+                    inspector.close();
+                    await widget.onOpenDirectChat!(normalized);
+                  },
+          ),
+        ),
+      );
+      return;
+    }
     widget.coordinator.deactivateConversation(widget.conversation.id);
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -3522,6 +3591,40 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _openPeerProfile(ConversationItem conversation) async {
     final peer = conversation.peer;
     if (peer == null || peer.id.isEmpty || peer.handle.isEmpty || !mounted) {
+      return;
+    }
+    final inspector = widget.inspectorController;
+    if (inspector != null) {
+      inspector.open(
+        DesktopInspectorEntry(
+          id: 'peer:${peer.id}',
+          title: '详细资料',
+          builder: (_) => PeerProfilePage(
+            origin: widget.coordinator.origin,
+            accessToken: widget.coordinator.accessToken,
+            userId: peer.id,
+            handle: peer.handle,
+            displayName: peer.displayName,
+            embedded: true,
+            onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+            onOpenMomentPrivacy: () =>
+                _openPeerMomentPrivacy(peer.id, peer.displayName),
+            onMessage: () async => inspector.close(),
+            onAudioCall: widget.onStartCall == null
+                ? null
+                : () async {
+                    inspector.close();
+                    await _startCall(CallKind.audio);
+                  },
+            onVideoCall: widget.onStartCall == null
+                ? null
+                : () async {
+                    inspector.close();
+                    await _startCall(CallKind.video);
+                  },
+          ),
+        ),
+      );
       return;
     }
     widget.coordinator.deactivateConversation(widget.conversation.id);
@@ -3606,6 +3709,95 @@ class _TextChatPageState extends State<TextChatPage>
 
   Future<void> _openChatDetails(ConversationItem conversation) async {
     if (!mounted || widget.savedMessagesMode) return;
+    final inspector = widget.inspectorController;
+    if (inspector != null) {
+      if (conversation.type == 'GROUP') {
+        inspector.open(
+          DesktopInspectorEntry(
+            id: 'group-details:${conversation.id}',
+            title: '群聊信息',
+            builder: (_) => GroupDetailsPage(
+              coordinator: widget.coordinator,
+              groupId: conversation.id,
+              currentUserId: widget.currentUserId,
+              embedded: true,
+              onResult: (result) =>
+                  unawaited(_handleGroupDetailsResult(result)),
+            ),
+          ),
+        );
+      } else {
+        inspector.open(
+          DesktopInspectorEntry(
+            id: 'chat-details:${conversation.id}',
+            title: '聊天详情',
+            builder: (_) => ChatDetailsPage(
+              coordinator: widget.coordinator,
+              conversation: conversation,
+              embedded: true,
+              onResult: (result) =>
+                  unawaited(_handleChatDetailsResult(result)),
+              onOpenProfile: () => _pushPeerProfile(conversation),
+              onOpenMomentPrivacy: conversation.peer == null
+                  ? null
+                  : () => _openPeerMomentPrivacy(
+                      conversation.peer!.id,
+                      conversation.peer!.displayName,
+                    ),
+              onChangeBackground: () async {
+                inspector.push(
+                  DesktopInspectorEntry(
+                    id: 'chat-background:${conversation.id}',
+                    title: '聊天背景',
+                    builder: (_) => ChatBackgroundSettingsPage(
+                      store: _appearanceStore,
+                      conversationId: conversation.id,
+                    ),
+                  ),
+                );
+              },
+              onOpenSearch: () async {
+                inspector.push(
+                  DesktopInspectorEntry(
+                    id: 'chat-search:${conversation.id}',
+                    title: '查找聊天记录',
+                    builder: (_) => ConversationMessageSearchPage(
+                      coordinator: widget.coordinator,
+                      conversation: conversation,
+                      embedded: true,
+                      onSelected: (messageId) => unawaited(
+                        _handleChatDetailsResult(
+                          ChatDetailsResult(messageId: messageId),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+              onOpenMedia: () async {
+                inspector.push(
+                  DesktopInspectorEntry(
+                    id: 'chat-media:${conversation.id}',
+                    title: '聊天文件',
+                    builder: (_) => ConversationMediaPage(
+                      coordinator: widget.coordinator,
+                      conversation: conversation,
+                      embedded: true,
+                      onSelected: (messageId) => unawaited(
+                        _handleChatDetailsResult(
+                          ChatDetailsResult(messageId: messageId),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+      return;
+    }
     widget.coordinator.deactivateConversation(widget.conversation.id);
     if (conversation.type == 'GROUP') {
       final result = await Navigator.of(context).push<GroupDetailsResult>(
@@ -3662,6 +3854,60 @@ class _TextChatPageState extends State<TextChatPage>
     }
     _updateReadVisibility();
     final messageId = result?.messageId;
+    if (messageId != null && messageId.isNotEmpty) {
+      await _jumpToMessage(messageId);
+    }
+  }
+
+  Future<void> _pushPeerProfile(ConversationItem conversation) async {
+    final peer = conversation.peer;
+    final inspector = widget.inspectorController;
+    if (peer == null || inspector == null) return;
+    inspector.push(
+      DesktopInspectorEntry(
+        id: 'peer:${peer.id}',
+        title: '详细资料',
+        builder: (_) => PeerProfilePage(
+          origin: widget.coordinator.origin,
+          accessToken: widget.coordinator.accessToken,
+          userId: peer.id,
+          handle: peer.handle,
+          displayName: peer.displayName,
+          embedded: true,
+          onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+          onOpenMomentPrivacy: () =>
+              _openPeerMomentPrivacy(peer.id, peer.displayName),
+          onMessage: () async => inspector.close(),
+          onAudioCall: widget.onStartCall == null
+              ? null
+              : () async {
+                  inspector.close();
+                  await _startCall(CallKind.audio);
+                },
+          onVideoCall: widget.onStartCall == null
+              ? null
+              : () async {
+                  inspector.close();
+                  await _startCall(CallKind.video);
+                },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleGroupDetailsResult(GroupDetailsResult result) async {
+    widget.inspectorController?.close();
+    if (result.membershipEnded) return;
+    await widget.coordinator.refreshConversations();
+    try {
+      await _loadGroupMembers();
+    } catch (_) {}
+  }
+
+  Future<void> _handleChatDetailsResult(ChatDetailsResult result) async {
+    widget.inspectorController?.close();
+    if (result.conversationHidden) return;
+    final messageId = result.messageId;
     if (messageId != null && messageId.isNotEmpty) {
       await _jumpToMessage(messageId);
     }

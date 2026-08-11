@@ -40,7 +40,7 @@ func validateUploadInput(input CreateUploadInput) error {
 
 	var maxBytes int64
 	switch input.Purpose {
-	case PurposeChatImage, PurposeMomentImage:
+	case PurposeChatImage, PurposeMomentImage, PurposeGroupAvatar, PurposeMomentCover:
 		maxBytes = maxImageBytes
 		if mimeType != "image/jpeg" && mimeType != "image/png" && mimeType != "image/webp" {
 			return ErrInvalidInput
