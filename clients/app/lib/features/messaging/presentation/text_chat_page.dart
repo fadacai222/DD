@@ -26,6 +26,7 @@ import '../../groups/domain/group_models.dart';
 import '../../groups/presentation/group_details_page.dart';
 import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
+import '../application/media_transfer_controller.dart';
 import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
@@ -127,24 +128,12 @@ class _TextChatPageState extends State<TextChatPage>
   final RemoteMediaActionService _remoteMediaActions =
       RemoteMediaActionService();
   Timer? _draftSaveTimer;
-  bool _imageSending = false;
-  int _imageBatchCurrent = 0;
-  int _imageBatchTotal = 0;
-  MediaTransferState _imageTransfer = const MediaTransferState.queued();
-  MediaUploadCancellation? _imageUploadCancellation;
+  late final MediaTransferController _uploadTransfers;
   bool _gifSending = false;
   bool _stickerSending = false;
-  bool _fileSending = false;
-  bool _videoSending = false;
-  MediaTransferState _videoTransfer = const MediaTransferState.queued();
-  MediaUploadCancellation? _videoUploadCancellation;
   final Map<String, double> _fileDownloadProgress = {};
   final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
-  MediaTransferState _fileTransfer = const MediaTransferState.queued();
-  MediaUploadCancellation? _fileUploadCancellation;
-  double get _imageUploadProgress => _imageTransfer.progress ?? 0;
-  double get _videoUploadProgress => _videoTransfer.progress ?? 0;
-  double get _fileUploadProgress => _fileTransfer.progress ?? 0;
+
 
   bool _voiceMode = false;
   bool _voiceRecording = false;
@@ -195,6 +184,7 @@ class _TextChatPageState extends State<TextChatPage>
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
+    _uploadTransfers = MediaTransferController(maxConcurrent: 3);
     _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     _mediaPreferencesStore = widget.mediaPreferencesStore ??
         MediaAutoDownloadStore.shared(widget.currentUserId);
@@ -316,6 +306,7 @@ class _TextChatPageState extends State<TextChatPage>
     _composer.dispose();
     _scrollController.dispose();
     _mediaPreferencesStore.removeListener(_onMediaPreferencesChanged);
+    _uploadTransfers.dispose();
     _mediaApi.close();
     _contactsApi.close();
     if (_ownsGroupsApi) _groupsApi.close();
@@ -2760,9 +2751,10 @@ class _TextChatPageState extends State<TextChatPage>
               if (editingMessage != null) _editPreview(editingMessage),
               if (replyingTo != null && editingMessage == null)
                 _replyPreview(replyingTo),
-              if (_imageSending) _imageUploadBanner(),
-              if (_videoSending) _videoUploadBanner(),
-              if (_fileSending) _fileUploadBanner(),
+              AnimatedBuilder(
+                animation: _uploadTransfers,
+                builder: (context, _) => _uploadTransferBanners(),
+              ),
               if (_voiceRecording) _voiceRecordingBanner(),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -2829,56 +2821,34 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  Widget _imageUploadBanner() {
-    final title = _imageBatchTotal > 1
-        ? '正在发送 $_imageBatchCurrent / $_imageBatchTotal 张图片'
-        : '正在发送图片';
-    return _uploadTransferBanner(
-      key: const Key('image-upload-transfer'),
-      icon: Icons.image_outlined,
-      title: title,
-      state: _imageTransfer,
-      onCancel: _imageUploadCancellation?.cancel,
+  Widget _uploadTransferBanners() {
+    final tasks = _uploadTransfers.visibleTasks;
+    if (tasks.isEmpty) return const SizedBox.shrink();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [for (final task in tasks) _uploadTransferBanner(task)],
     );
   }
 
-  Widget _videoUploadBanner() => _uploadTransferBanner(
-    key: const Key('video-upload-transfer'),
-    icon: Icons.videocam_outlined,
-    title: _videoTransfer.phase == MediaTransferPhase.preparing
-        ? '正在准备视频'
-        : _videoTransfer.phase == MediaTransferPhase.committing
-        ? '正在生成缩略图并发送'
-        : '正在上传视频',
-    state: _videoTransfer,
-    onCancel: _videoUploadCancellation?.cancel,
-  );
-
-  Widget _fileUploadBanner() => _uploadTransferBanner(
-    key: const Key('file-upload-transfer'),
-    icon: Icons.upload_file_rounded,
-    title: _fileTransfer.phase == MediaTransferPhase.committing
-        ? '正在发送文件消息'
-        : '正在上传文件',
-    state: _fileTransfer,
-    onCancel: _fileUploadCancellation?.cancel,
-  );
-
-  Widget _uploadTransferBanner({
-    required Key key,
-    required IconData icon,
-    required String title,
-    required MediaTransferState state,
-    required VoidCallback? onCancel,
-  }) {
+  Widget _uploadTransferBanner(MediaTransferTask task) {
+    final state = task.state;
     final progress = state.progress;
-    final detail = progress == null
+    final detail = state.phase == MediaTransferPhase.failed
+        ? (state.errorMessage ?? '上传失败，可重试')
+        : progress == null
         ? _transferPhaseLabel(state.phase)
         : '${(progress * 100).clamp(0, 100).round()}% · '
               '${_formatTransferBytes(state.transferredBytes)} / '
               '${_formatTransferBytes(state.totalBytes ?? 0)}';
+    final icon = switch (task.kind) {
+      MediaTransferKind.image => Icons.image_outlined,
+      MediaTransferKind.video => Icons.videocam_outlined,
+      MediaTransferKind.file => Icons.upload_file_rounded,
+      MediaTransferKind.gif => Icons.gif_box_outlined,
+      MediaTransferKind.sticker => Icons.emoji_emotions_outlined,
+    };
     return Container(
-      key: key,
+      key: Key('upload-transfer-${task.id}'),
       margin: const EdgeInsets.only(bottom: 7),
       padding: const EdgeInsets.fromLTRB(10, 7, 8, 7),
       decoration: BoxDecoration(
@@ -2893,23 +2863,49 @@ class _TextChatPageState extends State<TextChatPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontSize: 12)),
+                Text(
+                  task.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
                 const SizedBox(height: 2),
                 Text(
                   detail,
-                  style: const TextStyle(
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
                     fontSize: 11,
-                    color: DdColors.textSecondary,
+                    color: state.phase == MediaTransferPhase.failed
+                        ? DdColors.danger
+                        : DdColors.textSecondary,
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          MediaTransferProgress(
-            state: state,
-            onCancel: onCancel,
-          ),
+          if (state.phase == MediaTransferPhase.failed)
+            IconButton(
+              key: Key('retry-upload-${task.id}'),
+              tooltip: '重试',
+              onPressed: () => _uploadTransfers.retry(task.id),
+              icon: const Icon(Icons.refresh_rounded, size: 20),
+            )
+          else if (state.phase == MediaTransferPhase.canceled)
+            IconButton(
+              key: Key('dismiss-upload-${task.id}'),
+              tooltip: '关闭',
+              onPressed: () => _uploadTransfers.dismiss(task.id),
+              icon: const Icon(Icons.close_rounded, size: 20),
+            )
+          else
+            MediaTransferProgress(
+              state: state,
+              onCancel: state.canCancel
+                  ? () => _uploadTransfers.cancel(task.id)
+                  : null,
+            ),
         ],
       ),
     );
@@ -3827,10 +3823,8 @@ class _TextChatPageState extends State<TextChatPage>
             children: [
               _ComposerAction(
                 icon: Icons.photo_library_outlined,
-                label: (_imageSending || _gifSending || _videoSending)
-                    ? '处理中…'
-                    : '相册',
-                enabled: !_imageSending && !_gifSending && !_videoSending,
+                label: '相册',
+                enabled: true,
                 onTap: () {
                   Navigator.pop(sheetContext);
                   unawaited(_pickAndSendAlbum());
@@ -3839,27 +3833,19 @@ class _TextChatPageState extends State<TextChatPage>
               _ComposerAction(
                 icon: Icons.photo_camera_outlined,
                 label: '拍摄',
-                enabled: _cameraCapture.isSupported && !_imageSending,
+                enabled: _cameraCapture.isSupported,
                 onTap: () {
                   Navigator.pop(sheetContext);
                   unawaited(_captureAndSendPhoto());
                 },
               ),
               _ComposerAction(
-                icon: _fileSending
-                    ? Icons.close_rounded
-                    : Icons.insert_drive_file_outlined,
-                label: _fileSending
-                    ? '取消 ${(100 * _fileUploadProgress).round()}%'
-                    : '文件',
+                icon: Icons.insert_drive_file_outlined,
+                label: '文件',
                 enabled: true,
                 onTap: () {
                   Navigator.pop(sheetContext);
-                  if (_fileSending) {
-                    _fileUploadCancellation?.cancel();
-                  } else {
-                    unawaited(_pickAndSendFile());
-                  }
+                  unawaited(_pickAndSendFile());
                 },
               ),
             ],
@@ -3870,7 +3856,7 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _captureAndSendPhoto() async {
-    if (_imageSending || !_cameraCapture.isSupported) return;
+    if (!_cameraCapture.isSupported) return;
     try {
       final file = await _cameraCapture.capturePhoto();
       if (file == null || !mounted) return;
@@ -3900,7 +3886,6 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _pickAndSendAlbum() async {
-    if (_imageSending || _gifSending || _videoSending) return;
     const typeGroup = XTypeGroup(
       label: '相册',
       extensions: <String>[
@@ -3951,135 +3936,96 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _sendImageFiles(List<XFile> files) async {
-    if (_imageSending || files.isEmpty || !mounted) return;
+    if (files.isEmpty || !mounted) return;
     if (files.length > 30) {
       _showImageError('一次最多发送 30 张图片。');
       return;
     }
     final replyToMessageId = _replyingTo?.id;
     if (_replyingTo != null) setState(() => _replyingTo = null);
-    final cancellation = MediaUploadCancellation();
-    _imageUploadCancellation = cancellation;
-    setState(() {
-      _imageSending = true;
-      _imageBatchCurrent = 0;
-      _imageBatchTotal = files.length;
-      _imageTransfer = const MediaTransferState(
-        phase: MediaTransferPhase.preparing,
+    for (var index = 0; index < files.length; index++) {
+      final file = files[index];
+      final taskId = _newUploadTaskId('image');
+      _uploadTransfers.enqueue(
+        id: taskId,
+        kind: MediaTransferKind.image,
+        label: file.name.isEmpty ? '图片 ${index + 1}' : file.name,
+        operation: (task) => _runImageUpload(
+          file,
+          task,
+          replyToMessageId: index == 0 ? replyToMessageId : null,
+        ),
       );
-    });
-    var sentCount = 0;
-    try {
-      for (var index = 0; index < files.length; index++) {
-        final file = files[index];
-        final sourceLength = await file.length();
-        if (sourceLength > maxChatImageSourceBytes) {
-          _showImageError(
-            '${file.name.isEmpty ? '第 ${index + 1} 张图片' : file.name} 超过 96 MiB，已跳过。',
-          );
-          continue;
-        }
-        if (cancellation.isCancelled) throw const MediaUploadCancelled();
-        if (mounted) {
-          setState(() {
-            _imageBatchCurrent = index + 1;
-            _imageTransfer = MediaTransferState(
-              phase: MediaTransferPhase.preparing,
-              totalBytes: sourceLength,
-            );
-          });
-        }
-        final source = await file.readAsBytes();
-        if (cancellation.isCancelled) throw const MediaUploadCancelled();
-        final processed = await processChatImage(source);
-        if (cancellation.isCancelled) throw const MediaUploadCancelled();
-        if (mounted) {
-          setState(() {
-            _imageTransfer = MediaTransferState(
-              phase: MediaTransferPhase.uploading,
-              totalBytes: processed.bytes.length,
-            );
-          });
-        }
-        final grant = await widget.coordinator.withAuthorizedToken(
-          (token) => _mediaApi.uploadChatImage(
-            origin: widget.coordinator.origin,
-            accessToken: token,
-            bytes: processed.bytes,
-            fileName: '${DateTime.now().microsecondsSinceEpoch}-$index.jpg',
-            cancellation: cancellation,
-            onProgress: (sent, total) {
-              if (!mounted || total <= 0) return;
-              final next = (sent / total).clamp(0.0, 1.0);
-              if ((next - _imageUploadProgress).abs() < 0.02 && next < 1) {
-                return;
-              }
-              setState(() {
-                _imageTransfer = MediaTransferState(
-                  phase: MediaTransferPhase.uploading,
-                  transferredBytes: sent,
-                  totalBytes: total,
-                );
-              });
-            },
-          ),
-        );
-        if (cancellation.isCancelled) throw const MediaUploadCancelled();
-        if (mounted) {
-          setState(() {
-            _imageTransfer = MediaTransferState(
-              phase: MediaTransferPhase.committing,
-              transferredBytes: processed.bytes.length,
-              totalBytes: processed.bytes.length,
-            );
-          });
-        }
-        await widget.coordinator.sendImage(
-          widget.conversation.id,
-          mediaId: grant.mediaId,
-          width: processed.width,
-          height: processed.height,
-          replyToMessageId: sentCount == 0 ? replyToMessageId : null,
-        );
-        sentCount++;
-        if (mounted) _scrollToBottom();
-      }
-      if (sentCount == 0 && mounted) _showImageError('没有可发送的图片。');
-      if (mounted) {
-        setState(() {
-          _imageTransfer = _imageTransfer.copyWith(
-            phase: MediaTransferPhase.done,
-          );
-        });
-      }
-    } on MediaUploadCancelled {
-      if (mounted) {
-        setState(() {
-          _imageTransfer = _imageTransfer.copyWith(
-            phase: MediaTransferPhase.canceled,
-          );
-        });
-        _showImageError('已取消图片发送。');
-      }
-    } on MessagingApiException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } on FormatException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } catch (_) {
-      if (mounted) _showImageError('图片发送失败，请稍后重试。');
-    } finally {
-      if (identical(_imageUploadCancellation, cancellation)) {
-        _imageUploadCancellation = null;
-      }
-      if (mounted) {
-        setState(() {
-          _imageSending = false;
-          _imageBatchCurrent = 0;
-          _imageBatchTotal = 0;
-          _imageTransfer = const MediaTransferState.queued();
-        });
-      }
     }
+  }
+
+  Future<void> _runImageUpload(
+    XFile file,
+    MediaTransferExecution task, {
+    String? replyToMessageId,
+  }) async {
+    final sourceLength = await file.length();
+    if (sourceLength <= 0) throw const FormatException('不能发送空图片。');
+    if (sourceLength > maxChatImageSourceBytes) {
+      throw FormatException(
+        '${file.name.isEmpty ? '图片' : file.name} 超过 96 MiB。',
+      );
+    }
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.preparing,
+        totalBytes: sourceLength,
+      ),
+    );
+    task.throwIfCancelled();
+    final source = await file.readAsBytes();
+    task.throwIfCancelled();
+    final processed = await processChatImage(source);
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.uploading,
+        totalBytes: processed.bytes.length,
+      ),
+    );
+    final grant = await widget.coordinator.withAuthorizedToken(
+      (token) => _mediaApi.uploadChatImage(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        bytes: processed.bytes,
+        fileName: '${DateTime.now().microsecondsSinceEpoch}.jpg',
+        cancellation: task.cancellation,
+        onProgress: (sent, total) {
+          if (total <= 0) return;
+          final current = _uploadTransfers.task(task.id)?.state.progress ?? 0;
+          final next = (sent / total).clamp(0.0, 1.0);
+          if ((next - current).abs() < 0.02 && next < 1) return;
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              transferredBytes: sent,
+              totalBytes: total,
+            ),
+          );
+        },
+      ),
+    );
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.committing,
+        transferredBytes: processed.bytes.length,
+        totalBytes: processed.bytes.length,
+      ),
+    );
+    await widget.coordinator.sendImage(
+      widget.conversation.id,
+      mediaId: grant.mediaId,
+      width: processed.width,
+      height: processed.height,
+      replyToMessageId: replyToMessageId,
+    );
+    if (mounted) _scrollToBottom();
   }
 
   Future<CustomStickerItem?> _pickAndCreateCustomSticker(
@@ -4226,7 +4172,7 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _sendVideo(XFile file) async {
-    if (_videoSending || !mounted) return;
+    if (!mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;
     if (sourceLength <= 0) {
@@ -4242,112 +4188,101 @@ class _TextChatPageState extends State<TextChatPage>
       _showImageError('当前只支持 MP4、WebM、MOV、MKV 视频。');
       return;
     }
-    final cancellation = MediaUploadCancellation();
-    _videoUploadCancellation = cancellation;
-    setState(() {
-      _videoSending = true;
-      _videoTransfer = MediaTransferState(
+    final replyToMessageId = _replyingTo?.id;
+    if (_replyingTo != null) setState(() => _replyingTo = null);
+    final taskId = _newUploadTaskId('video');
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.video,
+      label: file.name.isEmpty ? '视频' : file.name,
+      operation: (task) => _runVideoUpload(
+        file,
+        sourceLength,
+        mimeType,
+        task,
+        replyToMessageId: replyToMessageId,
+      ),
+    );
+  }
+
+  Future<void> _runVideoUpload(
+    XFile file,
+    int sourceLength,
+    String mimeType,
+    MediaTransferExecution task, {
+    String? replyToMessageId,
+  }) async {
+    task.update(
+      MediaTransferState(
         phase: MediaTransferPhase.preparing,
         totalBytes: sourceLength,
-      );
-    });
-    try {
-      final metadata = await const VideoMediaProbe().probeFile(file);
-      if (cancellation.isCancelled) throw const MediaUploadCancelled();
-      if (mounted) {
-        setState(() {
-          _videoTransfer = MediaTransferState(
-            phase: MediaTransferPhase.uploading,
-            totalBytes: sourceLength,
-          );
-        });
-      }
-
-      final primary = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadStream(
-          origin: widget.coordinator.origin,
-          accessToken: token,
-          streamFactory: file.openRead,
-          size: sourceLength,
-          fileName: file.name.isEmpty ? 'video.mp4' : file.name,
-          mimeType: mimeType,
-          purpose: 'CHAT_VIDEO',
-          cancellation: cancellation,
-          onProgress: (sent, total) {
-            if (!mounted || total <= 0) return;
-            final next = (sent / total).clamp(0.0, 1.0);
-            if ((next - _videoUploadProgress).abs() < 0.01 && next < 1) return;
-            setState(() {
-              _videoTransfer = MediaTransferState(
-                phase: MediaTransferPhase.uploading,
-                transferredBytes: sent,
-                totalBytes: total,
-              );
-            });
-          },
-        ),
-      );
-      if (cancellation.isCancelled) throw const MediaUploadCancelled();
-      if (mounted) {
-        setState(() {
-          _videoTransfer = MediaTransferState(
-            phase: MediaTransferPhase.committing,
-            transferredBytes: sourceLength,
-            totalBytes: sourceLength,
-          );
-        });
-      }
-
-      final poster = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadChatImage(
-          origin: widget.coordinator.origin,
-          accessToken: token,
-          bytes: metadata.posterJpeg,
-          fileName: 'video-poster-${DateTime.now().microsecondsSinceEpoch}.jpg',
-        ),
-      );
-      final replyToMessageId = _replyingTo?.id;
-      if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
-      await widget.coordinator.sendMedia(
-        widget.conversation.id,
-        type: 'VIDEO',
-        mediaId: primary.mediaId,
-        posterMediaId: poster.mediaId,
-        width: metadata.width,
-        height: metadata.height,
-        durationMs: metadata.durationMs,
-        fileName: file.name,
+      ),
+    );
+    final metadata = await const VideoMediaProbe().probeFile(file);
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.uploading,
+        totalBytes: sourceLength,
+      ),
+    );
+    final primary = await widget.coordinator.withAuthorizedToken(
+      (token) => _mediaApi.uploadStream(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        streamFactory: file.openRead,
+        size: sourceLength,
+        fileName: file.name.isEmpty ? 'video.mp4' : file.name,
         mimeType: mimeType,
-        sizeBytes: sourceLength,
-        replyToMessageId: replyToMessageId,
-      );
-      if (mounted) {
-        setState(() {
-          _videoTransfer = _videoTransfer.copyWith(
-            phase: MediaTransferPhase.done,
+        purpose: 'CHAT_VIDEO',
+        cancellation: task.cancellation,
+        onProgress: (sent, total) {
+          if (total <= 0) return;
+          final current = _uploadTransfers.task(task.id)?.state.progress ?? 0;
+          final next = (sent / total).clamp(0.0, 1.0);
+          if ((next - current).abs() < 0.01 && next < 1) return;
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              transferredBytes: sent,
+              totalBytes: total,
+            ),
           );
-        });
-        _scrollToBottom();
-      }
-    } on MediaUploadCancelled {
-      if (mounted) _showImageError('已取消视频发送。');
-    } on MessagingApiException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } on FormatException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } catch (_) {
-      if (mounted) _showImageError('视频发送失败，请确认文件可正常播放后重试。');
-    } finally {
-      if (identical(_videoUploadCancellation, cancellation)) {
-        _videoUploadCancellation = null;
-      }
-      if (mounted) {
-        setState(() {
-          _videoSending = false;
-          _videoTransfer = const MediaTransferState.queued();
-        });
-      }
-    }
+        },
+      ),
+    );
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.committing,
+        transferredBytes: sourceLength,
+        totalBytes: sourceLength,
+      ),
+    );
+    final poster = await widget.coordinator.withAuthorizedToken(
+      (token) => _mediaApi.uploadChatImage(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        bytes: metadata.posterJpeg,
+        fileName: 'video-poster-${DateTime.now().microsecondsSinceEpoch}.jpg',
+        cancellation: task.cancellation,
+      ),
+    );
+    task.throwIfCancelled();
+    await widget.coordinator.sendMedia(
+      widget.conversation.id,
+      type: 'VIDEO',
+      mediaId: primary.mediaId,
+      posterMediaId: poster.mediaId,
+      width: metadata.width,
+      height: metadata.height,
+      durationMs: metadata.durationMs,
+      fileName: file.name,
+      mimeType: mimeType,
+      sizeBytes: sourceLength,
+      replyToMessageId: replyToMessageId,
+    );
+    if (mounted) _scrollToBottom();
   }
 
   String? _videoMimeType(String name) {
@@ -4360,14 +4295,13 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _pickAndSendFile() async {
-    if (_fileSending) return;
     final file = await openFile();
     if (file == null || !mounted) return;
     await _sendFile(file);
   }
 
   Future<void> _sendFile(XFile file) async {
-    if (_fileSending || !mounted) return;
+    if (!mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;
     if (sourceLength <= 0) {
@@ -4378,92 +4312,84 @@ class _TextChatPageState extends State<TextChatPage>
       _showImageError('文件超过 2 GiB，当前实例拒绝上传。');
       return;
     }
-    final cancellation = MediaUploadCancellation();
-    _fileUploadCancellation = cancellation;
-    setState(() {
-      _fileSending = true;
-      _fileTransfer = MediaTransferState(
+    final replyToMessageId = _replyingTo?.id;
+    if (_replyingTo != null) setState(() => _replyingTo = null);
+    final mimeType = _fileMimeType(file.name);
+    final taskId = _newUploadTaskId('file');
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.file,
+      label: file.name.isEmpty ? '文件' : file.name,
+      operation: (task) => _runFileUpload(
+        file,
+        sourceLength,
+        mimeType,
+        task,
+        replyToMessageId: replyToMessageId,
+      ),
+    );
+  }
+
+  Future<void> _runFileUpload(
+    XFile file,
+    int sourceLength,
+    String mimeType,
+    MediaTransferExecution task, {
+    String? replyToMessageId,
+  }) async {
+    task.update(
+      MediaTransferState(
         phase: MediaTransferPhase.uploading,
         totalBytes: sourceLength,
-      );
-    });
-    try {
-      final mimeType = _fileMimeType(file.name);
-      final grant = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadStream(
-          origin: widget.coordinator.origin,
-          accessToken: token,
-          streamFactory: file.openRead,
-          size: sourceLength,
-          fileName: file.name.isEmpty ? 'file.bin' : file.name,
-          mimeType: mimeType,
-          purpose: 'CHAT_FILE',
-          cancellation: cancellation,
-          onProgress: (sent, total) {
-            if (!mounted || total <= 0) return;
-            final progress = sent / total;
-            if ((progress - _fileUploadProgress).abs() < 0.01 && progress < 1) {
-              return;
-            }
-            setState(() {
-              _fileTransfer = MediaTransferState(
-                phase: MediaTransferPhase.uploading,
-                transferredBytes: sent,
-                totalBytes: total,
-              );
-            });
-          },
-        ),
-      );
-      if (cancellation.isCancelled) throw const MediaUploadCancelled();
-      if (mounted) {
-        setState(() {
-          _fileTransfer = MediaTransferState(
-            phase: MediaTransferPhase.committing,
-            transferredBytes: sourceLength,
-            totalBytes: sourceLength,
-          );
-        });
-      }
-      final replyToMessageId = _replyingTo?.id;
-      if (_replyingTo != null && mounted) setState(() => _replyingTo = null);
-      await widget.coordinator.sendMedia(
-        widget.conversation.id,
-        type: 'FILE',
-        mediaId: grant.mediaId,
-        fileName: file.name,
+      ),
+    );
+    final grant = await widget.coordinator.withAuthorizedToken(
+      (token) => _mediaApi.uploadStream(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        streamFactory: file.openRead,
+        size: sourceLength,
+        fileName: file.name.isEmpty ? 'file.bin' : file.name,
         mimeType: mimeType,
-        sizeBytes: sourceLength,
-        replyToMessageId: replyToMessageId,
-      );
-      if (mounted) {
-        setState(() {
-          _fileTransfer = _fileTransfer.copyWith(
-            phase: MediaTransferPhase.done,
+        purpose: 'CHAT_FILE',
+        cancellation: task.cancellation,
+        onProgress: (sent, total) {
+          if (total <= 0) return;
+          final current = _uploadTransfers.task(task.id)?.state.progress ?? 0;
+          final next = (sent / total).clamp(0.0, 1.0);
+          if ((next - current).abs() < 0.01 && next < 1) return;
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              transferredBytes: sent,
+              totalBytes: total,
+            ),
           );
-        });
-        _scrollToBottom();
-      }
-    } on MediaUploadCancelled {
-      if (mounted) _showImageError('已取消文件上传。');
-    } on MessagingApiException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } on FormatException catch (error) {
-      if (mounted) _showImageError(error.message);
-    } catch (_) {
-      if (mounted) _showImageError('文件发送失败，请稍后重试。');
-    } finally {
-      if (identical(_fileUploadCancellation, cancellation)) {
-        _fileUploadCancellation = null;
-      }
-      if (mounted) {
-        setState(() {
-          _fileSending = false;
-          _fileTransfer = const MediaTransferState.queued();
-        });
-      }
-    }
+        },
+      ),
+    );
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.committing,
+        transferredBytes: sourceLength,
+        totalBytes: sourceLength,
+      ),
+    );
+    await widget.coordinator.sendMedia(
+      widget.conversation.id,
+      type: 'FILE',
+      mediaId: grant.mediaId,
+      fileName: file.name,
+      mimeType: mimeType,
+      sizeBytes: sourceLength,
+      replyToMessageId: replyToMessageId,
+    );
+    if (mounted) _scrollToBottom();
   }
+
+  String _newUploadTaskId(String prefix) =>
+      '$prefix-${DateTime.now().microsecondsSinceEpoch}-${_uploadTransfers.tasks.length}';
 
   String _fileMimeType(String name) {
     final lower = name.toLowerCase();
