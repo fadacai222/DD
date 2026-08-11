@@ -30,6 +30,7 @@ import '../application/media_transfer_controller.dart';
 import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
+import '../data/custom_sticker_processor.dart';
 import '../data/media_api_client.dart';
 import '../data/media_auto_download_store.dart';
 import '../data/media_download_grant_cache.dart';
@@ -5197,6 +5198,79 @@ class _AndroidKeyboardLiftState extends State<_AndroidKeyboardLift>
         offset: Offset(0, -_bottomInset),
         child: widget.child,
       ),
+    );
+  }
+}
+
+class _StickerTransferDialog extends StatelessWidget {
+  const _StickerTransferDialog({
+    required this.state,
+    required this.fileName,
+    required this.onCancel,
+  });
+
+  final ValueListenable<MediaTransferState> state;
+  final String fileName;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('正在添加表情'),
+      content: ValueListenableBuilder<MediaTransferState>(
+        valueListenable: state,
+        builder: (context, value, _) {
+          final progress = value.progress;
+          final phase = switch (value.phase) {
+            MediaTransferPhase.queued => '等待处理',
+            MediaTransferPhase.preparing => '正在压缩 / 检查',
+            MediaTransferPhase.uploading => '正在上传',
+            MediaTransferPhase.committing => '正在保存表情',
+            MediaTransferPhase.done => '已完成',
+            MediaTransferPhase.failed => '处理失败',
+            MediaTransferPhase.canceled => '已取消',
+          };
+          return SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 14),
+                LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 4,
+                  backgroundColor: DdColors.divider,
+                  color: DdColors.green,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  progress == null
+                      ? phase
+                      : '$phase · ${(progress * 100).round()}%',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: DdColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+      actions: [
+        TextButton(
+          key: const Key('cancel-custom-sticker-transfer'),
+          onPressed: onCancel,
+          child: const Text('取消'),
+        ),
+      ],
     );
   }
 }
