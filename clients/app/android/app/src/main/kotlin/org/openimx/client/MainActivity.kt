@@ -2,6 +2,7 @@ package org.openimx.client
 
 import android.Manifest
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -13,6 +14,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import android.util.Rational
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -60,7 +62,42 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dd/picture_in_picture")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isSupported" -> result.success(isPictureInPictureSupported())
+                    "enter" -> {
+                        if (!isPictureInPictureSupported()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val width = (call.argument<Int>("width") ?: 16).coerceAtLeast(1)
+                        val height = (call.argument<Int>("height") ?: 9).coerceAtLeast(1)
+                        try {
+                            val params = PictureInPictureParams.Builder()
+                                .setAspectRatio(Rational(width, height))
+                                .build()
+                            result.success(enterPictureInPictureMode(params))
+                        } catch (error: Throwable) {
+                            result.error(
+                                "PIP_FAILED",
+                                error.message ?: "进入画中画失败。",
+                                null,
+                            )
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
+
+    private fun isPictureInPictureSupported(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
     private fun capturePhoto(result: MethodChannel.Result) {
         if (pendingCameraResult != null) {

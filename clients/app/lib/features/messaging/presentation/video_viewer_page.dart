@@ -10,6 +10,7 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/media/media_cache_lease_registry.dart';
 import '../../../core/media/media_export_service.dart';
 import '../../../core/media/remote_media_action_service.dart';
+import '../../../core/window/picture_in_picture_service.dart';
 
 class VideoViewerPage extends StatefulWidget {
   const VideoViewerPage({
@@ -64,6 +65,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
   bool _controlsVisible = true;
   bool _fullscreen = false;
   bool _muted = false;
+  bool _systemPipSupported = false;
   double _volume = 100;
   double _rate = 1;
   double _saveProgress = 0;
@@ -137,6 +139,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
     });
     unawaited(_open());
     unawaited(_warmCache());
+    unawaited(_loadSystemPipSupport());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _keyboardFocus.requestFocus();
     });
@@ -314,7 +317,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (widget.onPictureInPicture != null) ...[
+                if (widget.onPictureInPicture != null || _systemPipSupported) ...[
                   _roundButton(
                     key: const Key('video-viewer-pip'),
                     tooltip: '悬浮小窗',
@@ -557,11 +560,22 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
     }
   }
 
+  Future<void> _loadSystemPipSupport() async {
+    final supported = await PictureInPictureService.shared.isSupported();
+    if (mounted) setState(() => _systemPipSupported = supported);
+  }
+
   Future<void> _openPictureInPicture() async {
     final callback = widget.onPictureInPicture;
-    if (callback == null) return;
     try {
-      await callback(_position, _playing);
+      if (callback != null) {
+        await callback(_position, _playing);
+        return;
+      }
+      if (_systemPipSupported) {
+        final entered = await PictureInPictureService.shared.enter();
+        if (!entered && mounted) _show('系统拒绝进入画中画。');
+      }
     } catch (_) {
       if (mounted) _show('悬浮小窗启动失败。');
     }

@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../../data/avatar_memory_cache.dart';
+
 class ProfileAvatar extends StatefulWidget {
   const ProfileAvatar({
     super.key,
@@ -23,12 +25,15 @@ class ProfileAvatar extends StatefulWidget {
   final int revision;
   final Color? fallbackColor;
 
-  static final Map<String, Future<Uint8List?>> _cache = {};
+  static final AvatarMemoryCache _memoryCache = AvatarMemoryCache();
+  static final Map<String, Future<Uint8List?>> _inFlight =
+      <String, Future<Uint8List?>>{};
   static final http.Client _httpClient = http.Client();
 
   static void evict(Uri origin, String userId) {
     final prefix = '${origin.origin}|$userId|';
-    _cache.removeWhere((key, _) => key.startsWith(prefix));
+    _memoryCache.removeWhere((key) => key.startsWith(prefix));
+    _inFlight.removeWhere((key, _) => key.startsWith(prefix));
   }
 
   static Future<Uint8List?> _resolveBytes({
@@ -38,23 +43,47 @@ class ProfileAvatar extends StatefulWidget {
     required int revision,
   }) {
     final cacheKey = '${origin.origin}|$userId|$revision';
-    return _cache.putIfAbsent(cacheKey, () async {
-      try {
-        final response = await _httpClient.get(
-          origin.resolve('/api/v1/avatars/$userId'),
-          headers: {
-            'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
-            'Authorization': 'Bearer $accessToken',
-          },
-        );
-        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-          return null;
-        }
-        return response.bodyBytes;
-      } catch (_) {
+    final cached = _memoryCache.get(cacheKey);
+    if (cached != null) return Future<Uint8List?>.value(cached);
+    final active = _inFlight[cacheKey];
+    if (active != null) return active;
+    final future = _loadBytes(
+      origin: origin,
+      accessToken: accessToken,
+      userId: userId,
+    );
+    _inFlight[cacheKey] = future;
+    future.then((bytes) {
+      _inFlight.remove(cacheKey);
+      if (bytes != null && bytes.isNotEmpty) {
+        _memoryCache.put(cacheKey, bytes);
+      }
+    }, onError: (_) {
+      _inFlight.remove(cacheKey);
+    });
+    return future;
+  }
+
+  static Future<Uint8List?> _loadBytes({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+  }) async {
+    try {
+      final response = await _httpClient.get(
+        origin.resolve('/api/v1/avatars/$userId'),
+        headers: {
+          'Accept': 'image/avif,image/webp,image/png,image/jpeg,*/*',
+          'Authorization': 'Bearer $accessToken',
+        },
+      );
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
         return null;
       }
-    });
+      return Uint8List.fromList(response.bodyBytes);
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
