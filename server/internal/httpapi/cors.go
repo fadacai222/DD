@@ -18,7 +18,7 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 			response.Header().Set("Access-Control-Allow-Origin", origin)
 			response.Header().Set("Access-Control-Allow-Credentials", "true")
 			response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			response.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			response.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DD-Admin-CSRF")
 			response.Header().Set("Access-Control-Max-Age", "600")
 			response.Header().Add("Vary", "Origin")
 			if request.Method == http.MethodOptions {

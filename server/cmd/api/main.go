@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"example.com/selfhosted-im/server/internal/admin"
 	"example.com/selfhosted-im/server/internal/auth/account"
 	"example.com/selfhosted-im/server/internal/auth/emailcode"
 	"example.com/selfhosted-im/server/internal/auth/password"
@@ -47,6 +48,7 @@ func main() {
 
 	readinessChecks := make(map[string]httpapi.ReadinessCheck)
 	var authService httpapi.AuthService
+	var adminService httpapi.AdminService
 	var contactsService httpapi.ContactsService
 	var groupsService httpapi.GroupsService
 	var callsService httpapi.CallsService
@@ -100,6 +102,11 @@ func main() {
 		if accountErr != nil {
 			err = accountErr
 			logger.Error("authentication service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		adminService, err = admin.NewService(admin.Config{Pool: pool, Hasher: hasher, Secret: config.AuthTokenSecret})
+		if err != nil {
+			logger.Error("admin service initialization failed", "error", err)
 			os.Exit(2)
 		}
 		contactsService, err = contacts.NewService(contacts.Config{Pool: pool})
@@ -214,6 +221,7 @@ func main() {
 			LiveKitAPISecret:   config.LiveKitAPISecret,
 			ReadinessChecks:    readinessChecks,
 			AuthService:        authService,
+			AdminService:       adminService,
 			ContactsService:    contactsService,
 			GroupsService:      groupsService,
 			CallsService:       callsService,

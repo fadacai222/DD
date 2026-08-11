@@ -66,6 +66,14 @@
     {
       "name": "QR",
       "description": "Instance-bound user/group QR payloads and one-time confirmed QR login sessions."
+    },
+    {
+      "name": "Governance",
+      "description": "User-created abuse reports and administrator governance workflows."
+    },
+    {
+      "name": "Admin",
+      "description": "Independent administrator authentication, MFA, sessions, RBAC and security audit."
     }
   ],
   "paths": {
@@ -2047,6 +2055,67 @@
           }
         }
       }
+    },
+    "/api/v1/reports": {
+      "post": {"operationId":"createUserReport","summary":"Create an abuse report","tags":["Governance"],"security":[{"bearerAuth":[]}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateUserReportRequest"}}}},"responses":{"201":{"description":"Report created","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"409":{"$ref":"#/components/responses/Conflict"},"429":{"$ref":"#/components/responses/TooManyRequests"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/reports/{reportId}": {
+      "parameters":[{"$ref":"#/components/parameters/ReportId"}],
+      "get":{"operationId":"getOwnUserReport","summary":"Get a report created by the current user","tags":["Governance"],"security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Report","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/NotFound"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/auth/login": {
+      "post":{"operationId":"adminLogin","summary":"Verify administrator password and create an MFA challenge","tags":["Admin"],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminLoginRequest"}}}},"responses":{"200":{"description":"MFA challenge","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/TooManyRequests"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/auth/mfa/enroll": {
+      "post":{"operationId":"adminBeginMFAEnrollment","summary":"Start administrator TOTP enrollment","tags":["Admin"],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminChallengeRequest"}}}},"responses":{"200":{"description":"TOTP enrollment secret","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/auth/mfa/enroll/verify": {
+      "post":{"operationId":"adminVerifyMFAEnrollment","summary":"Verify TOTP enrollment and create an administrator session","tags":["Admin"],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminMFAVerifyRequest"}}}},"responses":{"200":{"description":"Administrator session and one-time recovery codes","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/auth/mfa/verify": {
+      "post":{"operationId":"adminVerifyMFA","summary":"Verify administrator TOTP or recovery code","tags":["Admin"],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminMFAVerifyRequest"}}}},"responses":{"200":{"description":"Administrator session","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/auth/logout": {
+      "post":{"operationId":"adminLogout","summary":"Revoke the current administrator session","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"responses":{"200":{"description":"Session revoked","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/session": {
+      "get":{"operationId":"getAdminSession","summary":"Restore the current administrator session","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Current administrator session","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/sessions": {
+      "get":{"operationId":"listAdminSessions","summary":"List administrator sessions for the current identity","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Administrator sessions","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/sessions/{sessionId}": {
+      "parameters":[{"$ref":"#/components/parameters/AdminSessionId"}],
+      "delete":{"operationId":"revokeAdminSession","summary":"Revoke an administrator session","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"responses":{"200":{"description":"Session revoked","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/mfa/recovery/regenerate": {
+      "post":{"operationId":"regenerateAdminRecoveryCodes","summary":"Replace administrator recovery codes after fresh TOTP verification","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminRecoveryRegenerateRequest"}}}},"responses":{"200":{"description":"New one-time recovery codes","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/reports": {
+      "get":{"operationId":"listAdminReports","summary":"List the administrator report queue","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"name":"status","in":"query","required":false,"schema":{"type":"string","enum":["PENDING","IN_REVIEW","RESOLVED","DISMISSED"]}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Report queue","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/reports/{reportId}": {
+      "parameters":[{"$ref":"#/components/parameters/ReportId"}],
+      "get":{"operationId":"getAdminReport","summary":"Get a report for governance review","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Report","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/NotFound"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}},
+      "patch":{"operationId":"updateAdminReport","summary":"Transition a report with an audited reason","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminReportUpdateRequest"}}}},"responses":{"200":{"description":"Updated report","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/users": {
+      "get":{"operationId":"listGovernedUsers","summary":"List users for governance review","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"name":"q","in":"query","required":false,"schema":{"type":"string","maxLength":100}},{"name":"status","in":"query","required":false,"schema":{"type":"string","enum":["ACTIVE","SUSPENDED","DELETING","DELETED"]}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Users","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/users/{userId}": {
+      "parameters":[{"$ref":"#/components/parameters/UserId"}],
+      "get":{"operationId":"getGovernedUser","summary":"Get a user for governance review","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"User","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/NotFound"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/users/{userId}/suspend": {
+      "parameters":[{"$ref":"#/components/parameters/UserId"}],
+      "post":{"operationId":"suspendGovernedUser","summary":"Suspend a user and revoke existing user sessions","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminReasonRequest"}}}},"responses":{"200":{"description":"User suspended","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/users/{userId}/unsuspend": {
+      "parameters":[{"$ref":"#/components/parameters/UserId"}],
+      "post":{"operationId":"unsuspendGovernedUser","summary":"Unsuspend a user without restoring revoked sessions","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminReasonRequest"}}}},"responses":{"200":{"description":"User unsuspended","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/audit": {
+      "get":{"operationId":"listAdminAuditEvents","summary":"List persistent administrator security audit events","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Administrator audit events","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     }
   },
   "components": {
@@ -2063,7 +2132,10 @@
       "ConversationId": {"name": "conversationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "MessageId": {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "UploadId": {"name": "uploadId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-      "MediaId": {"name": "mediaId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      "MediaId": {"name": "mediaId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "ReportId": {"name": "reportId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "AdminSessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "AdminCSRF": {"name": "X-DD-Admin-CSRF", "in": "header", "required": true, "description": "CSRF token returned by the current administrator session response.", "schema": {"type": "string", "minLength": 32}}
     },
     "headers": {
       "RequestId": {
@@ -2077,28 +2149,62 @@
     "responses": {
       "MethodNotAllowed": {
         "description": "HTTP method is not supported for this resource",
-        "headers": {
-          "X-Request-ID": {
-            "$ref": "#/components/headers/RequestId"
-          }
-        },
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/ErrorResponse"
-            }
-          }
-        }
-      }
+        "headers": {"X-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+      },
+      "BadRequest": {"description":"Request validation failed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+      "Unauthorized": {"description":"Authentication or administrator challenge is invalid or expired","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+      "Forbidden": {"description":"The authenticated identity lacks permission for this operation","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+      "NotFound": {"description":"Requested resource was not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+      "Conflict": {"description":"Requested state transition conflicts with current state","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+      "TooManyRequests": {"description":"Rate limit exceeded","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}
     },
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT"
+      },
+      "adminSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "dd_admin_session",
+        "description": "Opaque administrator session cookie. Ordinary DD bearer tokens are never accepted as administrator credentials."
       }
     },
     "schemas": {
+      "AdminGenericResponse": {
+        "type":"object","additionalProperties":false,"required":["data","requestId"],
+        "properties":{"data":{"type":"object","additionalProperties":true},"requestId":{"$ref":"#/components/schemas/RequestIdValue"}}
+      },
+      "CreateUserReportRequest": {
+        "type":"object","additionalProperties":false,"required":["targetUserId","category","reason"],
+        "properties":{"targetUserId":{"type":"string","format":"uuid"},"category":{"type":"string","enum":["SPAM","HARASSMENT","IMPERSONATION","SCAM","OTHER"]},"reason":{"type":"string","minLength":3,"maxLength":1000}}
+      },
+      "AdminLoginRequest": {
+        "type":"object","additionalProperties":false,"required":["email","password"],
+        "properties":{"email":{"type":"string","format":"email","maxLength":254},"password":{"type":"string","minLength":1,"maxLength":1024,"writeOnly":true}}
+      },
+      "AdminChallengeRequest": {
+        "type":"object","additionalProperties":false,"required":["challengeToken"],
+        "properties":{"challengeToken":{"type":"string","pattern":"^ddc_[A-Za-z0-9_-]{43}$","writeOnly":true}}
+      },
+      "AdminMFAVerifyRequest": {
+        "type":"object","additionalProperties":false,"required":["challengeToken"],
+        "properties":{"challengeToken":{"type":"string","pattern":"^ddc_[A-Za-z0-9_-]{43}$","writeOnly":true},"code":{"type":"string","pattern":"^[0-9]{6}$","writeOnly":true},"recoveryCode":{"type":"string","minLength":8,"maxLength":32,"writeOnly":true}}
+      },
+      "AdminRecoveryRegenerateRequest": {
+        "type":"object","additionalProperties":false,"required":["code"],
+        "properties":{"code":{"type":"string","pattern":"^[0-9]{6}$","writeOnly":true}}
+      },
+      "AdminReportUpdateRequest": {
+        "type":"object","additionalProperties":false,"required":["status","reason"],
+        "properties":{"status":{"type":"string","enum":["IN_REVIEW","RESOLVED","DISMISSED"]},"reason":{"type":"string","minLength":3,"maxLength":1000}}
+      },
+      "AdminReasonRequest": {
+        "type":"object","additionalProperties":false,"required":["reason"],
+        "properties":{"reason":{"type":"string","minLength":3,"maxLength":1000}}
+      },
       "CreateMediaUploadRequest": {
         "type": "object",
         "additionalProperties": false,

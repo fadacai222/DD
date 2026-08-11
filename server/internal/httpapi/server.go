@@ -48,6 +48,7 @@ type Config struct {
 	CallRingTimeout    time.Duration
 	ReadinessChecks    map[string]ReadinessCheck
 	AuthService        AuthService
+	AdminService       AdminService
 	ContactsService    ContactsService
 	GroupsService      GroupsService
 	CallsService       CallsService
@@ -80,6 +81,7 @@ type server struct {
 	logger               *slog.Logger
 	readinessChecks      map[string]ReadinessCheck
 	auth                 AuthService
+	admin                AdminService
 	contacts             ContactsService
 	groups               GroupsService
 	formalCalls          CallsService
@@ -150,6 +152,7 @@ func NewHandler(config Config) http.Handler {
 		logger:             logger,
 		readinessChecks:    copyReadinessChecks(config.ReadinessChecks),
 		auth:               config.AuthService,
+		admin:              config.AdminService,
 		contacts:           config.ContactsService,
 		groups:             config.GroupsService,
 		formalCalls:        config.CallsService,
@@ -189,6 +192,22 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/auth/password/reset/send-code", s.handlePasswordResetCode)
 	mux.HandleFunc("/api/v1/auth/password/reset", s.handlePasswordReset)
 	mux.HandleFunc("/api/v1/auth/logout-all", s.handleLogoutAll)
+	mux.HandleFunc("/api/v1/reports", s.handleReports)
+	mux.HandleFunc("/api/v1/reports/", s.handleReportByID)
+	mux.HandleFunc("/api/v1/admin/auth/login", s.handleAdminLogin)
+	mux.HandleFunc("/api/v1/admin/auth/mfa/enroll", s.handleAdminMFAEnroll)
+	mux.HandleFunc("/api/v1/admin/auth/mfa/enroll/verify", s.handleAdminMFAEnrollVerify)
+	mux.HandleFunc("/api/v1/admin/auth/mfa/verify", s.handleAdminMFAVerify)
+	mux.HandleFunc("/api/v1/admin/auth/logout", s.handleAdminLogout)
+	mux.HandleFunc("/api/v1/admin/session", s.handleAdminSession)
+	mux.HandleFunc("/api/v1/admin/sessions", s.handleAdminSessions)
+	mux.HandleFunc("/api/v1/admin/sessions/", s.handleAdminSessionByID)
+	mux.HandleFunc("/api/v1/admin/mfa/recovery/regenerate", s.handleAdminRecoveryRegenerate)
+	mux.HandleFunc("/api/v1/admin/reports", s.handleAdminReports)
+	mux.HandleFunc("/api/v1/admin/reports/", s.handleAdminReportByID)
+	mux.HandleFunc("/api/v1/admin/users", s.handleAdminUsers)
+	mux.HandleFunc("/api/v1/admin/users/", s.handleAdminUserByID)
+	mux.HandleFunc("/api/v1/admin/audit", s.handleAdminAudit)
 	mux.HandleFunc("/api/v1/me", s.handleMe)
 	mux.HandleFunc("/api/v1/me/email/send-code", s.handleMeEmailChangeCode)
 	mux.HandleFunc("/api/v1/me/email", s.handleMeEmail)
