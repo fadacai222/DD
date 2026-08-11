@@ -6,6 +6,13 @@ import 'package:http/http.dart' as http;
 import '../../../core/media/media_cache_lease_registry.dart';
 import 'media_api_client.dart';
 
+final class ResumableDownloadHttpException extends HttpException {
+  ResumableDownloadHttpException(this.statusCode, Uri uri)
+    : super('媒体下载失败（HTTP $statusCode）。', uri: uri);
+
+  final int statusCode;
+}
+
 final class ResumableDownloadResult {
   const ResumableDownloadResult({
     required this.path,
@@ -87,7 +94,9 @@ final class ResumableMediaDownloader {
     StackTrace? lastStackTrace;
     var initialResumedBytes = await _safeLength(part);
     if (cancellation?.isCancelled == true) {
-      await _deleteIfExists(part);
+      if (cancellation?.preservePartialOnCancel != true) {
+        await _deleteIfExists(part);
+      }
       throw const MediaDownloadCancelled();
     }
 
@@ -125,10 +134,7 @@ final class ResumableMediaDownloader {
 
         if (response.statusCode != HttpStatus.ok &&
             response.statusCode != HttpStatus.partialContent) {
-          throw HttpException(
-            '媒体下载失败（HTTP ${response.statusCode}）。',
-            uri: url,
-          );
+          throw ResumableDownloadHttpException(response.statusCode, url);
         }
 
         var append = existingBytes > 0 &&
@@ -187,13 +193,17 @@ final class ResumableMediaDownloader {
           resumedBytes: initialResumedBytes,
         );
       } on MediaDownloadCancelled {
-        await _deleteIfExists(part);
+        if (cancellation?.preservePartialOnCancel != true) {
+          await _deleteIfExists(part);
+        }
         rethrow;
       } catch (error, stackTrace) {
         lastError = error;
         lastStackTrace = stackTrace;
         if (cancellation?.isCancelled == true) {
-          await _deleteIfExists(part);
+          if (cancellation?.preservePartialOnCancel != true) {
+            await _deleteIfExists(part);
+          }
           throw const MediaDownloadCancelled();
         }
         if (attempt + 1 >= maximumAttempts) break;

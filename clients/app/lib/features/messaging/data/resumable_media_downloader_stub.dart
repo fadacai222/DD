@@ -2,6 +2,12 @@ import 'package:http/http.dart' as http;
 
 import 'media_api_client.dart';
 
+final class ResumableDownloadHttpException implements Exception {
+  const ResumableDownloadHttpException(this.statusCode, Uri uri);
+
+  final int statusCode;
+}
+
 final class ResumableDownloadResult {
   const ResumableDownloadResult({
     required this.path,

@@ -4,9 +4,12 @@ import 'package:flutter/foundation.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
 import '../../../core/logging/client_log.dart';
+import '../data/media_api_client.dart';
+import '../data/media_transfer_history_store.dart';
 import '../data/messaging_api_client.dart';
 import '../data/messaging_local_store.dart';
 import '../domain/messaging_models.dart';
+import 'media_transfer_controller.dart';
 
 final class MessagingCoordinator extends ChangeNotifier {
   MessagingCoordinator({
@@ -17,12 +20,20 @@ final class MessagingCoordinator extends ChangeNotifier {
     MessagingGateway? gateway,
     MessagingLocalStore? localStore,
     RealtimeClient? realtimeClient,
+    MediaTransferController? mediaTransfers,
     this.onUnauthorized,
   }) : _gateway = gateway ?? MessagingApiClient(),
        _ownsGateway = gateway == null,
        _localStore =
            localStore ??
            SecureMessagingLocalStore(userId: currentUserId, deviceId: deviceId),
+       _mediaTransfers = mediaTransfers ??
+           MediaTransferController(
+             maxConcurrent: 3,
+             historyStore: MediaTransferHistoryStore(userId: currentUserId),
+           ),
+       _ownsMediaTransfers = mediaTransfers == null,
+       _transferMediaApi = MediaApiClient(),
        _realtime =
            realtimeClient ??
            RealtimeClient(
@@ -41,6 +52,9 @@ final class MessagingCoordinator extends ChangeNotifier {
   final MessagingGateway _gateway;
   final bool _ownsGateway;
   final MessagingLocalStore _localStore;
+  final MediaTransferController _mediaTransfers;
+  final bool _ownsMediaTransfers;
+  final MediaApiClient _transferMediaApi;
   final RealtimeClient _realtime;
   final bool _ownsRealtime;
   final Future<String?> Function()? onUnauthorized;
@@ -83,6 +97,8 @@ final class MessagingCoordinator extends ChangeNotifier {
     (total, conversation) => total + conversation.unreadCount,
   );
   String? get activeConversationId => _activeConversationId;
+  MediaTransferController get mediaTransfers => _mediaTransfers;
+  MediaApiClient get transferMediaApi => _transferMediaApi;
 
   Future<void> updateAccessToken(String nextToken) async {
     final normalized = nextToken.trim();
@@ -218,6 +234,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     if (_disposed) return;
     _setBusy(true);
     try {
+      await _mediaTransfers.restoreHistory();
       final local = await _localStore.load();
       _syncCursor = local.syncCursor;
       _pending = local.pending;
@@ -1087,6 +1104,8 @@ final class MessagingCoordinator extends ChangeNotifier {
     unawaited(_incomingMessageController.close());
     unawaited(_relationshipController.close());
     if (_ownsRealtime) unawaited(_realtime.dispose());
+    if (_ownsMediaTransfers) _mediaTransfers.dispose();
+    _transferMediaApi.close();
     if (_ownsGateway) _gateway.close();
     super.dispose();
   }

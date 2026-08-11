@@ -7,6 +7,7 @@ Future<({Uri? uri, int? statusCode})> cacheVideoFromUrl(
   String cacheKey,
   Uri url, {
   required int expectedSizeBytes,
+  Object? cancellation,
   void Function(int receivedBytes, int? totalBytes)? onProgress,
 }) async => (uri: null, statusCode: null);
 

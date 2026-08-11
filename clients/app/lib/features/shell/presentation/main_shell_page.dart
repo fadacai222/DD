@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../../../core/media/avatar_crop_page.dart';
 import '../../../core/media/avatar_image_processor.dart';
 import '../../../core/media/image_viewer_page.dart';
+import '../../../core/media/media_cache_budget.dart';
 import '../../../core/notifications/app_notification_service.dart';
 import '../../../core/sound/app_sound_service.dart';
 import '../../../core/widgets/dd_floating_navigation_bar.dart';
@@ -92,6 +93,7 @@ class _MainShellPageState extends State<MainShellPage>
       deviceId: widget.session.device.id,
       onUnauthorized: widget.onRefreshSession,
     );
+    unawaited(MediaCacheBudgetStore.shared(widget.session.user.id).load());
     _notificationService = AppNotificationService.shared;
     unawaited(_notificationService.initialize(requestPermission: false));
     _incomingMessageSubscription = _messagingCoordinator.incomingMessages
@@ -921,6 +923,7 @@ class _MainShellPageState extends State<MainShellPage>
           gateway: widget.authGateway,
           origin: widget.origin,
           session: widget.session,
+          messagingCoordinator: _messagingCoordinator,
         ),
       ),
     );

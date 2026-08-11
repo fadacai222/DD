@@ -7,9 +7,11 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/notifications/app_notification_service.dart';
 import '../../../core/theme/app_theme_mode_store.dart';
 import '../../../theme/app_theme.dart';
+import '../../messaging/application/messaging_coordinator.dart';
 import '../../messaging/data/chat_appearance_store.dart';
 import '../../messaging/presentation/chat_background_settings_page.dart';
 import '../../messaging/presentation/media_storage_settings_page.dart';
+import '../../messaging/presentation/transfer_center_page.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
@@ -20,11 +22,13 @@ class AccountManagementPage extends StatefulWidget {
     required this.gateway,
     required this.origin,
     required this.session,
+    this.messagingCoordinator,
   });
 
   final AuthGateway gateway;
   final Uri origin;
   final AuthSession session;
+  final MessagingCoordinator? messagingCoordinator;
 
   @override
   State<AccountManagementPage> createState() => _AccountManagementPageState();
@@ -159,6 +163,10 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         _chatBackgroundRow(),
         const Divider(height: 1),
         _mediaStorageRow(),
+        if (widget.messagingCoordinator != null) ...[
+          const Divider(height: 1),
+          _transferCenterRow(),
+        ],
         const SizedBox(height: 18),
         _sectionTitle('隐私'),
         _privacySettings(),
@@ -204,6 +212,10 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         _chatBackgroundRow(),
         const Divider(height: 1),
         _mediaStorageRow(),
+        if (widget.messagingCoordinator != null) ...[
+          const Divider(height: 1),
+          _transferCenterRow(),
+        ],
         const Divider(height: 1),
         _privacySettings(),
       ],
@@ -343,6 +355,39 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => MediaStorageSettingsPage(userId: widget.session.user.id),
+      ),
+    );
+  }
+
+  Widget _transferCenterRow() => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      key: const Key('settings-transfer-center'),
+      borderRadius: BorderRadius.circular(DdRadii.surface),
+      onTap: _openTransferCenter,
+      child: const _SettingLine(
+        title: '传输中心',
+        subtitle: '上传、下载、暂停、重试与历史记录',
+        leading: Icon(
+          Icons.swap_vert_circle_outlined,
+          size: 20,
+          color: DdColors.textSecondary,
+        ),
+        trailing: Icon(
+          Icons.chevron_right_rounded,
+          size: 19,
+          color: DdColors.textTertiary,
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _openTransferCenter() async {
+    final coordinator = widget.messagingCoordinator;
+    if (coordinator == null) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => TransferCenterPage(controller: coordinator.mediaTransfers),
       ),
     );
   }

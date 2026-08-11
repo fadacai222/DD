@@ -146,11 +146,7 @@ class _TextChatPageState extends State<TextChatPage>
       RemoteMediaActionService();
   Timer? _draftSaveTimer;
   late final MediaTransferController _uploadTransfers;
-  bool _gifSending = false;
   bool _stickerSending = false;
-  final Map<String, double> _fileDownloadProgress = {};
-  final Map<String, MediaDownloadCancellation> _fileDownloadCancellations = {};
-
 
   bool _voiceMode = false;
   bool _voiceRecording = false;
@@ -201,7 +197,7 @@ class _TextChatPageState extends State<TextChatPage>
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
-    _uploadTransfers = MediaTransferController(maxConcurrent: 3);
+    _uploadTransfers = widget.coordinator.mediaTransfers;
     _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     _ownsGroupCallGateway = widget.groupCallGateway == null;
     _groupCallGateway = widget.groupCallGateway ?? GroupCallApiClient();
@@ -333,7 +329,6 @@ class _TextChatPageState extends State<TextChatPage>
     _scrollController.dispose();
     _mediaPreferencesStore.removeListener(_onMediaPreferencesChanged);
     _groupCallRefreshTimer?.cancel();
-    _uploadTransfers.dispose();
     if (_ownsGroupCallGateway) _groupCallGateway.close();
     _mediaApi.close();
     _contactsApi.close();
@@ -1517,49 +1512,60 @@ class _TextChatPageState extends State<TextChatPage>
     final name = (content.fileName ?? '').trim().isEmpty
         ? '文件'
         : content.fileName!.trim();
-    final downloading = _fileDownloadCancellations.containsKey(message.id);
-    final progress = _fileDownloadProgress[message.id] ?? 0;
-    return InkWell(
-      borderRadius: BorderRadius.circular(DdRadii.control),
-      onTap: downloading
-          ? () => _fileDownloadCancellations[message.id]?.cancel()
-          : () => unawaited(_showFileActions(message)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.insert_drive_file_outlined, size: 32),
-            const SizedBox(width: 9),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  if (downloading)
-                    Text(
-                      progress > 0
-                          ? '下载 ${(progress * 100).round()}% · 点击取消'
-                          : '准备下载… · 点击取消',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: DdColors.textSecondary,
-                      ),
-                    )
-                  else if (content.sizeBytes != null)
-                    Text(
-                      _formatBytes(content.sizeBytes!),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: DdColors.textSecondary,
-                      ),
-                    ),
-                ],
-              ),
+    return AnimatedBuilder(
+      animation: _uploadTransfers,
+      builder: (context, _) {
+        final task = _uploadTransfers.task(_fileDownloadTaskId(message.id));
+        final transferring = task?.isActive == true;
+        final paused = task?.isPaused == true;
+        final progress = task?.state.progress;
+        return InkWell(
+          borderRadius: BorderRadius.circular(DdRadii.control),
+          onTap: transferring
+              ? () => _uploadTransfers.pause(task!.id)
+              : paused
+              ? () => _uploadTransfers.resume(task!.id)
+              : () => unawaited(_showFileActions(message)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.insert_drive_file_outlined, size: 32),
+                const SizedBox(width: 9),
+                Flexible(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      if (transferring || paused)
+                        Text(
+                          paused
+                              ? '已暂停 · 点击继续'
+                              : progress == null
+                              ? '准备下载… · 点击暂停'
+                              : '下载 ${(progress * 100).round()}% · 点击暂停',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: DdColors.textSecondary,
+                          ),
+                        )
+                      else if (content.sizeBytes != null)
+                        Text(
+                          _formatBytes(content.sizeBytes!),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: DdColors.textSecondary,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -1640,61 +1646,99 @@ class _TextChatPageState extends State<TextChatPage>
     final content = message.content;
     final mediaId = content?.mediaId?.trim() ?? '';
     if (content == null || mediaId.isEmpty) return;
+    final taskId = _fileDownloadTaskId(message.id);
+    final existing = _uploadTransfers.task(taskId);
+    if (existing?.isActive == true) return;
+    if (existing?.isPaused == true) {
+      _uploadTransfers.resume(taskId);
+      return;
+    }
+    if (existing?.canRetry == true) {
+      _uploadTransfers.retry(taskId);
+      return;
+    }
+    if (existing?.state.phase == MediaTransferPhase.done) {
+      await existing?.saveAction?.call();
+      return;
+    }
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'download.bin'
+        : content.fileName!.trim();
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.file,
+      direction: MediaTransferDirection.download,
+      label: fileName,
+      conversationId: widget.conversation.id,
+      openAction: () => _openMediaFile(message),
+      saveAction: () async {
+        await _performSaveMediaFile(message);
+      },
+      shareAction: () => _shareMediaFile(message),
+      operation: (task) async {
+        final cancellation = MediaDownloadCancellation();
+        task.setAbortHandler(() {
+          cancellation.preservePartialOnCancel = task.pauseRequested;
+          cancellation.cancel();
+        });
+        task.update(
+          MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            totalBytes: content.sizeBytes,
+          ),
+        );
+        final result = await _performSaveMediaFile(
+          message,
+          cancellation: cancellation,
+          onProgress: (received, total) {
+            task.update(
+              MediaTransferState(
+                phase: MediaTransferPhase.uploading,
+                transferredBytes: received,
+                totalBytes: total ?? content.sizeBytes,
+              ),
+            );
+          },
+        );
+        if (cancellation.isCancelled) throw const MediaDownloadCancelled();
+        if (mounted) _showImageError(result);
+      },
+    );
+  }
+
+  Future<String> _performSaveMediaFile(
+    ChatMessage message, {
+    MediaDownloadCancellation? cancellation,
+    void Function(int received, int? total)? onProgress,
+  }) async {
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (content == null || mediaId.isEmpty) {
+      throw const FormatException('文件媒体信息无效。');
+    }
     final fileName = (content.fileName ?? '').trim().isEmpty
         ? 'download.bin'
         : content.fileName!.trim();
     final mimeType = (content.mimeType ?? '').trim().isEmpty
         ? 'application/octet-stream'
         : content.mimeType!.trim();
-    final cancellation = MediaDownloadCancellation();
-    final trackProgress = !kIsWeb;
-    if (trackProgress) {
-      setState(() {
-        _fileDownloadCancellations[message.id] = cancellation;
-        _fileDownloadProgress[message.id] = 0;
-      });
-    }
-    try {
-      final result = await _withFreshFileGrant(
-        mediaId,
-        (url) => _remoteMediaActions.saveFile(
-          url: url,
-          mimeType: mimeType,
-          suggestedName: fileName,
-          transferKey: mediaId,
-          expectedBytes: content.sizeBytes,
-          cancellation: cancellation,
-          onProgress: (received, total) {
-            if (!mounted || cancellation.isCancelled) return;
-            if (total == null || total <= 0) return;
-            final next = (received / total).clamp(0.0, 1.0);
-            if ((next - (_fileDownloadProgress[message.id] ?? 0)).abs() < 0.01 &&
-                next < 1) {
-              return;
-            }
-            setState(() => _fileDownloadProgress[message.id] = next);
-          },
-        ),
-      );
-      if (cancellation.isCancelled) throw const MediaDownloadCancelled();
-      if (mounted) _showImageError(result);
-    } on MediaDownloadCancelled {
-      if (mounted) _showImageError('已取消文件下载。');
-    } on PlatformException catch (error) {
-      if (mounted) {
-        _showImageError(error.message ?? '文件下载失败，请稍后重试。');
-      }
-    } catch (_) {
-      if (mounted) _showImageError('文件下载失败，请稍后重试。');
-    } finally {
-      if (mounted && trackProgress) {
-        setState(() {
-          _fileDownloadCancellations.remove(message.id);
-          _fileDownloadProgress.remove(message.id);
-        });
-      }
-    }
+    return _withFreshFileGrant(
+      mediaId,
+      (url) => _remoteMediaActions.saveFile(
+        url: url,
+        mimeType: mimeType,
+        suggestedName: fileName,
+        transferKey: mediaId,
+        expectedBytes: content.sizeBytes,
+        cancellation: cancellation,
+        onProgress: onProgress,
+      ),
+    );
   }
+
+  String _fileDownloadTaskId(String messageId) => 'download-file-$messageId';
+
+  String _videoDownloadTaskId(String messageId) => 'download-video-$messageId';
 
   Future<void> _shareMediaFile(ChatMessage message) async {
     final content = message.content;
@@ -2113,29 +2157,68 @@ class _TextChatPageState extends State<TextChatPage>
     final content = message.content;
     final mediaId = content?.mediaId?.trim() ?? '';
     if (content == null || mediaId.isEmpty) return;
-    try {
-      final expectedSizeBytes = content.sizeBytes ?? 0;
-      if (await _videoFileCache.cachedUri(
+    final expectedSizeBytes = content.sizeBytes ?? 0;
+    if (await _videoFileCache.cachedUri(
+          mediaId,
+          expectedSizeBytes: expectedSizeBytes,
+        ) !=
+        null) {
+      return;
+    }
+    final taskId = _videoDownloadTaskId(message.id);
+    if (_uploadTransfers.task(taskId) != null) return;
+    final fileName = (content.fileName ?? '').trim().isEmpty
+        ? 'DD-video-${message.id}.mp4'
+        : content.fileName!.trim();
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.video,
+      direction: MediaTransferDirection.download,
+      label: fileName,
+      conversationId: widget.conversation.id,
+      operation: (task) async {
+        final cancellation = MediaDownloadCancellation();
+        task.setAbortHandler(() {
+          cancellation.preservePartialOnCancel = task.pauseRequested;
+          cancellation.cancel();
+        });
+        task.update(
+          MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            totalBytes: expectedSizeBytes > 0 ? expectedSizeBytes : null,
+          ),
+        );
+        try {
+          await _cacheVideoInBackground(
             mediaId,
             expectedSizeBytes: expectedSizeBytes,
-          ) !=
-          null) {
-        return;
-      }
-      await _cacheVideoInBackground(
-        mediaId,
-        expectedSizeBytes: expectedSizeBytes,
-        onProgress: (_, _) {},
-      );
-    } catch (error, stackTrace) {
-      unawaited(
-        ClientLog.error(
-          'Auto video cache failed: media=$mediaId',
-          error: error,
-          stackTrace: stackTrace,
-        ),
-      );
-    }
+            cancellation: cancellation,
+            onProgress: (received, total) {
+              task.update(
+                MediaTransferState(
+                  phase: MediaTransferPhase.uploading,
+                  transferredBytes: received,
+                  totalBytes: total ??
+                      (expectedSizeBytes > 0 ? expectedSizeBytes : null),
+                ),
+              );
+            },
+          );
+          if (cancellation.isCancelled) throw const MediaDownloadCancelled();
+        } catch (error, stackTrace) {
+          if (error is! MediaDownloadCancelled) {
+            unawaited(
+              ClientLog.error(
+                'Auto video cache failed: media=$mediaId',
+                error: error,
+                stackTrace: stackTrace,
+              ),
+            );
+          }
+          rethrow;
+        }
+      },
+    );
   }
 
   Future<void> _ensureAutoFileCached(ChatMessage message) async {
@@ -2143,33 +2226,75 @@ class _TextChatPageState extends State<TextChatPage>
     final content = message.content;
     final mediaId = content?.mediaId?.trim() ?? '';
     if (content == null || mediaId.isEmpty) return;
+    final taskId = _fileDownloadTaskId(message.id);
+    if (_uploadTransfers.task(taskId) != null) return;
     final fileName = (content.fileName ?? '').trim().isEmpty
         ? 'DD-file.bin'
         : content.fileName!.trim();
-    try {
-      await _withFreshFileGrant(
-        mediaId,
-        (url) => _remoteMediaActions.cacheFile(
-          url: url,
-          suggestedName: fileName,
-          transferKey: mediaId,
-          expectedBytes: content.sizeBytes,
-        ),
-      );
-    } catch (error, stackTrace) {
-      unawaited(
-        ClientLog.error(
-          'Auto file cache failed: media=$mediaId',
-          error: error,
-          stackTrace: stackTrace,
-        ),
-      );
-    }
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.file,
+      direction: MediaTransferDirection.download,
+      label: fileName,
+      conversationId: widget.conversation.id,
+      openAction: () => _openMediaFile(message),
+      saveAction: () async {
+        await _performSaveMediaFile(message);
+      },
+      shareAction: () => _shareMediaFile(message),
+      operation: (task) async {
+        final cancellation = MediaDownloadCancellation();
+        task.setAbortHandler(() {
+          cancellation.preservePartialOnCancel = task.pauseRequested;
+          cancellation.cancel();
+        });
+        task.update(
+          MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            totalBytes: content.sizeBytes,
+          ),
+        );
+        try {
+          await _withFreshFileGrant(
+            mediaId,
+            (url) => _remoteMediaActions.cacheFile(
+              url: url,
+              suggestedName: fileName,
+              transferKey: mediaId,
+              expectedBytes: content.sizeBytes,
+              cancellation: cancellation,
+              onProgress: (received, total) {
+                task.update(
+                  MediaTransferState(
+                    phase: MediaTransferPhase.uploading,
+                    transferredBytes: received,
+                    totalBytes: total ?? content.sizeBytes,
+                  ),
+                );
+              },
+            ),
+          );
+          if (cancellation.isCancelled) throw const MediaDownloadCancelled();
+        } catch (error, stackTrace) {
+          if (error is! MediaDownloadCancelled) {
+            unawaited(
+              ClientLog.error(
+                'Auto file cache failed: media=$mediaId',
+                error: error,
+                stackTrace: stackTrace,
+              ),
+            );
+          }
+          rethrow;
+        }
+      },
+    );
   }
 
   Future<void> _cacheVideoInBackground(
     String mediaId, {
     required int expectedSizeBytes,
+    MediaDownloadCancellation? cancellation,
     required void Function(int received, int? total) onProgress,
   }) async {
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -2179,6 +2304,7 @@ class _TextChatPageState extends State<TextChatPage>
           mediaId: mediaId,
           url: grant.url,
           expectedSizeBytes: expectedSizeBytes,
+          cancellation: cancellation,
           onProgress: onProgress,
         );
         return;
@@ -2837,7 +2963,7 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _uploadTransferBanners() {
-    final tasks = _uploadTransfers.visibleTasks;
+    final tasks = _uploadTransfers.tasksForConversation(widget.conversation.id);
     if (tasks.isEmpty) return const SizedBox.shrink();
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2849,16 +2975,19 @@ class _TextChatPageState extends State<TextChatPage>
     final state = task.state;
     final progress = state.progress;
     final detail = state.phase == MediaTransferPhase.failed
-        ? (state.errorMessage ?? '上传失败，可重试')
+        ? (state.errorMessage ?? '传输失败，可重试')
         : progress == null
-        ? _transferPhaseLabel(state.phase)
+        ? _transferPhaseLabel(state.phase, task.direction)
         : '${(progress * 100).clamp(0, 100).round()}% · '
               '${_formatTransferBytes(state.transferredBytes)} / '
               '${_formatTransferBytes(state.totalBytes ?? 0)}';
     final icon = switch (task.kind) {
       MediaTransferKind.image => Icons.image_outlined,
       MediaTransferKind.video => Icons.videocam_outlined,
-      MediaTransferKind.file => Icons.upload_file_rounded,
+      MediaTransferKind.file => task.direction == MediaTransferDirection.download
+          ? Icons.download_rounded
+          : Icons.upload_file_rounded,
+      MediaTransferKind.voice => Icons.mic_none_rounded,
       MediaTransferKind.gif => Icons.gif_box_outlined,
       MediaTransferKind.sticker => Icons.emoji_emotions_outlined,
     };
@@ -2900,14 +3029,22 @@ class _TextChatPageState extends State<TextChatPage>
             ),
           ),
           const SizedBox(width: 8),
-          if (state.phase == MediaTransferPhase.failed)
+          if (state.phase == MediaTransferPhase.failed && task.canRetry)
             IconButton(
               key: Key('retry-upload-${task.id}'),
               tooltip: '重试',
               onPressed: () => _uploadTransfers.retry(task.id),
               icon: const Icon(Icons.refresh_rounded, size: 20),
             )
-          else if (state.phase == MediaTransferPhase.canceled)
+          else if (state.phase == MediaTransferPhase.paused)
+            IconButton(
+              key: Key('resume-upload-${task.id}'),
+              tooltip: '继续',
+              onPressed: () => _uploadTransfers.resume(task.id),
+              icon: const Icon(Icons.play_arrow_rounded, size: 20),
+            )
+          else if (state.phase == MediaTransferPhase.canceled ||
+              state.phase == MediaTransferPhase.failed)
             IconButton(
               key: Key('dismiss-upload-${task.id}'),
               tooltip: '关闭',
@@ -2926,10 +3063,15 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
-  String _transferPhaseLabel(MediaTransferPhase phase) => switch (phase) {
+  String _transferPhaseLabel(
+    MediaTransferPhase phase,
+    MediaTransferDirection direction,
+  ) => switch (phase) {
     MediaTransferPhase.queued => '等待中',
     MediaTransferPhase.preparing => '处理中…',
-    MediaTransferPhase.uploading => '上传中…',
+    MediaTransferPhase.uploading =>
+      direction == MediaTransferDirection.upload ? '上传中…' : '下载中…',
+    MediaTransferPhase.paused => '已暂停',
     MediaTransferPhase.committing => '正在提交…',
     MediaTransferPhase.done => '已完成',
     MediaTransferPhase.failed => '失败',
@@ -3225,37 +3367,69 @@ class _TextChatPageState extends State<TextChatPage>
     if (mounted) setState(() => _voiceSending = true);
     try {
       final recorded = await _voiceRecorder.stop();
-      final grant = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadMedia(
-          origin: widget.coordinator.origin,
-          accessToken: token,
-          bytes: recorded.bytes,
-          fileName:
-              'voice-${DateTime.now().microsecondsSinceEpoch}.${recorded.fileExtension}',
-          mimeType: recorded.mimeType,
-          purpose: 'CHAT_VOICE',
-        ),
-      );
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) {
         setState(() => _replyingTo = null);
       }
-      await widget.coordinator.sendMedia(
-        widget.conversation.id,
-        type: 'VOICE',
-        mediaId: grant.mediaId,
-        mimeType: recorded.mimeType,
-        sizeBytes: recorded.bytes.length,
-        durationMs: recorded.durationMs,
-        replyToMessageId: replyToMessageId,
+      final taskId = _newUploadTaskId('voice');
+      final fileName =
+          'voice-${DateTime.now().microsecondsSinceEpoch}.${recorded.fileExtension}';
+      _uploadTransfers.enqueue(
+        id: taskId,
+        kind: MediaTransferKind.voice,
+        label: '语音 ${(recorded.durationMs / 1000).ceil()} 秒',
+        conversationId: widget.conversation.id,
+        operation: (task) async {
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              totalBytes: recorded.bytes.length,
+            ),
+          );
+          final grant = await widget.coordinator.withAuthorizedToken(
+            (token) => widget.coordinator.transferMediaApi.uploadMedia(
+              origin: widget.coordinator.origin,
+              accessToken: token,
+              bytes: recorded.bytes,
+              fileName: fileName,
+              mimeType: recorded.mimeType,
+              purpose: 'CHAT_VOICE',
+              cancellation: task.cancellation,
+              onProgress: (sent, total) {
+                task.update(
+                  MediaTransferState(
+                    phase: MediaTransferPhase.uploading,
+                    transferredBytes: sent,
+                    totalBytes: total,
+                  ),
+                );
+              },
+            ),
+          );
+          task.throwIfCancelled();
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.committing,
+              transferredBytes: recorded.bytes.length,
+              totalBytes: recorded.bytes.length,
+            ),
+          );
+          await widget.coordinator.sendMedia(
+            widget.conversation.id,
+            type: 'VOICE',
+            mediaId: grant.mediaId,
+            mimeType: recorded.mimeType,
+            sizeBytes: recorded.bytes.length,
+            durationMs: recorded.durationMs,
+            replyToMessageId: replyToMessageId,
+          );
+          if (mounted) _scrollToBottom();
+        },
       );
-      if (mounted) _scrollToBottom();
-    } on MessagingApiException catch (error) {
-      if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
       if (mounted) _showImageError(error.message);
     } catch (_) {
-      if (mounted) _showImageError('语音发送失败，请稍后重试。');
+      if (mounted) _showImageError('语音录制结束失败，请稍后重试。');
     } finally {
       if (mounted) {
         setState(() {
@@ -4380,6 +4554,7 @@ class _TextChatPageState extends State<TextChatPage>
         id: taskId,
         kind: MediaTransferKind.image,
         label: file.name.isEmpty ? '图片 ${index + 1}' : file.name,
+        conversationId: widget.conversation.id,
         operation: (task) => _runImageUpload(
           file,
           task,
@@ -4419,7 +4594,7 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     final grant = await widget.coordinator.withAuthorizedToken(
-      (token) => _mediaApi.uploadChatImage(
+      (token) => widget.coordinator.transferMediaApi.uploadChatImage(
         origin: widget.coordinator.origin,
         accessToken: token,
         bytes: processed.bytes,
@@ -4513,7 +4688,7 @@ class _TextChatPageState extends State<TextChatPage>
         totalBytes: prepared.sizeBytes,
       );
       final grant = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadStream(
+        (token) => widget.coordinator.transferMediaApi.uploadStream(
           origin: widget.coordinator.origin,
           accessToken: token,
           streamFactory: prepared.streamFactory,
@@ -4617,51 +4792,86 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _sendGif(XFile file) async {
-    if (_gifSending || !mounted) return;
+    if (!mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;
+    if (sourceLength <= 0) {
+      _showImageError('不能发送空 GIF。');
+      return;
+    }
     if (sourceLength > 50 * 1024 * 1024) {
       _showImageError('GIF 超过 50 MiB，暂时无法发送。');
       return;
     }
-    setState(() => _gifSending = true);
     try {
-      final source = await file.readAsBytes();
-      final metadata = await inspectChatVisual(source);
-      final grant = await widget.coordinator.withAuthorizedToken(
-        (token) => _mediaApi.uploadMedia(
-          origin: widget.coordinator.origin,
-          accessToken: token,
-          bytes: source,
-          fileName: file.name.isEmpty ? 'animation.gif' : file.name,
-          mimeType: 'image/gif',
-          purpose: 'GIF',
-        ),
-      );
+      final prepared = await prepareCustomSticker(file);
+      if (!prepared.animated || prepared.mimeType != 'image/gif') {
+        throw const FormatException('所选文件不是有效 GIF。');
+      }
       final replyToMessageId = _replyingTo?.id;
       if (_replyingTo != null && mounted) {
         setState(() => _replyingTo = null);
       }
-      await widget.coordinator.sendMedia(
-        widget.conversation.id,
-        type: 'GIF',
-        mediaId: grant.mediaId,
-        width: metadata.width,
-        height: metadata.height,
-        fileName: file.name,
-        mimeType: 'image/gif',
-        sizeBytes: source.length,
-        replyToMessageId: replyToMessageId,
+      final taskId = _newUploadTaskId('gif');
+      _uploadTransfers.enqueue(
+        id: taskId,
+        kind: MediaTransferKind.gif,
+        label: file.name.isEmpty ? 'GIF' : file.name,
+        conversationId: widget.conversation.id,
+        operation: (task) async {
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              totalBytes: prepared.sizeBytes,
+            ),
+          );
+          final grant = await widget.coordinator.withAuthorizedToken(
+            (token) => widget.coordinator.transferMediaApi.uploadStream(
+              origin: widget.coordinator.origin,
+              accessToken: token,
+              streamFactory: prepared.streamFactory,
+              size: prepared.sizeBytes,
+              fileName: prepared.fileName,
+              mimeType: 'image/gif',
+              purpose: 'GIF',
+              cancellation: task.cancellation,
+              onProgress: (sent, total) {
+                task.update(
+                  MediaTransferState(
+                    phase: MediaTransferPhase.uploading,
+                    transferredBytes: sent,
+                    totalBytes: total,
+                  ),
+                );
+              },
+            ),
+          );
+          task.throwIfCancelled();
+          task.update(
+            MediaTransferState(
+              phase: MediaTransferPhase.committing,
+              transferredBytes: prepared.sizeBytes,
+              totalBytes: prepared.sizeBytes,
+            ),
+          );
+          await widget.coordinator.sendMedia(
+            widget.conversation.id,
+            type: 'GIF',
+            mediaId: grant.mediaId,
+            width: prepared.width,
+            height: prepared.height,
+            fileName: file.name,
+            mimeType: 'image/gif',
+            sizeBytes: prepared.sizeBytes,
+            replyToMessageId: replyToMessageId,
+          );
+          if (mounted) _scrollToBottom();
+        },
       );
-      if (mounted) _scrollToBottom();
-    } on MessagingApiException catch (error) {
-      if (mounted) _showImageError(error.message);
     } on FormatException catch (error) {
       if (mounted) _showImageError(error.message);
     } catch (_) {
-      if (mounted) _showImageError('GIF 发送失败，请稍后重试。');
-    } finally {
-      if (mounted) setState(() => _gifSending = false);
+      if (mounted) _showImageError('GIF 处理失败，请稍后重试。');
     }
   }
 
@@ -4689,6 +4899,7 @@ class _TextChatPageState extends State<TextChatPage>
       id: taskId,
       kind: MediaTransferKind.video,
       label: file.name.isEmpty ? '视频' : file.name,
+      conversationId: widget.conversation.id,
       operation: (task) => _runVideoUpload(
         file,
         sourceLength,
@@ -4721,7 +4932,7 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     final primary = await widget.coordinator.withAuthorizedToken(
-      (token) => _mediaApi.uploadStream(
+      (token) => widget.coordinator.transferMediaApi.uploadStream(
         origin: widget.coordinator.origin,
         accessToken: token,
         streamFactory: file.openRead,
@@ -4754,7 +4965,7 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     final poster = await widget.coordinator.withAuthorizedToken(
-      (token) => _mediaApi.uploadChatImage(
+      (token) => widget.coordinator.transferMediaApi.uploadChatImage(
         origin: widget.coordinator.origin,
         accessToken: token,
         bytes: metadata.posterJpeg,
@@ -4814,6 +5025,7 @@ class _TextChatPageState extends State<TextChatPage>
       id: taskId,
       kind: MediaTransferKind.file,
       label: file.name.isEmpty ? '文件' : file.name,
+      conversationId: widget.conversation.id,
       operation: (task) => _runFileUpload(
         file,
         sourceLength,
@@ -4838,7 +5050,7 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     final grant = await widget.coordinator.withAuthorizedToken(
-      (token) => _mediaApi.uploadStream(
+      (token) => widget.coordinator.transferMediaApi.uploadStream(
         origin: widget.coordinator.origin,
         accessToken: token,
         streamFactory: file.openRead,
@@ -5484,6 +5696,7 @@ class _StickerTransferDialog extends StatelessWidget {
             MediaTransferPhase.queued => '等待处理',
             MediaTransferPhase.preparing => '正在压缩 / 检查',
             MediaTransferPhase.uploading => '正在上传',
+            MediaTransferPhase.paused => '已暂停',
             MediaTransferPhase.committing => '正在保存表情',
             MediaTransferPhase.done => '已完成',
             MediaTransferPhase.failed => '处理失败',

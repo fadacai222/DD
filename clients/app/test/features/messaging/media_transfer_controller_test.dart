@@ -88,6 +88,77 @@ void main() {
     await controller.waitForIdle();
   });
 
+  test('running task can pause and resume without losing its operation', () async {
+    final controller = MediaTransferController(maxConcurrent: 1);
+    addTearDown(controller.dispose);
+    var attempts = 0;
+
+    controller.enqueue(
+      id: 'pause-me',
+      kind: MediaTransferKind.file,
+      label: 'archive.zip',
+      conversationId: 'conversation-a',
+      operation: (task) async {
+        attempts++;
+        task.update(
+          const MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            transferredBytes: 10,
+            totalBytes: 100,
+          ),
+        );
+        if (attempts == 1) {
+          while (!task.isCancelled) {
+            await Future<void>.delayed(const Duration(milliseconds: 1));
+          }
+          throw const MediaTransferAborted();
+        }
+      },
+    );
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(controller.pause('pause-me'), isTrue);
+    await controller.waitForIdle();
+    expect(controller.task('pause-me')?.state.phase, MediaTransferPhase.paused);
+    expect(controller.tasksForConversation('conversation-a'), hasLength(1));
+
+    expect(controller.resume('pause-me'), isTrue);
+    await controller.waitForIdle();
+    expect(attempts, 2);
+    expect(controller.task('pause-me')?.state.phase, MediaTransferPhase.done);
+  });
+
+  test('clear all inactive preserves active transfers', () async {
+    final controller = MediaTransferController(maxConcurrent: 1);
+    addTearDown(controller.dispose);
+    final gate = Completer<void>();
+
+    controller.enqueue(
+      id: 'active',
+      kind: MediaTransferKind.video,
+      label: 'movie.mp4',
+      operation: (task) async {
+        task.update(const MediaTransferState(phase: MediaTransferPhase.uploading));
+        await gate.future;
+      },
+    );
+    controller.enqueue(
+      id: 'failed',
+      kind: MediaTransferKind.file,
+      label: 'broken.bin',
+      operation: (_) async => throw StateError('broken'),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    controller.cancel('failed');
+
+    expect(controller.clearInactive(), 1);
+    expect(controller.task('active'), isNotNull);
+    expect(controller.task('failed'), isNull);
+
+    gate.complete();
+    await controller.waitForIdle();
+  });
+
   test('failed task keeps operation and can retry independently', () async {
     final controller = MediaTransferController(maxConcurrent: 1);
     addTearDown(controller.dispose);

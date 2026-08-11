@@ -2,9 +2,8 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'media_cache_budget.dart';
 import 'media_cache_lease_registry.dart';
-
-const int _globalMediaCacheBudgetBytes = 4 * 1024 * 1024 * 1024;
 
 Future<Map<String, int>> readManagedMediaCacheSnapshot() async {
   final totals = <String, int>{
@@ -37,10 +36,11 @@ Future<void> clearAllManagedMediaCache() async {
 Future<void> pruneManagedMediaCache() async {
   final entries = await _managedEntries();
   var total = entries.fold<int>(0, (sum, entry) => sum + entry.size);
-  if (total <= _globalMediaCacheBudgetBytes) return;
+  final budgetBytes = MediaCacheBudgetRegistry.bytes;
+  if (total <= budgetBytes) return;
   entries.sort((left, right) => left.modified.compareTo(right.modified));
   for (final entry in entries) {
-    if (total <= _globalMediaCacheBudgetBytes) break;
+    if (total <= budgetBytes) break;
     if (MediaCacheLeaseRegistry.shared.isLeased(entry.file.path)) continue;
     final removed = await _safeDelete(entry.file);
     if (removed) total -= entry.size;

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../core/media/media_cache_budget.dart';
 import '../../../core/media/media_cache_manager.dart';
 import '../../../theme/app_theme.dart';
 import '../data/media_auto_download_store.dart';
@@ -12,11 +13,13 @@ class MediaStorageSettingsPage extends StatefulWidget {
     required this.userId,
     this.preferencesStore,
     this.cacheManager,
+    this.budgetStore,
   });
 
   final String userId;
   final MediaAutoDownloadStore? preferencesStore;
   final MediaCacheGateway? cacheManager;
+  final MediaCacheBudgetStore? budgetStore;
 
   @override
   State<MediaStorageSettingsPage> createState() =>
@@ -27,9 +30,11 @@ class _MediaStorageSettingsPageState
     extends State<MediaStorageSettingsPage> {
   late final MediaAutoDownloadStore _store;
   late final MediaCacheGateway _cache;
+  late final MediaCacheBudgetStore _budgetStore;
   MediaAutoDownloadPreferences _preferences =
       const MediaAutoDownloadPreferences();
   MediaCacheSummary _summary = const MediaCacheSummary(<MediaCacheKind, int>{});
+  int _budgetBytes = defaultMediaCacheBudgetBytes;
   bool _loading = true;
   bool _saving = false;
   bool _clearing = false;
@@ -41,6 +46,7 @@ class _MediaStorageSettingsPageState
     _store = widget.preferencesStore ??
         MediaAutoDownloadStore.shared(widget.userId);
     _cache = widget.cacheManager ?? const MediaCacheManager();
+    _budgetStore = widget.budgetStore ?? MediaCacheBudgetStore.shared(widget.userId);
     unawaited(_load());
   }
 
@@ -49,11 +55,13 @@ class _MediaStorageSettingsPageState
       final results = await Future.wait<Object>([
         _store.load(),
         _cache.snapshot(),
+        _budgetStore.load(),
       ]);
       if (!mounted) return;
       setState(() {
         _preferences = results[0] as MediaAutoDownloadPreferences;
         _summary = results[1] as MediaCacheSummary;
+        _budgetBytes = results[2] as int;
         _loading = false;
       });
     } catch (_) {
@@ -224,6 +232,8 @@ class _MediaStorageSettingsPageState
                 ),
                 const SizedBox(height: 22),
                 const _SectionTitle('本地缓存'),
+                _budgetSelector(),
+                const SizedBox(height: 8),
                 _cacheRow(MediaCacheKind.image),
                 _cacheRow(MediaCacheKind.video),
                 _cacheRow(MediaCacheKind.file),
@@ -272,6 +282,65 @@ class _MediaStorageSettingsPageState
     value: value,
     onChanged: _saving ? null : onChanged,
   );
+
+  Widget _budgetSelector() => ListTile(
+    key: const Key('media-cache-budget'),
+    contentPadding: EdgeInsets.zero,
+    title: const Text('缓存空间上限'),
+    subtitle: const Text('超过上限后按最近最少使用顺序自动清理'),
+    trailing: DropdownButton<int>(
+      value: _budgetBytes,
+      underline: const SizedBox.shrink(),
+      onChanged: _saving
+          ? null
+          : (value) {
+              if (value != null) unawaited(_setBudget(value));
+            },
+      items: const [
+        DropdownMenuItem(
+          value: mediaCacheBudget512MiB,
+          child: Text('512 MB'),
+        ),
+        DropdownMenuItem(
+          value: mediaCacheBudget1GiB,
+          child: Text('1 GB'),
+        ),
+        DropdownMenuItem(
+          value: mediaCacheBudget2GiB,
+          child: Text('2 GB'),
+        ),
+        DropdownMenuItem(
+          value: mediaCacheBudget5GiB,
+          child: Text('5 GB'),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _setBudget(int bytes) async {
+    if (_saving || bytes == _budgetBytes) return;
+    final previous = _budgetBytes;
+    setState(() {
+      _budgetBytes = bytes;
+      _saving = true;
+      _message = null;
+    });
+    try {
+      await _budgetStore.save(bytes);
+      await _cache.prune();
+      final summary = await _cache.snapshot();
+      if (mounted) setState(() => _summary = summary);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _budgetBytes = previous;
+          _message = '缓存空间上限保存失败。';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   Widget _cacheRow(MediaCacheKind kind) => ListTile(
     key: Key('media-cache-${kind.name}'),

@@ -16,6 +16,7 @@ abstract interface class MediaCacheGateway {
   Future<MediaCacheSummary> snapshot();
   Future<void> clear(MediaCacheKind kind);
   Future<void> clearAll();
+  Future<void> prune();
 }
 
 final class MediaCacheManager implements MediaCacheGateway {
@@ -34,6 +35,9 @@ final class MediaCacheManager implements MediaCacheGateway {
 
   @override
   Future<void> clearAll() => clearAllManagedMediaCache();
+
+  @override
+  Future<void> prune() => pruneManagedMediaCache();
 }
 
 String formatMediaCacheBytes(int bytes) {

@@ -2,6 +2,7 @@ enum MediaTransferPhase {
   queued,
   preparing,
   uploading,
+  paused,
   committing,
   done,
   failed,
@@ -36,6 +37,9 @@ final class MediaTransferState {
       phase == MediaTransferPhase.queued ||
       phase == MediaTransferPhase.preparing ||
       phase == MediaTransferPhase.uploading;
+
+  bool get canResume =>
+      phase == MediaTransferPhase.paused || phase == MediaTransferPhase.failed;
 
   double? get progress {
     final total = totalBytes;

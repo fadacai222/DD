@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:im_client/core/media/media_cache_budget.dart';
 import 'package:im_client/core/media/media_cache_manager.dart';
 import 'package:im_client/core/security/dd_secure_storage.dart';
 import 'package:im_client/features/messaging/data/media_auto_download_store.dart';
@@ -13,6 +14,7 @@ void main() {
     final storage = _MemoryStore();
     final cache = _FakeCache();
     final store = MediaAutoDownloadStore(userId: 'user-a', storage: storage);
+    final budgetStore = MediaCacheBudgetStore(userId: 'user-a', storage: storage);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -20,6 +22,7 @@ void main() {
           userId: 'user-a',
           preferencesStore: store,
           cacheManager: cache,
+          budgetStore: budgetStore,
         ),
       ),
     );
@@ -33,13 +36,23 @@ void main() {
     await tester.pumpAndSettle();
     expect((await store.load()).videos, isTrue);
 
-    expect(find.text('12.0 MB'), findsOneWidget);
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(const Key('media-cache-video')),
-        matching: find.text('清理'),
-      ),
+    expect(
+      tester.widget<DropdownButton<int>>(
+        find.descendant(
+          of: find.byKey(const Key('media-cache-budget')),
+          matching: find.byType(DropdownButton<int>),
+        ),
+      ).value,
+      mediaCacheBudget2GiB,
     );
+    expect(find.text('12.0 MB'), findsOneWidget);
+    final clearVideo = find.descendant(
+      of: find.byKey(const Key('media-cache-video')),
+      matching: find.text('清理'),
+    );
+    await tester.ensureVisible(clearVideo);
+    await tester.pumpAndSettle();
+    await tester.tap(clearVideo);
     await tester.pumpAndSettle();
     expect(cache.cleared, contains(MediaCacheKind.video));
     expect(find.text('0 B'), findsWidgets);
@@ -69,6 +82,9 @@ final class _FakeCache implements MediaCacheGateway {
       for (final kind in MediaCacheKind.values) kind: 0,
     };
   }
+
+  @override
+  Future<void> prune() async {}
 
   @override
   Future<MediaCacheSummary> snapshot() async => MediaCacheSummary(values);

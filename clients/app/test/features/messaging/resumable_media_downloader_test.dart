@@ -101,6 +101,29 @@ void main() {
     expect(await target.exists(), isFalse);
   });
 
+  test('pause-style cancellation preserves partial data for resume', () async {
+    final target = File('${directory.path}${Platform.pathSeparator}pause.bin');
+    final part = File('${target.path}.part');
+    await part.writeAsBytes(<int>[1, 2, 3]);
+    final cancellation = MediaDownloadCancellation(
+      preservePartialOnCancel: true,
+    )..cancel();
+    final downloader = ResumableMediaDownloader();
+
+    await expectLater(
+      downloader.download(
+        resolveUrl: () async => Uri.parse('https://storage.invalid/pause.bin'),
+        destinationPath: target.path,
+        expectedBytes: 10,
+        cancellation: cancellation,
+      ),
+      throwsA(isA<MediaDownloadCancelled>()),
+    );
+
+    expect(await part.readAsBytes(), <int>[1, 2, 3]);
+    expect(await target.exists(), isFalse);
+  });
+
   test('active download leases final and partial cache paths', () async {
     final target = File('${directory.path}${Platform.pathSeparator}active.bin');
     final controller = StreamController<List<int>>();

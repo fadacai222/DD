@@ -1,5 +1,6 @@
 import 'package:crypto/crypto.dart';
 
+import 'media_api_client.dart';
 import 'video_file_cache_backend_stub.dart'
     if (dart.library.io) 'video_file_cache_backend_io.dart';
 
@@ -34,6 +35,7 @@ final class VideoFileCache {
     required String mediaId,
     required Uri url,
     required int expectedSizeBytes,
+    MediaDownloadCancellation? cancellation,
     void Function(int receivedBytes, int? totalBytes)? onProgress,
   }) async {
     final id = mediaId.trim();
@@ -42,6 +44,7 @@ final class VideoFileCache {
       _cacheKey(id),
       url,
       expectedSizeBytes: expectedSizeBytes,
+      cancellation: cancellation,
       onProgress: onProgress,
     );
     final statusCode = result.statusCode;

@@ -95,7 +95,10 @@ final class MediaUploadCancelled implements Exception {
 }
 
 final class MediaDownloadCancellation {
+  MediaDownloadCancellation({this.preservePartialOnCancel = false});
+
   bool _cancelled = false;
+  bool preservePartialOnCancel;
   final Set<void Function()> _abortListeners = <void Function()>{};
 
   bool get isCancelled => _cancelled;

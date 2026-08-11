@@ -1,11 +1,11 @@
 import 'dart:io';
 
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-import '../../../core/media/media_cache_lease_registry.dart';
 import '../../../core/media/media_cache_manager_backend_io.dart'
     show pruneManagedMediaCache;
+import 'media_api_client.dart';
+import 'resumable_media_downloader.dart';
 
 const Duration _maximumVideoCacheAge = Duration(days: 30);
 
@@ -53,28 +53,7 @@ Future<({Uri? uri, int? statusCode})> cacheVideoFromUrl(
   String cacheKey,
   Uri url, {
   required int expectedSizeBytes,
-  void Function(int receivedBytes, int? totalBytes)? onProgress,
-}) async {
-  final file = await _videoCacheFile(cacheKey);
-  final temp = File('${file.path}.part');
-  return MediaCacheLeaseRegistry.shared.withLease(
-    file.path,
-    () => MediaCacheLeaseRegistry.shared.withLease(
-      temp.path,
-      () => _cacheVideoFromUrlUnleased(
-        cacheKey,
-        url,
-        expectedSizeBytes: expectedSizeBytes,
-        onProgress: onProgress,
-      ),
-    ),
-  );
-}
-
-Future<({Uri? uri, int? statusCode})> _cacheVideoFromUrlUnleased(
-  String cacheKey,
-  Uri url, {
-  required int expectedSizeBytes,
+  MediaDownloadCancellation? cancellation,
   void Function(int receivedBytes, int? totalBytes)? onProgress,
 }) async {
   final cached = await readCachedVideoUri(
@@ -84,56 +63,23 @@ Future<({Uri? uri, int? statusCode})> _cacheVideoFromUrlUnleased(
   if (cached != null) return (uri: cached, statusCode: null);
 
   final file = await _videoCacheFile(cacheKey);
-  final temp = File('${file.path}.part');
-  final client = http.Client();
-  IOSink? sink;
   try {
-    final response = await client.send(http.Request('GET', url));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      await response.stream.drain<void>();
-      return (uri: null, statusCode: response.statusCode);
-    }
-    if (expectedSizeBytes > 0 &&
-        response.contentLength != null &&
-        response.contentLength != expectedSizeBytes) {
-      await response.stream.drain<void>();
-      throw const FormatException('视频缓存文件大小与服务端元数据不一致。');
-    }
-    if (await temp.exists()) await temp.delete();
-    sink = temp.openWrite();
-    var received = 0;
-    final total = response.contentLength;
-    await for (final chunk in response.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      onProgress?.call(received, total);
-    }
-    await sink.flush();
-    await sink.close();
-    sink = null;
-    final stat = await temp.stat();
-    if (stat.size <= 0 ||
-        (expectedSizeBytes > 0 && stat.size != expectedSizeBytes)) {
-      await temp.delete();
-      throw const FormatException('视频缓存下载不完整。');
-    }
-    if (await file.exists()) await file.delete();
-    await temp.rename(file.path);
+    final result = await ResumableMediaDownloader().download(
+      resolveUrl: () async => url,
+      destinationPath: file.path,
+      expectedBytes: expectedSizeBytes > 0 ? expectedSizeBytes : null,
+      cancellation: cancellation,
+      onProgress: onProgress,
+      maximumAttempts: 2,
+    );
+    final completed = File(result.path);
     try {
-      await file.setLastModified(DateTime.now());
+      await completed.setLastModified(DateTime.now());
     } catch (_) {}
     await pruneManagedMediaCache();
-    return (uri: file.uri, statusCode: null);
-  } catch (_) {
-    try {
-      await sink?.close();
-    } catch (_) {}
-    try {
-      if (await temp.exists()) await temp.delete();
-    } catch (_) {}
-    rethrow;
-  } finally {
-    client.close();
+    return (uri: completed.uri, statusCode: null);
+  } on ResumableDownloadHttpException catch (error) {
+    return (uri: null, statusCode: error.statusCode);
   }
 }
 
@@ -147,4 +93,3 @@ Future<void> deleteCachedVideo(String cacheKey) async {
     // Best-effort eviction. A temporary Windows file lock is harmless.
   }
 }
-
