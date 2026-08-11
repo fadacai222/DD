@@ -18,6 +18,22 @@ typedef MediaTransferOperation = Future<void> Function(
   MediaTransferExecution task,
 );
 
+final class MediaTransferVisualPreview {
+  const MediaTransferVisualPreview({
+    required this.posterBytes,
+    required this.width,
+    required this.height,
+    this.durationMs,
+    this.localPlaybackUri,
+  });
+
+  final Uint8List posterBytes;
+  final int width;
+  final int height;
+  final int? durationMs;
+  final Uri? localPlaybackUri;
+}
+
 final class MediaTransferTask {
   MediaTransferTask({
     required this.id,
@@ -44,6 +60,7 @@ final class MediaTransferTask {
   final DateTime createdAt;
 
   MediaTransferState state = const MediaTransferState.queued();
+  MediaTransferVisualPreview? visualPreview;
   MediaUploadCancellation cancellation = MediaUploadCancellation();
   DateTime updatedAt;
   DateTime? completedAt;
@@ -79,6 +96,10 @@ final class MediaTransferExecution {
   MediaUploadCancellation get cancellation => _task.cancellation;
   bool get isCancelled => cancellation.isCancelled;
   bool get pauseRequested => _task.pauseRequested;
+  MediaTransferVisualPreview? get visualPreview => _task.visualPreview;
+
+  void setVisualPreview(MediaTransferVisualPreview preview) =>
+      _controller._setVisualPreview(_task, preview);
 
   void setAbortHandler(VoidCallback? handler) {
     _task.abortCurrentAttempt = handler;
@@ -134,7 +155,14 @@ final class MediaTransferController extends ChangeNotifier {
   Future<void> restoreHistory() async {
     if (_historyLoaded || historyStore == null || _disposed) return;
     _historyLoaded = true;
-    final records = await historyStore!.load();
+    List<Map<String, dynamic>> records;
+    try {
+      records = await historyStore!.load();
+    } catch (_) {
+      // Transfer history is supplementary. Secure-storage/platform failures
+      // must never block messaging initialization or cursor sync.
+      return;
+    }
     for (final record in records) {
       final id = record['id']?.toString().trim() ?? '';
       if (id.isEmpty || _tasks.containsKey(id)) continue;
@@ -394,6 +422,20 @@ final class MediaTransferController extends ChangeNotifier {
     );
     task.completedAt = DateTime.now().toUtc();
     task.bytesPerSecond = 0;
+    if (phase == MediaTransferPhase.done ||
+        phase == MediaTransferPhase.canceled) {
+      task.visualPreview = null;
+    }
+  }
+
+  void _setVisualPreview(
+    MediaTransferTask task,
+    MediaTransferVisualPreview preview,
+  ) {
+    if (_disposed || _tasks[task.id] != task) return;
+    task.visualPreview = preview;
+    task.updatedAt = DateTime.now().toUtc();
+    _changed();
   }
 
   void _updateState(MediaTransferTask task, MediaTransferState state) {

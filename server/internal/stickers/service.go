@@ -96,15 +96,42 @@ func (service *Service) CreateCustomSticker(ctx context.Context, principal accou
 	var mimeType string
 	var sizeBytes int64
 	if err := service.pool.QueryRow(ctx, `
-		SELECT mime_type,size_bytes
-		FROM media_objects
-		WHERE id=$1 AND owner_user_id=$2 AND purpose='STICKER' AND status='READY' AND deleted_at IS NULL
+		SELECT m.mime_type,m.size_bytes
+		FROM media_objects m
+		WHERE m.id=$1
+		  AND m.purpose='STICKER'
+		  AND m.status='READY'
+		  AND m.deleted_at IS NULL
+		  AND (
+			m.owner_user_id=$2
+			OR EXISTS(
+				SELECT 1
+				FROM message_media mm
+				JOIN messages msg ON msg.id=mm.message_id
+				  AND msg.type='STICKER'
+				  AND msg.deleted_at IS NULL
+				  AND msg.recalled_at IS NULL
+				JOIN conversation_members cm ON cm.conversation_id=msg.conversation_id
+				  AND cm.user_id=$2
+				  AND cm.status='ACTIVE'
+				LEFT JOIN message_local_deletions ld ON ld.message_id=msg.id AND ld.user_id=$2
+				WHERE mm.media_id=m.id
+				  AND mm.role='PRIMARY'
+				  AND ld.message_id IS NULL
+			)
+		  )
 	`, mediaID, principal.UserID).Scan(&mimeType, &sizeBytes); errors.Is(err, pgx.ErrNoRows) {
 		return CustomSticker{}, ErrForbidden
 	} else if err != nil {
 		return CustomSticker{}, fmt.Errorf("authorize custom sticker media: %w", err)
 	}
-	if mimeType != "image/png" && mimeType != "image/webp" && mimeType != "image/gif" {
+	switch mimeType {
+	case "image/png", "image/webp", "image/gif", "video/mp4", "video/webm":
+	case "application/x-tgsticker":
+		if sizeBytes > MaximumTelegramAnimatedStickerSize {
+			return CustomSticker{}, ErrInvalidInput
+		}
+	default:
 		return CustomSticker{}, ErrInvalidInput
 	}
 
@@ -316,17 +343,14 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 	prepared := make([]preparedItem, 0, len(set.Stickers))
 	unsupported := 0
 	for _, source := range set.Stickers {
-		if source.IsAnimated || source.IsVideo {
-			unsupported++
-			continue
-		}
-		if source.FileSize > MaximumTelegramStickerSize {
+		maxSourceBytes := telegramStickerMaximumSize(source)
+		if maxSourceBytes == 0 || source.FileSize > maxSourceBytes {
 			unsupported++
 			continue
 		}
 		if cached, ok, cacheErr := service.lookupCachedTelegramAsset(ctx, source.FileUniqueID); cacheErr != nil {
 			return StickerPack{}, cacheErr
-		} else if ok {
+		} else if ok && cached.SizeBytes <= maxSourceBytes && telegramStickerMIMEMatchesSource(source, cached.MIMEType) {
 			prepared = append(prepared, preparedItem{
 				SourceFileID: source.FileID, SourceFileUniqueID: source.FileUniqueID,
 				MediaID: cached.MediaID, Emoji: source.Emoji, MIMEType: cached.MIMEType,
@@ -336,11 +360,19 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 		}
 		file, downloadErr := service.provider.DownloadSticker(ctx, source.FileID, MaximumTelegramStickerSize)
 		if downloadErr != nil {
+			if errors.Is(downloadErr, ErrTelegramStickerDownloadTooLarge) || errors.Is(downloadErr, ErrTelegramStickerDownloadInvalid) {
+				unsupported++
+				continue
+			}
 			return StickerPack{}, downloadErr
 		}
-		if validateErr := validateStaticTelegramSticker(file); validateErr != nil {
-			unsupported++
-			continue
+		file, normalizeErr := normalizeTelegramStickerFile(source, file)
+		if normalizeErr != nil {
+			if errors.Is(normalizeErr, ErrTelegramStickerFormatUnsupported) || errors.Is(normalizeErr, ErrTelegramStickerDownloadTooLarge) || errors.Is(normalizeErr, ErrTelegramStickerDownloadInvalid) {
+				unsupported++
+				continue
+			}
+			return StickerPack{}, normalizeErr
 		}
 		mediaObject, importErr := service.media.ImportManagedSticker(ctx, media.ManagedStickerInput{
 			FileName: file.FileName,
@@ -498,20 +530,21 @@ func (service *Service) cachedPack(ctx context.Context, principal account.Princi
 	var packID uuid.UUID
 	var refreshed time.Time
 	var itemCount int
+	var unsupportedCount int
 	err := service.pool.QueryRow(ctx, `
-		SELECT p.id,p.cache_refreshed_at,count(i.id)
+		SELECT p.id,p.cache_refreshed_at,count(i.id),p.unsupported_sticker_count
 		FROM telegram_sticker_packs p
 		LEFT JOIN telegram_sticker_items i ON i.pack_id=p.id
 		WHERE lower(p.set_name)=lower($1)
-		GROUP BY p.id,p.cache_refreshed_at
-	`, setName).Scan(&packID, &refreshed, &itemCount)
+		GROUP BY p.id,p.cache_refreshed_at,p.unsupported_sticker_count
+	`, setName).Scan(&packID, &refreshed, &itemCount, &unsupportedCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StickerPack{}, false, nil
 	}
 	if err != nil {
 		return StickerPack{}, false, fmt.Errorf("load telegram sticker cache: %w", err)
 	}
-	if itemCount == 0 || service.now().UTC().Sub(refreshed) > telegramCacheTTL {
+	if itemCount == 0 || unsupportedCount > 0 || service.now().UTC().Sub(refreshed) > telegramCacheTTL {
 		return StickerPack{}, false, nil
 	}
 	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

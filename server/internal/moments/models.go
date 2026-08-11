@@ -79,3 +79,19 @@ type Profile struct {
 type UpdateProfileInput struct {
 	CoverMediaID string `json:"coverMediaId"`
 }
+
+type ActivityItem struct {
+	ID          string      `json:"id"`
+	Kind        string      `json:"kind"`
+	Actor       UserPreview `json:"actor"`
+	MomentID    string      `json:"momentId"`
+	CommentID   *string     `json:"commentId,omitempty"`
+	CommentText string      `json:"commentText,omitempty"`
+	CreatedAt   time.Time   `json:"createdAt"`
+	Read        bool        `json:"read"`
+}
+
+type ActivitySummary struct {
+	UnreadCount int64          `json:"unreadCount"`
+	Items       []ActivityItem `json:"items"`
+}

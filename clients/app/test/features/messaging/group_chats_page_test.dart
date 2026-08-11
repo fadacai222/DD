@@ -4,6 +4,33 @@ import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:im_client/features/messaging/presentation/group_chats_page.dart';
 
 void main() {
+  testWidgets('embedded desktop group directory omits the full-page app bar', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 560,
+            height: 600,
+            child: GroupChatsPage(
+              origin: Uri.parse('http://127.0.0.1:18473'),
+              accessToken: 'token',
+              conversations: [_groupConversation('group-a', '研发群', 8)],
+              embedded: true,
+              onOpenConversation: (_) async {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byKey(const Key('group-chats-search')), findsOneWidget);
+    expect(find.text('研发群'), findsOneWidget);
+  });
+
   testWidgets('group directory filters group conversations and opens selected chat', (
     tester,
   ) async {

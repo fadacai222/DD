@@ -74,6 +74,34 @@ func TestStickerLibraryWithPostgres(t *testing.T) {
 	}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-owner create error = %v, want ErrForbidden", err)
 	}
+
+	conversationID := shareStickerMediaInDirectMessage(
+		t,
+		ctx,
+		pool,
+		alice,
+		aliceDevice,
+		bob,
+		customMediaID,
+	)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM conversations WHERE id=$1`, conversationID)
+	}()
+	bobSaved, err := service.CreateCustomSticker(ctx, bobPrincipal, CreateCustomStickerInput{
+		MediaID: customMediaID.String(), Width: 512, Height: 512,
+	})
+	if err != nil {
+		t.Fatalf("save received sticker to bob library: %v", err)
+	}
+	if bobSaved.MediaID != customMediaID.String() {
+		t.Fatalf("saved received sticker media=%s want=%s", bobSaved.MediaID, customMediaID)
+	}
+	if count, err := service.DeleteCustomStickers(ctx, bobPrincipal, DeleteCustomStickersInput{StickerIDs: []string{bobSaved.ID}}); err != nil || count != 1 {
+		t.Fatalf("delete received sticker count=%d err=%v", count, err)
+	}
+
 	aliceOtherDevice := alicePrincipal
 	aliceOtherDevice.DeviceID = uuid.New()
 	listed, err := service.ListCustomStickers(ctx, aliceOtherDevice)
@@ -95,10 +123,13 @@ func TestStickerLibraryWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("alice import pack: %v", err)
 	}
-	if len(alicePack.Items) != 2 || alicePack.UnsupportedStickerCount != 1 {
+	if len(alicePack.Items) != 3 || alicePack.UnsupportedStickerCount != 0 {
 		t.Fatalf("alice pack = %#v", alicePack)
 	}
-	if provider.getSetCalls != 1 || provider.downloadCalls != 2 || importer.calls != 2 {
+	if alicePack.Items[2].MIMEType != "video/webm" {
+		t.Fatalf("video sticker mime = %q, want video/webm", alicePack.Items[2].MIMEType)
+	}
+	if provider.getSetCalls != 1 || provider.downloadCalls != 3 || importer.calls != 3 {
 		t.Fatalf("unexpected first import calls: provider=%d/%d importer=%d", provider.getSetCalls, provider.downloadCalls, importer.calls)
 	}
 
@@ -106,10 +137,10 @@ func TestStickerLibraryWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bob cached import pack: %v", err)
 	}
-	if len(bobPack.Items) != 2 {
+	if len(bobPack.Items) != 3 {
 		t.Fatalf("bob pack items = %d", len(bobPack.Items))
 	}
-	if provider.getSetCalls != 1 || provider.downloadCalls != 2 || importer.calls != 2 {
+	if provider.getSetCalls != 1 || provider.downloadCalls != 3 || importer.calls != 3 {
 		t.Fatalf("cached pack should not refetch Telegram: provider=%d/%d importer=%d", provider.getSetCalls, provider.downloadCalls, importer.calls)
 	}
 
@@ -121,7 +152,7 @@ func TestStickerLibraryWithPostgres(t *testing.T) {
 		t.Fatalf("alice packs after remove = %#v, err=%v", alicePacks, err)
 	}
 	bobPacks, err := service.ListStickerPacks(ctx, bobPrincipal)
-	if err != nil || len(bobPacks) != 1 || len(bobPacks[0].Items) != 2 {
+	if err != nil || len(bobPacks) != 1 || len(bobPacks[0].Items) != 3 {
 		t.Fatalf("bob pack must survive alice removal: %#v, err=%v", bobPacks, err)
 	}
 	if err := service.RemoveStickerPack(ctx, bobPrincipal, uuid.MustParse(bobPack.ID)); err != nil {
@@ -156,7 +187,14 @@ func (fake *fakeTelegramProvider) GetStickerSet(_ context.Context, setName strin
 
 func (fake *fakeTelegramProvider) DownloadSticker(_ context.Context, fileID string, maxBytes int64) (TelegramFile, error) {
 	fake.downloadCalls++
-	if maxBytes < 19 || (fileID != "file-cat" && fileID != "file-dog") {
+	if maxBytes < 19 {
+		return TelegramFile{}, ErrInvalidInput
+	}
+	if fileID == "file-video" {
+		data := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, []byte("webm-test-video")...)
+		return TelegramFile{Bytes: data, MIMEType: "video/webm", FileName: fileID + ".webm"}, nil
+	}
+	if fileID != "file-cat" && fileID != "file-dog" {
 		return TelegramFile{}, ErrInvalidInput
 	}
 	data := append([]byte("RIFF\x10\x00\x00\x00WEBP"), []byte(fileID[:7])...)
@@ -221,6 +259,47 @@ func insertOwnedStickerMedia(t *testing.T, ctx context.Context, pool *pgxpool.Po
 		t.Fatalf("insert custom sticker media: %v", err)
 	}
 	return id
+}
+
+func shareStickerMediaInDirectMessage(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	senderID uuid.UUID,
+	senderDeviceID uuid.UUID,
+	recipientID uuid.UUID,
+	mediaID uuid.UUID,
+) uuid.UUID {
+	t.Helper()
+	conversationID := uuid.New()
+	messageID := uuid.New()
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO conversations(id,type,direct_pair_key,last_sequence,created_at,updated_at)
+		VALUES($1,'DIRECT',LEAST($3::text,$4::text)||':'||GREATEST($3::text,$4::text),1,$2,$2)
+	`, conversationID, now, senderID, recipientID); err != nil {
+		t.Fatalf("insert sticker conversation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO conversation_members(conversation_id,user_id,role,status,joined_at) VALUES
+		  ($1,$2,'MEMBER','ACTIVE',$4),
+		  ($1,$3,'MEMBER','ACTIVE',$4)
+	`, conversationID, senderID, recipientID, now); err != nil {
+		t.Fatalf("insert sticker conversation members: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO messages(id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at)
+		VALUES($1,$2,1,$3,$4,$5,'STICKER',$6::jsonb,$7)
+	`, messageID, conversationID, senderID, senderDeviceID, "received-sticker-"+messageID.String(), fmt.Sprintf(`{"mediaId":"%s","width":512,"height":512,"mimeType":"image/webp"}`, mediaID), now); err != nil {
+		t.Fatalf("insert received sticker message: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO message_media(message_id,media_id,role,created_at)
+		VALUES($1,$2,'PRIMARY',$3)
+	`, messageID, mediaID, now); err != nil {
+		t.Fatalf("link received sticker media: %v", err)
+	}
+	return conversationID
 }
 
 func cleanupStickerTestData(t *testing.T, pool *pgxpool.Pool, userIDs []uuid.UUID) {

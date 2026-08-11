@@ -13,6 +13,10 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+# Firebase client config is intentionally versioned for Android builds.
+# Firebase Admin service-account credentials are server secrets and must never enter Git.
+*firebase-adminsdk*.json
+**/firebase-adminsdk*.json
 
 # Go
 server/bin/
@@ -34,6 +38,7 @@ dist/
 .flutter-plugins-dependencies
 build/
 coverage/
+clients/app/build_windows_*/
 
 # Flutter platform generated files
 **/android/.gradle/

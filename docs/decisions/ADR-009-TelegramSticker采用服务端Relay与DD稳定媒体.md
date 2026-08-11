@@ -105,17 +105,21 @@ user_sticker_packs             per-user subscription
 
 ## 当前格式支持
 
-稳定基线：
+2026-08-12 起稳定基线升级为：
 
 ```text
-static image/webp
+static   image/webp | image/png
+animated application/x-tgsticker
+video    video/webm
 ```
 
-TGS/WebM：
+实现原则：
 
-- 记录 unsupported。
-- 不显示假成功 item。
-- 后续有独立转码/渲染策略后再启用。
+- TGS 不转成 GIF：保留 Telegram gzip Lottie 原文件，Flutter 使用 Lottie gzip decoder 原生循环渲染。
+- WebM 不转码：保留 DD 私有媒体，客户端复用静音循环视频 Sticker 播放链。
+- MIME 不只看响应头；服务端同时检查文件签名/容器与 Telegram `is_animated` / `is_video` 标志。
+- 只有损坏、类型冲突或超限项目计入 `unsupported_sticker_count`（兼容字段，产品文案展示为“导入失败”）。
+- 旧版本只缓存静态子集的 pack 在再次导入时强制刷新，避免 24h cache 阻止升级生效。
 
 ## 发送权限
 
@@ -198,7 +202,7 @@ scope = TELEGRAM_IMPORT
 
 - 服务端承担 provider 下载与对象存储空间。
 - 需要版权/provider policy 注意。
-- 动态 TGS/WebM 需要后续支持。
+- TGS 增加 Lottie 解码/渲染成本，WebM 增加视频解码成本；客户端必须继续做可视区播放与资源生命周期控制。
 
 ## 约束
 

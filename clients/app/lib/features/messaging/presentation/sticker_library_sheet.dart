@@ -9,6 +9,8 @@ import '../data/sticker_api_client.dart';
 import '../domain/emoji_catalog.dart';
 import '../domain/sticker_models.dart';
 import '../domain/telegram_sticker_link.dart';
+import 'widgets/looping_video_sticker.dart';
+import 'widgets/telegram_tgs_sticker.dart';
 
 class StickerLibrarySheet extends StatefulWidget {
   const StickerLibrarySheet({
@@ -19,9 +21,11 @@ class StickerLibrarySheet extends StatefulWidget {
     required this.recentEmoji,
     this.emojiCategories,
     required this.mediaBytesLoader,
+    this.mediaUrlResolver,
     required this.onAddCustomSticker,
     this.initialTabKey = 'emoji',
     this.onTabChanged,
+    this.allowCustomStickerCreation = true,
     this.gateway,
   });
 
@@ -31,10 +35,13 @@ class StickerLibrarySheet extends StatefulWidget {
   final List<String> recentEmoji;
   final List<EmojiCategoryData>? emojiCategories;
   final Future<Uint8List> Function(String mediaId) mediaBytesLoader;
+  final Future<Uri> Function(String mediaId, int expectedSizeBytes)?
+  mediaUrlResolver;
   final Future<CustomStickerItem?> Function(StickerGateway gateway)
   onAddCustomSticker;
   final String initialTabKey;
   final ValueChanged<String>? onTabChanged;
+  final bool allowCustomStickerCreation;
   final StickerGateway? gateway;
 
   @override
@@ -51,6 +58,9 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
   bool _restoredInitialTab = false;
   bool _loading = true;
   bool _busy = false;
+  Timer? _syncTimer;
+  final Set<String> _partialRefreshAttempted = <String>{};
+  final Set<String> _partialRefreshInFlight = <String>{};
   Object? _error;
 
   @override
@@ -59,10 +69,15 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
     _ownsGateway = widget.gateway == null;
     _gateway = widget.gateway ?? StickerApiClient();
     unawaited(_load());
+    _syncTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => unawaited(_syncFromServer()),
+    );
   }
 
   @override
   void dispose() {
+    _syncTimer?.cancel();
     if (_ownsGateway) _gateway.close();
     super.dispose();
   }
@@ -98,6 +113,10 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         }
         _loading = false;
       });
+      final selectedPack = _selectedPackOrNull();
+      if (selectedPack != null) {
+        unawaited(_refreshLegacyPartialPack(selectedPack));
+      }
     } catch (error, stackTrace) {
       unawaited(
         ClientLog.error(
@@ -111,6 +130,59 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         _loading = false;
         _error = error;
       });
+    }
+  }
+
+  Future<void> _syncFromServer() async {
+    if (!mounted || _loading || _busy) return;
+    try {
+      final results = await Future.wait<Object>([
+        _gateway.listCustomStickers(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+        ),
+        _gateway.listStickerPacks(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+        ),
+      ]);
+      if (!mounted) return;
+      final custom = results[0] as List<CustomStickerItem>;
+      final packs = results[1] as List<StickerPackItemGroup>;
+      final customChanged =
+          custom.length != _custom.length ||
+          custom.indexed.any(
+            (entry) =>
+                entry.$1 >= _custom.length ||
+                entry.$2.id != _custom[entry.$1].id ||
+                entry.$2.mediaId != _custom[entry.$1].mediaId,
+          );
+      final packsChanged =
+          packs.length != _packs.length ||
+          packs.indexed.any(
+            (entry) =>
+                entry.$1 >= _packs.length ||
+                entry.$2.id != _packs[entry.$1].id ||
+                entry.$2.updatedAt != _packs[entry.$1].updatedAt,
+          );
+      if (!customChanged && !packsChanged) return;
+      setState(() {
+        _custom = custom;
+        _packs = packs;
+        _selectedTab = _selectedTab.clamp(0, _packs.length + 1);
+      });
+      final selectedPack = _selectedPackOrNull();
+      if (selectedPack != null) {
+        unawaited(_refreshLegacyPartialPack(selectedPack));
+      }
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'sticker-library background sync failed',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
     }
   }
 
@@ -133,6 +205,11 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
           child: Column(
             children: [
               _toolbar(),
+              if (_busy)
+                const LinearProgressIndicator(
+                  key: Key('sticker-library-progress'),
+                  minHeight: 2,
+                ),
               const Divider(height: 1),
               Expanded(child: _body()),
             ],
@@ -187,6 +264,18 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
               tooltip: '管理自定义表情',
               onPressed: _busy ? null : _openCustomManager,
               icon: const Icon(Icons.tune_rounded),
+            ),
+          if (_selectedTab >= 2 && _selectedTab - 2 < _packs.length)
+            IconButton(
+              key: const Key('sticker-share-pack'),
+              tooltip: '分享贴纸包',
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.pop(
+                      context,
+                      StickerPackSharePanelResult(_packs[_selectedTab - 2]),
+                    ),
+              icon: const Icon(Icons.ios_share_rounded),
             ),
           if (_selectedTab >= 2 && _selectedTab - 2 < _packs.length)
             IconButton(
@@ -263,6 +352,50 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
     if (index == _selectedTab) return;
     setState(() => _selectedTab = index);
     widget.onTabChanged?.call(_tabKeyForIndex(index));
+    final selectedPack = _selectedPackOrNull();
+    if (selectedPack != null) {
+      unawaited(_refreshLegacyPartialPack(selectedPack));
+    }
+  }
+
+  StickerPackItemGroup? _selectedPackOrNull() {
+    final packIndex = _selectedTab - 2;
+    if (packIndex < 0 || packIndex >= _packs.length) return null;
+    return _packs[packIndex];
+  }
+
+  Future<void> _refreshLegacyPartialPack(StickerPackItemGroup pack) async {
+    if (pack.unsupportedStickerCount <= 0 ||
+        _partialRefreshAttempted.contains(pack.id)) {
+      return;
+    }
+    _partialRefreshAttempted.add(pack.id);
+    _partialRefreshInFlight.add(pack.id);
+    if (mounted) setState(() {});
+    try {
+      final refreshed = await _gateway.importTelegramPack(
+        origin: widget.origin,
+        accessToken: widget.accessToken,
+        setName: pack.setName,
+      );
+      if (!mounted) return;
+      final index = _packs.indexWhere((item) => item.id == pack.id);
+      if (index < 0) return;
+      final next = List<StickerPackItemGroup>.from(_packs);
+      next[index] = refreshed;
+      setState(() => _packs = next);
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'sticker-library legacy partial pack refresh failed',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
+    } finally {
+      _partialRefreshInFlight.remove(pack.id);
+      if (mounted) setState(() {});
+    }
   }
 
   Widget _packTabIcon(StickerPackItemGroup pack) {
@@ -272,13 +405,22 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
     if (mediaId.isEmpty) {
       return const Icon(Icons.auto_awesome_rounded, size: 22);
     }
+    final coverItem = pack.items
+        .where((item) => item.mediaId == mediaId)
+        .firstOrNull;
+    final mimeType =
+        coverItem?.mimeType ?? pack.items.firstOrNull?.mimeType ?? 'image/webp';
+    final sizeBytes = coverItem?.sizeBytes ?? pack.items.firstOrNull?.sizeBytes ?? 0;
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: _StickerThumb(
         mediaId: mediaId,
-        mimeType: 'image/webp',
+        mimeType: mimeType,
+        sizeBytes: sizeBytes,
         loader: widget.mediaBytesLoader,
+        urlResolver: widget.mediaUrlResolver,
         size: 31,
+        animateTgs: false,
       ),
     );
   }
@@ -352,7 +494,8 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
                       child: InkWell(
                         key: Key('emoji-category-${item.key.name}'),
                         borderRadius: BorderRadius.circular(DdRadii.pill),
-                        onTap: () => setState(() => _selectedEmojiCategory = index),
+                        onTap: () =>
+                            setState(() => _selectedEmojiCategory = index),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 120),
                           width: 44,
@@ -429,9 +572,9 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         crossAxisSpacing: 6,
         mainAxisSpacing: 6,
       ),
-      itemCount: _custom.length + 1,
+      itemCount: _custom.length + (widget.allowCustomStickerCreation ? 1 : 0),
       itemBuilder: (_, index) {
-        if (index == 0) {
+        if (widget.allowCustomStickerCreation && index == 0) {
           return InkWell(
             key: const Key('sticker-custom-add'),
             borderRadius: BorderRadius.circular(DdRadii.control),
@@ -451,7 +594,8 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
             ),
           );
         }
-        final sticker = _custom[index - 1];
+        final sticker =
+            _custom[index - (widget.allowCustomStickerCreation ? 1 : 0)];
         return _stickerCell(
           sticker.asset,
           key: Key('custom-sticker-${sticker.id}'),
@@ -479,9 +623,10 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
                   ),
                 ),
               ),
-              if (pack.unsupportedStickerCount > 0)
+              if (pack.unsupportedStickerCount > 0 &&
+                  !_partialRefreshInFlight.contains(pack.id))
                 Text(
-                  '${pack.unsupportedStickerCount} 个动态/视频表情暂不支持',
+                  '${pack.unsupportedStickerCount} 个表情导入失败',
                   style: const TextStyle(
                     fontSize: 10.5,
                     color: DdColors.textSecondary,
@@ -524,7 +669,9 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
         child: _StickerThumb(
           mediaId: asset.mediaId,
           mimeType: asset.mimeType,
+          sizeBytes: asset.sizeBytes,
           loader: widget.mediaBytesLoader,
+          urlResolver: widget.mediaUrlResolver,
           size: 74,
         ),
       ),
@@ -554,7 +701,9 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
           gateway: _gateway,
           initialItems: _custom,
           mediaBytesLoader: widget.mediaBytesLoader,
+          mediaUrlResolver: widget.mediaUrlResolver,
           onAddCustomSticker: widget.onAddCustomSticker,
+          allowAdd: widget.allowCustomStickerCreation,
         ),
       ),
     );
@@ -595,7 +744,7 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
       widget.onTabChanged?.call('pack:${pack.id}');
       if (pack.unsupportedStickerCount > 0) {
         _showError(
-          '已添加 ${pack.supportedStickerCount} 个静态贴纸；${pack.unsupportedStickerCount} 个动态/视频贴纸当前暂不支持。',
+          '已添加 ${pack.supportedStickerCount} 个表情；${pack.unsupportedStickerCount} 个文件导入失败。',
         );
       }
     } catch (error) {
@@ -749,7 +898,9 @@ class CustomStickerManagerPage extends StatefulWidget {
     required this.gateway,
     required this.initialItems,
     required this.mediaBytesLoader,
+    this.mediaUrlResolver,
     required this.onAddCustomSticker,
+    this.allowAdd = true,
   });
 
   final Uri origin;
@@ -757,8 +908,11 @@ class CustomStickerManagerPage extends StatefulWidget {
   final StickerGateway gateway;
   final List<CustomStickerItem> initialItems;
   final Future<Uint8List> Function(String mediaId) mediaBytesLoader;
+  final Future<Uri> Function(String mediaId, int expectedSizeBytes)?
+  mediaUrlResolver;
   final Future<CustomStickerItem?> Function(StickerGateway gateway)
   onAddCustomSticker;
+  final bool allowAdd;
 
   @override
   State<CustomStickerManagerPage> createState() =>
@@ -812,10 +966,12 @@ class _CustomStickerManagerPageState extends State<CustomStickerManagerPage> {
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
         ),
-        itemCount: _items.length + (_organizing ? 0 : 1),
+        itemCount:
+            _items.length + (!_organizing && widget.allowAdd ? 1 : 0),
         itemBuilder: (_, index) {
-          if (!_organizing && index == 0) return _addCell();
-          final item = _items[index - (_organizing ? 0 : 1)];
+          if (!_organizing && widget.allowAdd && index == 0) return _addCell();
+          final leadingAdd = !_organizing && widget.allowAdd ? 1 : 0;
+          final item = _items[index - leadingAdd];
           return _managerStickerCell(item);
         },
       ),
@@ -878,7 +1034,9 @@ class _CustomStickerManagerPageState extends State<CustomStickerManagerPage> {
             child: _StickerThumb(
               mediaId: item.mediaId,
               mimeType: item.mimeType,
+              sizeBytes: item.sizeBytes,
               loader: widget.mediaBytesLoader,
+              urlResolver: widget.mediaUrlResolver,
               size: 84,
             ),
           ),
@@ -980,28 +1138,76 @@ class _StickerThumb extends StatelessWidget {
   const _StickerThumb({
     required this.mediaId,
     required this.mimeType,
+    required this.sizeBytes,
     required this.loader,
+    this.urlResolver,
     required this.size,
+    this.animateTgs = true,
   });
 
   final String mediaId;
   final String mimeType;
+  final int sizeBytes;
   final Future<Uint8List> Function(String mediaId) loader;
+  final Future<Uri> Function(String mediaId, int expectedSizeBytes)? urlResolver;
   final double size;
+  final bool animateTgs;
 
   @override
   Widget build(BuildContext context) {
-    if (mimeType == 'image/gif') {
+    if (isTelegramTgsMime(mimeType)) {
       return SizedBox.square(
         dimension: size,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(DdRadii.control),
+        child: FutureBuilder<Uint8List>(
+          future: loader(mediaId),
+          builder: (context, snapshot) {
+            final bytes = snapshot.data;
+            if (bytes == null || bytes.isEmpty) {
+              if (snapshot.hasError) {
+                return const Center(
+                  child: Icon(
+                    Icons.broken_image_outlined,
+                    color: DdColors.textTertiary,
+                  ),
+                );
+              }
+              return const Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 1.7),
+                ),
+              );
+            }
+            return TelegramTgsSticker(bytes: bytes, animate: animateTgs);
+          },
+        ),
+      );
+    }
+    if (mimeType.startsWith('video/')) {
+      final resolver = urlResolver;
+      if (resolver == null) {
+        return SizedBox.square(
+          dimension: size,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(DdRadii.control),
+            ),
+            child: const Center(
+              child: Text(
+                'VIDEO',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
           ),
-          child: const Center(
-            child: Text('GIF', style: TextStyle(fontWeight: FontWeight.w700)),
-          ),
+        );
+      }
+      return SizedBox.square(
+        dimension: size,
+        child: LoopingVideoSticker(
+          playbackId: 'library-$mediaId',
+          sourceResolver: () => resolver(mediaId, sizeBytes),
         ),
       );
     }

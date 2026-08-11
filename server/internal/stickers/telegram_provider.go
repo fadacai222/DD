@@ -1,6 +1,8 @@
 package stickers
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -213,15 +215,124 @@ func sniffTelegramStickerMIME(data []byte) string {
 	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
 		return "image/webp"
 	}
+	if len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}) {
+		return "image/png"
+	}
+	if len(data) >= 2 && data[0] == 0x1F && data[1] == 0x8B {
+		return "application/x-tgsticker"
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{0x1A, 0x45, 0xDF, 0xA3}) {
+		probe := data
+		if len(probe) > 4096 {
+			probe = probe[:4096]
+		}
+		if bytes.Contains(bytes.ToLower(probe), []byte("webm")) {
+			return "video/webm"
+		}
+	}
 	return "application/octet-stream"
 }
 
+func telegramStickerMaximumSize(source TelegramSticker) int64 {
+	if source.IsAnimated && !source.IsVideo {
+		return MaximumTelegramAnimatedStickerSize
+	}
+	if source.IsVideo && !source.IsAnimated {
+		return MaximumTelegramVideoStickerSize
+	}
+	if !source.IsAnimated && !source.IsVideo {
+		return MaximumTelegramStaticStickerSize
+	}
+	return 0
+}
+
+func telegramStickerMIMEMatchesSource(source TelegramSticker, mimeType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	if source.IsAnimated && !source.IsVideo {
+		return normalized == "application/x-tgsticker"
+	}
+	if source.IsVideo && !source.IsAnimated {
+		return normalized == "video/webm"
+	}
+	if !source.IsAnimated && !source.IsVideo {
+		return normalized == "image/webp" || normalized == "image/png"
+	}
+	return false
+}
+
+func normalizeTelegramStickerFile(source TelegramSticker, file TelegramFile) (TelegramFile, error) {
+	if len(file.Bytes) == 0 || source.IsAnimated && source.IsVideo {
+		return TelegramFile{}, ErrTelegramStickerDownloadInvalid
+	}
+	maxBytes := telegramStickerMaximumSize(source)
+	if maxBytes == 0 {
+		return TelegramFile{}, ErrTelegramStickerFormatUnsupported
+	}
+	if int64(len(file.Bytes)) > maxBytes {
+		return TelegramFile{}, ErrTelegramStickerDownloadTooLarge
+	}
+
+	detected := sniffTelegramStickerMIME(file.Bytes)
+	switch {
+	case source.IsAnimated:
+		if detected != "application/x-tgsticker" || !validTelegramTGS(file.Bytes) {
+			return TelegramFile{}, fmt.Errorf("%w: invalid TGS sticker", ErrTelegramStickerFormatUnsupported)
+		}
+		file.MIMEType = "application/x-tgsticker"
+		if path.Ext(file.FileName) == "" {
+			file.FileName += ".tgs"
+		}
+	case source.IsVideo:
+		if detected != "video/webm" {
+			return TelegramFile{}, fmt.Errorf("%w: invalid WebM sticker", ErrTelegramStickerFormatUnsupported)
+		}
+		file.MIMEType = "video/webm"
+		if path.Ext(file.FileName) == "" {
+			file.FileName += ".webm"
+		}
+	default:
+		if detected != "image/webp" && detected != "image/png" {
+			return TelegramFile{}, fmt.Errorf("%w: invalid static sticker", ErrTelegramStickerFormatUnsupported)
+		}
+		file.MIMEType = detected
+	}
+	return file, nil
+}
+
+func validateTelegramStickerFile(source TelegramSticker, file TelegramFile) error {
+	_, err := normalizeTelegramStickerFile(source, file)
+	return err
+}
+
 func validateStaticTelegramSticker(file TelegramFile) error {
-	if file.MIMEType != "image/webp" || sniffTelegramStickerMIME(file.Bytes) != "image/webp" {
-		return fmt.Errorf("%w: only static WebP stickers are currently supported", ErrTelegramStickerFormatUnsupported)
+	return validateTelegramStickerFile(TelegramSticker{}, file)
+}
+
+func validTelegramTGS(data []byte) bool {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return false
 	}
-	if len(file.Bytes) == 0 || len(file.Bytes) > MaximumTelegramStickerSize {
-		return ErrTelegramStickerDownloadTooLarge
+	defer reader.Close()
+	const maxDecodedTGSBytes = 4 * 1024 * 1024
+	decoded, err := io.ReadAll(io.LimitReader(reader, maxDecodedTGSBytes+1))
+	if err != nil || len(decoded) == 0 || len(decoded) > maxDecodedTGSBytes {
+		return false
 	}
-	return nil
+	var document struct {
+		Version   string  `json:"v"`
+		FrameRate float64 `json:"fr"`
+		InPoint   float64 `json:"ip"`
+		OutPoint  float64 `json:"op"`
+		Width     int     `json:"w"`
+		Height    int     `json:"h"`
+	}
+	if err := json.Unmarshal(decoded, &document); err != nil {
+		return false
+	}
+	return strings.TrimSpace(document.Version) != "" &&
+		document.FrameRate > 0 &&
+		document.OutPoint > document.InPoint &&
+		document.Width > 0 && document.Width <= 512 &&
+		document.Height > 0 && document.Height <= 512
 }

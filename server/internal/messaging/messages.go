@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"example.com/selfhosted-im/server/internal/auth/account"
@@ -19,7 +20,7 @@ func mediaPurposeForMessageType(messageType string) (string, bool) {
 		return "CHAT_IMAGE", true
 	case "GIF":
 		return "GIF", true
-	case "STICKER":
+	case "STICKER", "STICKER_PACK":
 		return "STICKER", true
 	case "FILE":
 		return "CHAT_FILE", true
@@ -167,6 +168,45 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 		input.Content.MIMEType = mimeType
 		input.Content.SizeBytes = sizeBytes
 		primaryMediaID = &parsedMediaID
+
+		if input.Type == "STICKER_PACK" {
+			if input.forwardSourceID != nil {
+				if input.trustedStickerPackShareURI == "" {
+					return SendResult{}, ErrConflict
+				}
+				input.Content.Text = input.trustedStickerPackShareURI
+			} else {
+				var setName string
+				var title string
+				packErr := tx.QueryRow(ctx, `
+					SELECT p.set_name,p.title
+					FROM telegram_sticker_items item
+					JOIN telegram_sticker_packs p ON p.id=item.pack_id
+					WHERE item.media_id=$1
+					  AND item.id=(
+						SELECT first_item.id
+						FROM telegram_sticker_items first_item
+						WHERE first_item.pack_id=item.pack_id
+						ORDER BY first_item.sort_order,first_item.id
+						LIMIT 1
+					  )
+				`, parsedMediaID).Scan(&setName, &title)
+				if errors.Is(packErr, pgx.ErrNoRows) {
+					return SendResult{}, ErrForbidden
+				}
+				if packErr != nil {
+					return SendResult{}, fmt.Errorf("load sticker pack share metadata: %w", packErr)
+				}
+				if title == "" {
+					title = setName
+				}
+				shareURL := url.URL{Scheme: "dd", Host: "stickers", Path: "/telegram/" + setName}
+				query := shareURL.Query()
+				query.Set("title", title)
+				shareURL.RawQuery = query.Encode()
+				input.Content.Text = shareURL.String()
+			}
+		}
 
 		if input.Type == "VIDEO" {
 			parsedPosterID := uuid.MustParse(input.Content.PosterMediaID)

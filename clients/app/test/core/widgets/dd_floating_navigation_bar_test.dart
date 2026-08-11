@@ -95,10 +95,16 @@ void main() {
       find.byKey(const Key('dd-floating-navigation-indicator')),
     );
     expect(firstIndicator.left, 0);
+    final firstIndicatorDecoration =
+        (firstIndicator.child as DecoratedBox).decoration as BoxDecoration;
     expect(
-      ((firstIndicator.child as DecoratedBox).decoration as BoxDecoration)
-          .color,
+      firstIndicatorDecoration.color,
       DdFloatingNavigationTokens.selectedSurface(Brightness.light),
+    );
+    expect(
+      firstIndicatorDecoration.borderRadius,
+      BorderRadius.circular(DdRadii.pill),
+      reason: '选中态必须和 Telegram 一样使用真正的全圆角 pill，不能出现半吊子圆角。',
     );
 
     await tester.tap(find.byKey(const Key('dd-floating-navigation-item-1')));

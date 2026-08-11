@@ -174,6 +174,7 @@ deviceId
 | DELETE | `/api/v1/messages/{messageId}/pin` | 取消置顶 |
 | POST | `/api/v1/messages/{messageId}/forward` | 转发 |
 | GET | `/api/v1/messages/search` | 消息搜索 |
+| GET | `/api/v1/link-preview?url=...` | 已认证的公共 HTTP/HTTPS 链接预览；服务端代抓取并阻断私网/回环/危险端口/不安全重定向 |
 | PUT | `/api/v1/saved-messages/conversation` | 确保 SELF 会话 |
 | GET | `/api/v1/saved-messages` | 传统收藏列表 |
 | GET | `/api/v1/sync` | cursor sync |
@@ -183,6 +184,7 @@ deviceId
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/api/v1/media/uploads` | reserve 上传 |
+| DELETE | `/api/v1/media/uploads/{uploadId}/cancel` | 取消未完成上传并立即释放 reservation/对象存储残留 |
 | POST | `/api/v1/media/uploads/{uploadId}/complete` | 完成确认 |
 | GET | `/api/v1/media/{mediaId}` | 媒体 metadata |
 | POST | `/api/v1/media/{mediaId}/download-url` | 授权并签短期下载 URL |
@@ -210,6 +212,8 @@ deviceId
 | PUT/DELETE | `/api/v1/moments/{momentId}/like` | 点赞/取消点赞 |
 | POST | `/api/v1/moments/{momentId}/comments` | 评论/回复 |
 | DELETE | `/api/v1/moments/{momentId}/comments/{commentId}` | 删除有权删除的评论 |
+| GET | `/api/v1/moment-activity` | 读取当前用户持久化的朋友圈互动未读数 + 最近 30 条仍可见互动明细 |
+| POST | `/api/v1/moment-activity/read` | 把当前已有朋友圈互动标记为已读，并返回最新未读数 + 最近互动明细 |
 | GET | `/api/v1/moment-preferences` | 长期朋友圈关系隐私偏好 |
 | PATCH | `/api/v1/moment-preferences/{userId}` | 设置/清除“不看他/不让他看” |
 
@@ -574,6 +578,7 @@ TEXT
 IMAGE
 GIF
 STICKER
+STICKER_PACK
 FILE
 VOICE
 VIDEO
@@ -819,6 +824,9 @@ MIME：
 image/png
 image/webp
 image/gif
+video/mp4
+video/webm
+application/x-tgsticker   # 从 Telegram Pack/消息保存到个人库时允许
 ```
 
 ## 12.2 `telegram_sticker_packs`
@@ -841,11 +849,16 @@ unsupported_sticker_count
 
 ## 12.3 `telegram_sticker_items`
 
-当前正式缓存只接受：
+`000029_telegram_sticker_dynamic_video` 后正式缓存接受：
 
 ```text
 image/webp
+image/png
+application/x-tgsticker
+video/webm
 ```
+
+`unsupported_sticker_count` 保留为兼容字段，但语义改为“源项目格式损坏/超限/无法导入数量”，不再表示合法动态/视频 Sticker 不受支持。
 
 每 item 保存 provider source identity、DD mediaId、尺寸、size、sort。
 
@@ -898,7 +911,7 @@ version
 
 ---
 
-# 14. P8 Moments 数据（migration `000019_moments`）
+# 14. P8 Moments 数据（migration `000019_moments` + `000028_moment_activity`）
 
 正式表：
 
@@ -909,6 +922,7 @@ moment_visibility_users
 moment_likes
 moment_comments
 moment_relationship_preferences
+moment_activity_notifications
 ```
 
 `moments.visibility`：
@@ -922,6 +936,8 @@ EXCLUDE
 `moment_media.sort_order` 限 0..8，即一条 Moment 最多 9 个媒体引用；当前产品约束为最多 9 图或单视频。媒体 purpose 已扩展 `MOMENT_IMAGE/MOMENT_VIDEO`。
 
 Feed/单条读取不能只按表存在返回，必须重新计算 contact、Block、长期 preference 和单条 audience。
+
+`000028_moment_activity` 增加 `moment_activity_notifications` 作为朋友圈点赞/评论/回复的**持久互动事实**。它与 Push Job 分离：Push 失败或被系统吞掉不能导致角标丢失。LIKE 以 Moment+actor+recipient 去重；COMMENT/回复以 comment+recipient 去重；取消点赞、删除评论/动态会同步清理对应活动记录。`GET /api/v1/moment-activity` 除 `unreadCount` 外还返回最近 30 条仍可见的互动 `items`，每条包含 `kind / actor / momentId / commentId? / commentText? / createdAt / read`，用于朋友圈顶部“互动焦点”和互动消息面板；标记已读只更新 `read_at`，不会删除历史互动。未读汇总与最近互动列表都必须重新检查当前 Moment 可见性和 Block，避免不可见内容留下幽灵角标或历史泄漏。
 
 ---
 
@@ -1120,6 +1136,21 @@ profile_avatars
 
 服务端发送时必须验证当前用户拥有发送权限。
 
+## 18.6 STICKER_PACK
+
+```json
+{
+  "type": "STICKER_PACK",
+  "content": {
+    "mediaId": "first-sticker-media-uuid",
+    "width": 512,
+    "height": 512
+  }
+}
+```
+
+客户端分享 Telegram Pack 时提交排序第一项作为预览媒体；服务端必须再次验证该媒体确实属于当前用户已订阅 Pack 且确实为该 Pack 首项，然后把它作为 `message_media.PRIMARY` 挂入消息，并在返回内容中补入服务端生成的 `dd://stickers/telegram/<setName>?title=...`。这样接收方在未订阅 Pack 前仍可通过消息媒体授权读取缩略图。转发 `STICKER_PACK` 时复用原消息的可信导入 URI 与 PRIMARY 媒体授权，不依赖 Pack 缓存仍然存在。
+
 ---
 
 # 19. Mention Suggestion 合同
@@ -1199,9 +1230,10 @@ Complete 后才成为 READY。
 
 # 23. 下一轮 API/Data 必做
 
-1. 修复 P9 Flutter QR 当前 `KNOWN-FAILURE`，确保客户端与已稳定的 QR HTTP/Data 合同一致。
-2. 完成 P10 `000022_push` 真实 PostgreSQL roundtrip，再实现 Push domain、endpoint API、durable Job producer、Worker consumer、provider adapter 与客户端 token 注册；在这些完成前不要把当前 Push schema 当稳定产品合同发布。
-3. P11 E2EE 需要新增 identity/prekey/session/device/backup 等独立数据模型，不能污染当前明文 message schema 后假装加密完成。
-4. Admin 新建独立管理员 identity/RBAC/audit/report schema，不能复用普通用户 token 当管理员权限。
-5. 头像迁移统一媒体存储前写 migration/兼容 ADR。
-6. P13 生产化前补 migration compatibility、backup/restore 与 schema upgrade 演练。
+1. P9 QR HTTP/Data/Flutter 主链已自动验证，下一步只在真人扫码/跨设备验收暴露真实合同问题时做 Stop-the-line 修复；不要重新规划 QR 主体。
+2. P10 Push domain、endpoint API、durable Job、Worker、FCM/APNs/UnifiedPush provider 与客户端 token 注册已经实现；下一步补生产 provider 运维/监控证据，并保持 Push PostgreSQL lifecycle + worker CI 门禁。
+3. CI 需要显式增加 Moments / QR PostgreSQL integration step，避免开发机缺少 `DD_MOMENTS_TEST_DATABASE_URL` 等变量时把 SKIP 当成真实数据库验证。
+4. P11 Production E2EE 已移出 V1；未来若重新立项，必须新建 identity/prekey/session/device/backup 等独立模型，不能污染当前明文 message schema 后假装加密完成。
+5. Admin 新建独立管理员 identity/RBAC/audit/report/data-rights schema，不能复用普通用户 token 当管理员权限。
+6. 头像迁移统一媒体存储前写 migration/兼容 ADR。
+7. P13 生产化前补 migration compatibility、backup/restore 与 schema upgrade 演练。

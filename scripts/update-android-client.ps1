@@ -14,7 +14,51 @@ $ApkPath = Join-Path $Root 'clients\app\build\app\outputs\flutter-apk\app-debug.
 $RootApk = Join-Path $Root 'DD-Android.apk'
 $PackageName = 'org.openimx.client'
 $MainActivity = 'org.openimx.client/.MainActivity'
-$Adb = 'adb.exe'
+
+function Find-Adb {
+    $command = Get-Command adb.exe -ErrorAction SilentlyContinue
+    if ($null -ne $command -and (Test-Path -LiteralPath $command.Source)) {
+        return $command.Source
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    $localProperties = Join-Path $Root 'clients\app\android\local.properties'
+    if (Test-Path -LiteralPath $localProperties) {
+        $sdkLine = Get-Content -LiteralPath $localProperties -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^sdk\.dir=' } |
+            Select-Object -First 1
+        if ($null -ne $sdkLine) {
+            $sdkDir = ([string]$sdkLine).Substring(8).Trim().Replace('\\', '\')
+            if (-not [string]::IsNullOrWhiteSpace($sdkDir)) {
+                $candidates.Add((Join-Path $sdkDir 'platform-tools\adb.exe'))
+            }
+        }
+    }
+
+    foreach ($sdkRoot in @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)) {
+        if (-not [string]::IsNullOrWhiteSpace($sdkRoot)) {
+            $candidates.Add((Join-Path $sdkRoot 'platform-tools\adb.exe'))
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'))
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    throw @'
+adb.exe was not found.
+Install Android SDK Platform-Tools (Android Studio > SDK Manager > SDK Tools),
+or set ANDROID_SDK_ROOT / ANDROID_HOME. DD will detect it automatically next time.
+'@
+}
+
+$Adb = Find-Adb
 
 function Write-Step {
     param([string]$Text)
@@ -90,8 +134,13 @@ function Get-PackageSummary {
 
 Write-Host 'DD Android one-click updater' -ForegroundColor Green
 Write-Host "Project: $Root"
+Write-Host "ADB: $Adb"
 
 Write-Step 'Checking ADB device'
+& $Adb start-server | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "ADB server failed to start: $Adb"
+}
 $DeviceSerial = Resolve-DeviceSerial
 $model = ((& $Adb -s $DeviceSerial shell getprop ro.product.model 2>$null) -join '').Trim()
 Write-Host "Device: $DeviceSerial $model"

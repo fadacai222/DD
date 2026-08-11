@@ -79,7 +79,7 @@ Windows 不伪装 Camera Scanner 支持；允许手动粘贴/解析 payload 作�
 
 服务端：`IMPLEMENTED + AUTO-VERIFIED`。
 
-Flutter：代码已实现，但 2026-08-11 当前 analyzer/QR tests 有 `KNOWN-FAILURE`，因此整体 P9 仍 release-blocked。
+Flutter：代码已实现；2026-08-11 的 QR 定向 analyzer/tests/build 阻断已修复并有通过证据。2026-08-12 本轮全 App analyzer/test 也已重新通过；当前 worktree 仍需真实扫码、跨设备登录与生产发布链验收，但不再被 Shell/Sticker analyzer 回归阻断。
 
 ## 后果
 

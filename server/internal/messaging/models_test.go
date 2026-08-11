@@ -22,6 +22,8 @@ func TestNormalizeSendInput(t *testing.T) {
 		{name: "image invalid dimensions", input: SendMessageInput{ClientMessageID: "client-0006", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", Width: 0, Height: 1440}}, wantErr: ErrInvalidInput},
 		{name: "valid gif", input: SendMessageInput{ClientMessageID: "client-0007", Type: "GIF", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000124", Width: 480, Height: 320}}},
 		{name: "valid sticker", input: SendMessageInput{ClientMessageID: "client-0008", Type: "STICKER", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000125", Width: 512, Height: 512}}},
+		{name: "valid sticker pack share", input: SendMessageInput{ClientMessageID: "client-pack-0001", Type: "STICKER_PACK", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000125", Width: 512, Height: 512}}},
+		{name: "sticker pack share missing preview", input: SendMessageInput{ClientMessageID: "client-pack-0002", Type: "STICKER_PACK", Content: &TextContent{}}, wantErr: ErrInvalidInput},
 		{name: "valid file", input: SendMessageInput{ClientMessageID: "client-0009", Type: "FILE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000126"}}},
 		{name: "valid voice", input: SendMessageInput{ClientMessageID: "client-0010", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 4200}}},
 		{name: "voice too short", input: SendMessageInput{ClientMessageID: "client-0011", Type: "VOICE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000127", DurationMS: 100}}, wantErr: ErrInvalidInput},

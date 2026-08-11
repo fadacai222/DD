@@ -23,6 +23,8 @@ type fakeMomentsService struct {
 	item         moments.Moment
 	profile      moments.Profile
 	profileInput moments.UpdateProfileInput
+	activity     moments.ActivitySummary
+	markReadHits int
 	err          error
 }
 
@@ -68,6 +70,13 @@ func (f *fakeMomentsService) GetProfile(_ context.Context, _ account.Principal, 
 func (f *fakeMomentsService) UpdateProfile(_ context.Context, _ account.Principal, input moments.UpdateProfileInput) (moments.Profile, []uuid.UUID, error) {
 	f.profileInput = input
 	return f.profile, f.recipients, f.err
+}
+func (f *fakeMomentsService) GetActivitySummary(_ context.Context, _ account.Principal) (moments.ActivitySummary, error) {
+	return f.activity, f.err
+}
+func (f *fakeMomentsService) MarkActivityRead(_ context.Context, _ account.Principal) (moments.ActivitySummary, error) {
+	f.markReadHits++
+	return moments.ActivitySummary{Items: []moments.ActivityItem{}}, f.err
 }
 
 func TestMomentsCreateAndLikeUseAuthenticatedSurface(t *testing.T) {
@@ -120,7 +129,7 @@ func TestMomentsProfileGetAndPatchUseAuthenticatedOwner(t *testing.T) {
 	}
 	handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, MomentsService: fake})
 
-	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/moments/profile/"+principal.UserID.String(), nil)
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/moment-profiles/"+principal.UserID.String(), nil)
 	getRequest.Header.Set("Authorization", "Bearer access")
 	getResponse := httptest.NewRecorder()
 	handler.ServeHTTP(getResponse, getRequest)
@@ -128,7 +137,7 @@ func TestMomentsProfileGetAndPatchUseAuthenticatedOwner(t *testing.T) {
 		t.Fatalf("get profile status=%d body=%s", getResponse.Code, getResponse.Body.String())
 	}
 
-	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/moments/profile/"+principal.UserID.String(), strings.NewReader(`{"coverMediaId":"`+coverID+`"}`))
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/moment-profiles/"+principal.UserID.String(), strings.NewReader(`{"coverMediaId":"`+coverID+`"}`))
 	patchRequest.Header.Set("Authorization", "Bearer access")
 	patchRequest.Header.Set("Content-Type", "application/json")
 	patchResponse := httptest.NewRecorder()
@@ -138,7 +147,7 @@ func TestMomentsProfileGetAndPatchUseAuthenticatedOwner(t *testing.T) {
 	}
 
 	peerID := uuid.New()
-	forbidden := httptest.NewRequest(http.MethodPatch, "/api/v1/moments/profile/"+peerID.String(), strings.NewReader(`{"coverMediaId":""}`))
+	forbidden := httptest.NewRequest(http.MethodPatch, "/api/v1/moment-profiles/"+peerID.String(), strings.NewReader(`{"coverMediaId":""}`))
 	forbidden.Header.Set("Authorization", "Bearer access")
 	forbidden.Header.Set("Content-Type", "application/json")
 	forbiddenResponse := httptest.NewRecorder()
@@ -171,6 +180,46 @@ func TestMomentsFeedAcceptsOptionalAuthorFilter(t *testing.T) {
 	handler.ServeHTTP(invalidResponse, invalid)
 	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), `"code":"INVALID_MOMENT_REQUEST"`) {
 		t.Fatalf("invalid author status=%d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+}
+
+func TestMomentActivitySummaryAndMarkReadUseAuthenticatedSurface(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	actorID := uuid.New()
+	momentID := uuid.New()
+	fake := &fakeMomentsService{activity: moments.ActivitySummary{
+		UnreadCount: 123,
+		Items: []moments.ActivityItem{{
+			ID:          uuid.NewString(),
+			Kind:        "COMMENT",
+			Actor:       moments.UserPreview{ID: actorID.String(), Handle: "bob", DisplayName: "Bob"},
+			MomentID:    momentID.String(),
+			CommentText: "刚刚评论了你",
+			CreatedAt:   time.Date(2026, 8, 12, 3, 58, 0, 0, time.UTC),
+			Read:        false,
+		}},
+	}}
+	handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, MomentsService: fake})
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/moment-activity", nil)
+	getRequest.Header.Set("Authorization", "Bearer access")
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK ||
+		!strings.Contains(getResponse.Body.String(), `"unreadCount":123`) ||
+		!strings.Contains(getResponse.Body.String(), `"displayName":"Bob"`) ||
+		!strings.Contains(getResponse.Body.String(), `"commentText":"刚刚评论了你"`) {
+		t.Fatalf("get activity status=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+
+	readRequest := httptest.NewRequest(http.MethodPost, "/api/v1/moment-activity/read", nil)
+	readRequest.Header.Set("Authorization", "Bearer access")
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK || fake.markReadHits != 1 ||
+		!strings.Contains(readResponse.Body.String(), `"unreadCount":0`) ||
+		!strings.Contains(readResponse.Body.String(), `"items":[]`) {
+		t.Fatalf("mark activity read status=%d hits=%d body=%s", readResponse.Code, fake.markReadHits, readResponse.Body.String())
 	}
 }
 

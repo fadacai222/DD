@@ -153,6 +153,69 @@ void main() {
     ]);
   });
 
+  test('activity summary and mark-read use durable authenticated resource', () async {
+    final requests = <http.Request>[];
+    final client = MomentsApiClient(
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        final unreadCount = request.method == 'GET' ? 123 : 0;
+        return http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'data': {
+                'unreadCount': unreadCount,
+                'items': [
+                  {
+                    'id': '018f0000-0000-7000-8000-000000000901',
+                    'kind': 'COMMENT',
+                    'actor': {
+                      'id': '018f0000-0000-7000-8000-000000000002',
+                      'handle': 'bob',
+                      'displayName': 'Bob',
+                    },
+                    'momentId': '018f0000-0000-7000-8000-000000000100',
+                    'commentId': '018f0000-0000-7000-8000-000000000801',
+                    'commentText': '刚刚评论了你',
+                    'createdAt': '2026-08-12T03:58:00Z',
+                    'read': request.method != 'GET',
+                  },
+                ],
+              },
+              'requestId': 'req-activity',
+            }),
+          ),
+          200,
+          headers: const {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    addTearDown(client.close);
+
+    final summary = await client.getActivitySummary(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+    );
+    final cleared = await client.markActivityRead(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+    );
+
+    expect(summary.unreadCount, 123);
+    expect(summary.items, hasLength(1));
+    expect(summary.items.single.kind, 'COMMENT');
+    expect(summary.items.single.actor.displayName, 'Bob');
+    expect(summary.items.single.commentText, '刚刚评论了你');
+    expect(summary.items.single.read, isFalse);
+    expect(cleared.unreadCount, 0);
+    expect(cleared.items.single.read, isTrue);
+    expect(requests.map((request) => request.method), ['GET', 'POST']);
+    expect(
+      requests.map((request) => request.url.path),
+      ['/api/v1/moment-activity', '/api/v1/moment-activity/read'],
+    );
+    expect(requests.first.headers['authorization'], 'Bearer token');
+  });
+
   test('stable server code is preserved on privacy failure', () async {
     final client = MomentsApiClient(
       httpClient: MockClient(

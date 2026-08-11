@@ -14,12 +14,12 @@ import (
 )
 
 type fakeAuthService struct {
-	sendErr       error
-	registerErr   error
-	loginErr      error
-	refreshErr    error
-	loginResult   *account.AuthSession
-	refreshResult *account.AuthSession
+	sendErr           error
+	registerErr       error
+	loginErr          error
+	refreshErr        error
+	loginResult       *account.AuthSession
+	refreshResult     *account.AuthSession
 	lastEmail         string
 	lastRefresh       string
 	clearRevokedCount int64

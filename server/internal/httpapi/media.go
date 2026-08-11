@@ -14,6 +14,7 @@ import (
 
 type MediaService interface {
 	CreateUpload(ctx context.Context, principal account.Principal, input media.CreateUploadInput) (media.UploadGrant, error)
+	CancelUpload(ctx context.Context, principal account.Principal, uploadID uuid.UUID) error
 	CompleteUpload(ctx context.Context, principal account.Principal, uploadID uuid.UUID) (media.CompleteUploadResult, error)
 	GetMedia(ctx context.Context, principal account.Principal, mediaID uuid.UUID) (media.MediaObject, error)
 	CreateDownloadURL(ctx context.Context, principal account.Principal, mediaID uuid.UUID) (string, time.Time, error)
@@ -47,17 +48,37 @@ func (s *server) handleMediaUploadByID(response http.ResponseWriter, request *ht
 		return
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/v1/media/uploads/"), "/"), "/")
-	if len(parts) != 2 || parts[1] != "complete" {
+	if len(parts) < 1 || len(parts) > 2 || strings.TrimSpace(parts[0]) == "" {
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
-		return
-	}
-	if request.Method != http.MethodPost {
-		methodNotAllowed(response, http.MethodPost)
 		return
 	}
 	uploadID, err := uuid.Parse(strings.TrimSpace(parts[0]))
 	if err != nil {
 		writeAPIError(response, http.StatusBadRequest, "INVALID_REQUEST", "uploadId must be a UUID")
+		return
+	}
+	if len(parts) == 1 {
+		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
+		return
+	}
+	if parts[1] == "cancel" {
+		if request.Method != http.MethodDelete {
+			methodNotAllowed(response, http.MethodDelete)
+			return
+		}
+		if err := s.media.CancelUpload(request.Context(), principal, uploadID); err != nil {
+			s.writeMediaError(response, request, err)
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if parts[1] != "complete" {
+		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
+		return
+	}
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response, http.MethodPost)
 		return
 	}
 	result, err := s.media.CompleteUpload(request.Context(), principal, uploadID)

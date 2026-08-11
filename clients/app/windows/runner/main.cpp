@@ -12,7 +12,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous,
   if (single_instance_mutex != nullptr &&
       ::GetLastError() == ERROR_ALREADY_EXISTS) {
     if (HWND existing = ::FindWindowW(nullptr, L"DD")) {
-      if (::IsIconic(existing)) {
+      if (!::IsWindowVisible(existing)) {
+        ::ShowWindow(existing, SW_SHOW);
+      } else if (::IsIconic(existing)) {
         ::ShowWindow(existing, SW_RESTORE);
       }
       ::SetForegroundWindow(existing);
@@ -33,6 +35,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous,
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
+  // DD is a media-heavy desktop client. When Windows has both an integrated
+  // and a discrete GPU, prefer the high-performance adapter instead of leaving
+  // adapter selection to the system default.
+  project.set_gpu_preference(
+      flutter::GpuPreference::HighPerformancePreference);
   project.set_dart_entrypoint_arguments(GetCommandLineArguments());
 
   FlutterWindow window(project);

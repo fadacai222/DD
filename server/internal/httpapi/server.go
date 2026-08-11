@@ -56,6 +56,8 @@ type Config struct {
 	StickersService    StickersService
 	MomentsService     MomentsService
 	QRService          QRService
+	PushService        PushService
+	PushAvatarSecret   string
 	RealtimeEventBus   RealtimeEventBus
 	Logger             *slog.Logger
 	Now                func() time.Time
@@ -86,6 +88,8 @@ type server struct {
 	stickers             StickersService
 	moments              MomentsService
 	qr                   QRService
+	push                 PushService
+	pushAvatarSecret     string
 	realtimeEventBus     RealtimeEventBus
 	realtimePublishQueue chan realtimeBusDelivery
 	eventSequence        atomic.Int64
@@ -154,6 +158,8 @@ func NewHandler(config Config) http.Handler {
 		stickers:           config.StickersService,
 		moments:            config.MomentsService,
 		qr:                 config.QRService,
+		push:               config.PushService,
+		pushAvatarSecret:   strings.TrimSpace(config.PushAvatarSecret),
 		realtimeEventBus:   config.RealtimeEventBus,
 		legacyCalls:        newCallStore(),
 		hub:                newSocketHub(),
@@ -167,6 +173,7 @@ func NewHandler(config Config) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openimx/client", s.handleWellKnownClient)
+	mux.HandleFunc("/push-assets/avatars/", s.handlePushAvatarAsset)
 	mux.HandleFunc("/api/v1/instance", s.handleInstance)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/live", s.handleLive)
@@ -209,6 +216,7 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/saved-messages/conversation", s.handleSavedConversation)
 	mux.HandleFunc("/api/v1/saved-messages", s.handleSavedMessages)
 	mux.HandleFunc("/api/v1/messages/search", s.handleMessageSearch)
+	mux.HandleFunc("/api/v1/link-preview", s.handleLinkPreview)
 	mux.HandleFunc("/api/v1/messages/", s.handleMessageByID)
 	mux.HandleFunc("/api/v1/media/uploads", s.handleMediaUploads)
 	mux.HandleFunc("/api/v1/media/uploads/", s.handleMediaUploadByID)
@@ -220,6 +228,9 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/stickers/packs", s.handleStickerPacks)
 	mux.HandleFunc("/api/v1/moment-preferences", s.handleMomentPreferences)
 	mux.HandleFunc("/api/v1/moment-preferences/", s.handleMomentPreferences)
+	mux.HandleFunc("/api/v1/moment-profiles/", s.handleMomentProfile)
+	mux.HandleFunc("/api/v1/moment-activity", s.handleMomentActivity)
+	mux.HandleFunc("/api/v1/moment-activity/", s.handleMomentActivity)
 	mux.HandleFunc("/api/v1/moments", s.handleMoments)
 	mux.HandleFunc("/api/v1/moments/", s.handleMomentByID)
 	mux.HandleFunc("/api/v1/qr/me", s.handleMyQR)
@@ -231,6 +242,10 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/qr-login/scan", s.handleQRLoginScan)
 	mux.HandleFunc("/api/v1/qr-login/confirm", s.handleQRLoginConfirm)
 	mux.HandleFunc("/api/v1/qr-login/consume", s.handleQRLoginConsume)
+	mux.HandleFunc("/api/v1/push/preferences", s.handlePushPreferences)
+	mux.HandleFunc("/api/v1/push/endpoints", s.handlePushEndpoints)
+	mux.HandleFunc("/api/v1/push/endpoints/", s.handlePushEndpointByProvider)
+	mux.HandleFunc("/api/v1/push/test", s.handlePushTest)
 	mux.HandleFunc("/api/v1/sync", s.handleSync)
 	mux.HandleFunc("/api/calls/token", s.handleCallToken)
 	mux.HandleFunc("/api/calls/active", s.handleActiveCall)

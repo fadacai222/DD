@@ -7,9 +7,14 @@ import '../../theme/app_theme.dart';
 /// Windows 使用 DD 自己的窗口栏，底层 Win32 只保留阴影、缩放边界和窗口生命周期。
 /// Web / Android / iOS / macOS / Linux 不插入这一层。
 class DesktopWindowFrame extends StatefulWidget {
-  const DesktopWindowFrame({super.key, required this.child});
+  const DesktopWindowFrame({
+    super.key,
+    required this.child,
+    this.onBackRequested,
+  });
 
   final Widget child;
+  final VoidCallback? onBackRequested;
 
   @override
   State<DesktopWindowFrame> createState() => _DesktopWindowFrameState();
@@ -89,7 +94,7 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
     final background = DdDesktopTokens.titleBarSurface(brightness);
     final border = DdDesktopTokens.borderSubtle(brightness);
 
-    return Stack(
+    final frame = Stack(
       children: [
         Positioned.fill(
           child: ColoredBox(
@@ -149,8 +154,8 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
                             : Icons.crop_square_rounded,
                       ),
                       _WindowButton(
-                        tooltip: '关闭',
-                        onPressed: () => _invoke('close'),
+                        tooltip: '关闭到托盘',
+                        onPressed: () => _invoke('hideToTray'),
                         icon: Icons.close_rounded,
                         danger: true,
                       ),
@@ -163,6 +168,15 @@ class _DesktopWindowFrameState extends State<DesktopWindowFrame> {
           ),
         ),
       ],
+    );
+
+    final onBackRequested = widget.onBackRequested;
+    if (onBackRequested == null) return frame;
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.escape): onBackRequested,
+      },
+      child: frame,
     );
   }
 }

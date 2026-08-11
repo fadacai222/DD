@@ -10,11 +10,16 @@ import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../messaging/data/media_api_client.dart';
 import '../../messaging/data/messaging_api_client.dart';
+import '../../messaging/data/video_media_probe.dart';
 import '../../messaging/presentation/video_viewer_page.dart';
+import '../../messaging/presentation/widgets/inline_video_preview.dart';
 import '../data/moments_api_client.dart';
 import '../domain/moment_models.dart';
 import 'moment_cover_crop_page.dart';
 import 'moment_publish_page.dart';
+
+typedef MomentVideoMetadataLoader =
+    Future<VideoMediaMetadata> Function(Uri url);
 
 class MomentsFeedPage extends StatefulWidget {
   const MomentsFeedPage({
@@ -29,6 +34,7 @@ class MomentsFeedPage extends StatefulWidget {
     this.authorDisplayName,
     this.gateway,
     this.mediaApi,
+    this.videoMetadataLoader,
   });
 
   final Uri origin;
@@ -41,6 +47,7 @@ class MomentsFeedPage extends StatefulWidget {
   final Future<String?> Function() onUnauthorized;
   final MomentsGateway? gateway;
   final MediaApiClient? mediaApi;
+  final MomentVideoMetadataLoader? videoMetadataLoader;
 
   @override
   State<MomentsFeedPage> createState() => _MomentsFeedPageState();
@@ -48,13 +55,16 @@ class MomentsFeedPage extends StatefulWidget {
 
 class _MomentsFeedPageState extends State<MomentsFeedPage> {
   late final MomentsGateway _gateway;
+  late final MomentActivityGateway? _activityGateway;
   late final MediaApiClient _media;
   late final bool _ownsGateway;
   late final bool _ownsMedia;
   final ScrollController _scroll = ScrollController();
   final Map<String, Future<MediaDownloadGrant>> _downloadGrants = {};
   final Map<String, Future<MediaObjectInfo>> _mediaInfo = {};
+  final Map<String, Future<VideoMediaMetadata>> _videoMetadata = {};
   List<MomentItem> _items = const [];
+  MomentActivitySummary _activity = const MomentActivitySummary(unreadCount: 0);
   MomentProfile? _profile;
   Future<Uint8List>? _coverBytes;
   bool _coverSaving = false;
@@ -64,9 +74,8 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   String? _error;
 
   bool get _isPersonalFeed => widget.authorId?.trim().isNotEmpty == true;
-  String get _profileUserId => _isPersonalFeed
-      ? widget.authorId!.trim()
-      : widget.currentUserId;
+  String get _profileUserId =>
+      _isPersonalFeed ? widget.authorId!.trim() : widget.currentUserId;
 
   @override
   void initState() {
@@ -74,6 +83,9 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     _ownsGateway = widget.gateway == null;
     _ownsMedia = widget.mediaApi == null;
     _gateway = widget.gateway ?? MomentsApiClient();
+    _activityGateway = _gateway is MomentActivityGateway
+        ? _gateway as MomentActivityGateway
+        : null;
     _media = widget.mediaApi ?? MediaApiClient();
     _scroll.addListener(_onScroll);
     unawaited(_refresh());
@@ -100,17 +112,24 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
         ),
         centerTitle: true,
-        actions: _isPersonalFeed
-            ? const []
-            : [
-                IconButton(
-                  key: const Key('moments-publish'),
-                  tooltip: '发表',
-                  onPressed: () => unawaited(_openPublish()),
-                  icon: const Icon(Icons.camera_alt_outlined),
-                ),
-                const SizedBox(width: 4),
-              ],
+        actions: [
+          if (MediaQuery.sizeOf(context).width >= 680)
+            IconButton(
+              key: const Key('moments-refresh'),
+              tooltip: '刷新朋友圈',
+              onPressed: _loading ? null : () => unawaited(_refresh()),
+              icon: const Icon(Icons.refresh_rounded),
+            ),
+          if (!_isPersonalFeed) ...[
+            IconButton(
+              key: const Key('moments-publish'),
+              tooltip: '发表',
+              onPressed: () => unawaited(_openPublish()),
+              icon: const Icon(Icons.camera_alt_outlined),
+            ),
+            const SizedBox(width: 4),
+          ],
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: _refresh,
@@ -121,6 +140,8 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
             SliverToBoxAdapter(
               child: _isPersonalFeed ? _personalHeader() : _cover(),
             ),
+            if (!_isPersonalFeed && _activity.items.isNotEmpty)
+              SliverToBoxAdapter(child: _activityFocus()),
             if (_error != null)
               SliverToBoxAdapter(
                 child: Padding(
@@ -132,10 +153,25 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                       padding: const EdgeInsets.all(10),
                       child: Row(
                         children: [
-                          const Icon(Icons.error_outline_rounded, color: DdColors.danger, size: 18),
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: DdColors.danger,
+                            size: 18,
+                          ),
                           const SizedBox(width: 8),
-                          Expanded(child: Text(_error!, style: const TextStyle(fontSize: 12, color: DdColors.danger))),
-                          TextButton(onPressed: () => unawaited(_refresh()), child: const Text('重试')),
+                          Expanded(
+                            child: Text(
+                              _error!,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: DdColors.danger,
+                              ),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => unawaited(_refresh()),
+                            child: const Text('重试'),
+                          ),
                         ],
                       ),
                     ),
@@ -154,7 +190,11 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.photo_library_outlined, size: 48, color: DdColors.textTertiary),
+                      const Icon(
+                        Icons.photo_library_outlined,
+                        size: 48,
+                        color: DdColors.textTertiary,
+                      ),
                       const SizedBox(height: 10),
                       Text(
                         _isPersonalFeed ? '暂无可见内容' : '朋友圈还是空的',
@@ -182,10 +222,18 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                 padding: const EdgeInsets.symmetric(vertical: 20),
                 child: Center(
                   child: _loadingMore
-                      ? const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const SizedBox.square(
+                          dimension: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
                       : Text(
-                          _hasMore && _items.isNotEmpty ? '继续上滑加载' : (_items.isEmpty ? '' : '— 暂时没有更多了 —'),
-                          style: const TextStyle(fontSize: 11, color: DdColors.textTertiary),
+                          _hasMore && _items.isNotEmpty
+                              ? '继续上滑加载'
+                              : (_items.isEmpty ? '' : '— 暂时没有更多了 —'),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: DdColors.textTertiary,
+                          ),
                         ),
                 ),
               ),
@@ -267,6 +315,257 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
         : widget.currentUserDisplayName,
     avatarRevision: widget.currentUserAvatarRevision,
   );
+
+  Widget _activityFocus() {
+    final latest = _activity.items.first;
+    final unread = _activity.unreadCount;
+    final unreadLabel = unread > 99 ? '99+' : '$unread';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 2),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        child: InkWell(
+          key: const Key('moments-activity-focus'),
+          borderRadius: BorderRadius.circular(DdRadii.control),
+          onTap: () => unawaited(_showActivitySheet()),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 68,
+                  height: 34,
+                  child: Stack(
+                    children: [
+                      for (
+                        var index = 0;
+                        index < _activity.items.length && index < 3;
+                        index++
+                      )
+                        Positioned(
+                          left: index * 18,
+                          child: ClipOval(
+                            child: ProfileAvatar(
+                              origin: widget.origin,
+                              accessToken: widget.accessToken,
+                              userId: _activity.items[index].actor.id,
+                              displayName:
+                                  _activity.items[index].actor.displayName,
+                              size: 34,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        unread > 0 ? '$unreadLabel 条新互动' : '最近互动',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _activityPreview(latest),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (unread > 0) ...[
+                  Container(
+                    constraints: const BoxConstraints(
+                      minWidth: 22,
+                      minHeight: 22,
+                    ),
+                    alignment: Alignment.center,
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    decoration: BoxDecoration(
+                      color: DdColors.danger,
+                      borderRadius: BorderRadius.circular(DdRadii.pill),
+                    ),
+                    child: Text(
+                      unreadLabel,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: DdColors.textTertiary,
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _activityPreview(MomentActivityItem item) {
+    final name = item.actor.displayName.trim().isNotEmpty
+        ? item.actor.displayName.trim()
+        : item.actor.handle.trim().isNotEmpty
+        ? item.actor.handle.trim()
+        : '好友';
+    if (item.kind == 'LIKE') return '$name赞了你的朋友圈';
+    final text = item.commentText.trim();
+    return text.isEmpty ? '$name评论了你的朋友圈' : '$name评论了你：$text';
+  }
+
+  String _activityAction(MomentActivityItem item) {
+    if (item.kind == 'LIKE') return '赞了你的朋友圈';
+    final text = item.commentText.trim();
+    return text.isEmpty ? '评论了你的朋友圈' : '评论了你：$text';
+  }
+
+  String _activityTime(DateTime createdAt) {
+    final local = createdAt.toLocal();
+    final delta = DateTime.now().difference(local);
+    if (delta.isNegative || delta.inSeconds < 60) return '刚刚';
+    if (delta.inMinutes < 60) return '${delta.inMinutes}分钟前';
+    if (delta.inHours < 24) return '${delta.inHours}小时前';
+    if (delta.inDays < 7) return '${delta.inDays}天前';
+    return '${local.month}月${local.day}日';
+  }
+
+  Future<void> _showActivitySheet() async {
+    final items = List<MomentActivityItem>.of(_activity.items);
+    if (items.isEmpty || !mounted) return;
+    unawaited(_markActivityRead());
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 460),
+      builder: (sheetContext) => FractionallySizedBox(
+        heightFactor: 0.72,
+        child: Material(
+          key: const Key('moments-activity-sheet'),
+          color: Theme.of(sheetContext).colorScheme.surface,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 12, 10, 8),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        '互动消息',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) =>
+                      const Divider(height: 1, indent: 72),
+                  itemBuilder: (_, index) {
+                    final item = items[index];
+                    final displayName = item.actor.displayName.trim().isNotEmpty
+                        ? item.actor.displayName.trim()
+                        : item.actor.handle;
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 5,
+                      ),
+                      leading: ClipOval(
+                        child: ProfileAvatar(
+                          origin: widget.origin,
+                          accessToken: widget.accessToken,
+                          userId: item.actor.id,
+                          displayName: displayName,
+                          size: 42,
+                        ),
+                      ),
+                      title: Text(
+                        displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        _activityAction(item),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                      trailing: Text(
+                        _activityTime(item.createdAt),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: DdColors.textTertiary,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _markActivityRead() async {
+    final gateway = _activityGateway;
+    if (gateway == null || _activity.unreadCount == 0) return;
+    try {
+      final cleared = await _authorized(
+        (token) =>
+            gateway.markActivityRead(origin: widget.origin, accessToken: token),
+      );
+      if (!mounted) return;
+      setState(() {
+        _activity = MomentActivitySummary(
+          unreadCount: cleared.unreadCount,
+          items: _activity.items
+              .map((item) => item.copyWith(read: true))
+              .toList(growable: false),
+        );
+      });
+    } catch (_) {
+      // Keep the focus visible; the durable unread count can be retried later.
+    }
+  }
 
   Widget _coverSurface({
     required String userId,
@@ -413,19 +712,29 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
       padding: const EdgeInsets.fromLTRB(14, 16, 14, 14),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        border: const Border(bottom: BorderSide(color: DdColors.divider, width: 0.5)),
+        border: const Border(
+          bottom: BorderSide(color: DdColors.divider, width: 0.5),
+        ),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: ProfileAvatar(
-              origin: widget.origin,
-              accessToken: widget.accessToken,
-              userId: item.author.id,
-              displayName: item.author.displayName,
-              size: 44,
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: Key('moment-author-avatar-${item.author.id}'),
+              borderRadius: BorderRadius.circular(4),
+              onTap: () => unawaited(_openAuthorMoments(item.author)),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: ProfileAvatar(
+                  origin: widget.origin,
+                  accessToken: widget.accessToken,
+                  userId: item.author.id,
+                  displayName: _momentUserName(item.author),
+                  size: 44,
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -434,12 +743,19 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  item.author.displayName,
-                  style: const TextStyle(color: Color(0xFF576B95), fontSize: 15, fontWeight: FontWeight.w600),
+                  _momentUserName(item.author),
+                  style: const TextStyle(
+                    color: Color(0xFF576B95),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 if (item.text.isNotEmpty) ...[
                   const SizedBox(height: 5),
-                  SelectableText(item.text, style: const TextStyle(fontSize: 15, height: 1.45)),
+                  SelectableText(
+                    item.text,
+                    style: const TextStyle(fontSize: 15, height: 1.45),
+                  ),
                 ],
                 if (item.mediaIds.isNotEmpty) ...[
                   const SizedBox(height: 9),
@@ -497,7 +813,8 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
                       ),
                   ],
                 ),
-                if (item.likeUsers.isNotEmpty || item.comments.isNotEmpty) _interactionBox(item),
+                if (item.likeUsers.isNotEmpty || item.comments.isNotEmpty)
+                  _interactionBox(item),
               ],
             ),
           ),
@@ -508,10 +825,26 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
 
   Widget _mediaGrid(MomentItem item) {
     final count = item.mediaIds.length;
-    final columns = count == 1 ? 1 : (count == 4 ? 2 : 3);
-    final width = count == 1 ? 220.0 : 270.0;
+    Widget tile(int index, {bool singleMedia = false}) => _MomentMediaTile(
+      mediaId: item.mediaIds[index],
+      info: _mediaInfoFor(item.mediaIds[index]),
+      grant: _downloadGrant(item.mediaIds[index]),
+      retryGrant: () {
+        _downloadGrants.remove(item.mediaIds[index]);
+        return _downloadGrant(item.mediaIds[index]);
+      },
+      loadVideoMetadata: (url) => _videoMetadataFor(item.mediaIds[index], url),
+      scrollListenable: _scroll,
+      heroTag: 'moment-${item.id}-media-$index',
+      singleMedia: singleMedia,
+    );
+
+    if (count == 1) {
+      return SizedBox(width: 220, child: tile(0, singleMedia: true));
+    }
+    final columns = count == 4 ? 2 : 3;
     return SizedBox(
-      width: width,
+      width: 270,
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
@@ -521,26 +854,22 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           mainAxisSpacing: 4,
         ),
         itemCount: count,
-        itemBuilder: (context, index) => _MomentMediaTile(
-          mediaId: item.mediaIds[index],
-          info: _mediaInfoFor(item.mediaIds[index]),
-          grant: _downloadGrant(item.mediaIds[index]),
-          retryGrant: () {
-            _downloadGrants.remove(item.mediaIds[index]);
-            return _downloadGrant(item.mediaIds[index]);
-          },
-          heroTag: 'moment-${item.id}-media-$index',
-        ),
+        itemBuilder: (context, index) => tile(index),
       ),
     );
   }
 
   Widget _interactionBox(MomentItem item) {
+    final commentsById = <String, MomentComment>{
+      for (final comment in item.comments) comment.id: comment,
+    };
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
       decoration: BoxDecoration(
-        color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF292929) : const Color(0xFFF3F3F5),
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF292929)
+            : const Color(0xFFF3F3F5),
         borderRadius: BorderRadius.circular(3),
       ),
       child: Column(
@@ -550,12 +879,20 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.favorite_rounded, size: 15, color: Color(0xFF576B95)),
+                const Icon(
+                  Icons.favorite_rounded,
+                  size: 15,
+                  color: Color(0xFF576B95),
+                ),
                 const SizedBox(width: 5),
                 Expanded(
                   child: Text(
                     item.likeUsers.map((user) => user.displayName).join('，'),
-                    style: const TextStyle(fontSize: 13, color: Color(0xFF576B95), fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Color(0xFF576B95),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -563,27 +900,87 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
             if (item.comments.isNotEmpty) const Divider(height: 10),
           ],
           for (final comment in item.comments)
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => unawaited(_comment(item, replyTo: comment)),
-              onLongPress: comment.author.id == widget.currentUserId || item.author.id == widget.currentUserId
-                  ? () => unawaited(_confirmDeleteComment(item, comment))
-                  : null,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text.rich(
-                  TextSpan(
-                    style: DefaultTextStyle.of(context).style.copyWith(fontSize: 13, height: 1.35),
-                    children: [
-                      TextSpan(text: comment.author.displayName, style: const TextStyle(color: Color(0xFF576B95), fontWeight: FontWeight.w600)),
-                      const TextSpan(text: '：'),
-                      TextSpan(text: comment.text),
-                    ],
-                  ),
+            _commentRow(item, comment, commentsById[comment.replyToCommentId]),
+        ],
+      ),
+    );
+  }
+
+  Widget _commentRow(
+    MomentItem item,
+    MomentComment comment,
+    MomentComment? replyTarget,
+  ) {
+    final replyName = replyTarget == null
+        ? ''
+        : _momentUserName(replyTarget.author);
+    return GestureDetector(
+      key: Key('moment-comment-item-${comment.id}'),
+      behavior: HitTestBehavior.opaque,
+      onTap: () => unawaited(_comment(item, replyTo: comment)),
+      onLongPress:
+          comment.author.id == widget.currentUserId ||
+              item.author.id == widget.currentUserId
+          ? () => unawaited(_confirmDeleteComment(item, comment))
+          : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text.rich(
+          TextSpan(
+            style: DefaultTextStyle.of(
+              context,
+            ).style.copyWith(fontSize: 13, height: 1.35),
+            children: [
+              TextSpan(
+                text: _momentUserName(comment.author),
+                style: const TextStyle(
+                  color: Color(0xFF576B95),
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            ),
-        ],
+              if (replyName.isNotEmpty) ...[
+                const TextSpan(text: ' 回复@'),
+                TextSpan(
+                  text: replyName,
+                  style: const TextStyle(
+                    color: Color(0xFF576B95),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              const TextSpan(text: '：'),
+              TextSpan(text: comment.text),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _momentUserName(MomentUserPreview user) {
+    final displayName = user.displayName.trim();
+    if (displayName.isNotEmpty) return displayName;
+    final handle = user.handle.trim();
+    return handle.isNotEmpty ? handle : '用户';
+  }
+
+  Future<void> _openAuthorMoments(MomentUserPreview author) async {
+    if (_isPersonalFeed && _profileUserId == author.id) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentsFeedPage(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+          currentUserId: widget.currentUserId,
+          currentUserDisplayName: widget.currentUserDisplayName,
+          currentUserAvatarRevision: widget.currentUserAvatarRevision,
+          authorId: author.id,
+          authorDisplayName: _momentUserName(author),
+          onUnauthorized: widget.onUnauthorized,
+          gateway: _gateway,
+          mediaApi: _media,
+          videoMetadataLoader: widget.videoMetadataLoader,
+        ),
       ),
     );
   }
@@ -681,6 +1078,24 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     );
   }
 
+  Future<VideoMediaMetadata> _videoMetadataFor(String mediaId, Uri url) {
+    return _videoMetadata.putIfAbsent(
+      mediaId,
+      () => _loadVideoMetadata(mediaId, url),
+    );
+  }
+
+  Future<VideoMediaMetadata> _loadVideoMetadata(String mediaId, Uri url) async {
+    try {
+      final loader =
+          widget.videoMetadataLoader ?? const VideoMediaProbe().probe;
+      return await loader(url);
+    } catch (_) {
+      final _ = _videoMetadata.remove(mediaId);
+      rethrow;
+    }
+  }
+
   Future<MediaDownloadGrant> _loadDownloadGrant(String mediaId) async {
     try {
       return await _authorized(
@@ -719,11 +1134,26 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           limit: 30,
         ),
       );
+      MomentActivitySummary? activity;
+      final activityGateway = _activityGateway;
+      if (!_isPersonalFeed && activityGateway != null) {
+        try {
+          activity = await _authorized(
+            (token) => activityGateway.getActivitySummary(
+              origin: widget.origin,
+              accessToken: token,
+            ),
+          );
+        } catch (_) {
+          // Activity history must not make the main feed unavailable.
+        }
+      }
       if (!mounted) return;
       setState(() {
         _profile = profile;
         _coverBytes = null;
         _items = items;
+        if (activity != null) _activity = activity;
         _hasMore = items.length >= 30;
         _downloadGrants.clear();
         _mediaInfo.clear();
@@ -820,7 +1250,9 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     final text = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(replyTo == null ? '评论' : '回复 ${replyTo.author.displayName}'),
+        title: Text(
+          replyTo == null ? '评论' : '回复 ${replyTo.author.displayName}',
+        ),
         content: TextField(
           key: const Key('moment-comment-input'),
           autofocus: true,
@@ -830,7 +1262,10 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
           onChanged: (value) => draft = value,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () {
               final value = draft.trim();
@@ -865,7 +1300,10 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
         title: const Text('删除朋友圈？'),
         content: const Text('删除后所有联系人都无法再查看这条内容。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('删除', style: TextStyle(color: DdColors.danger)),
@@ -876,23 +1314,40 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
     if (confirmed != true) return;
     try {
       await _authorized(
-        (token) => _gateway.deleteMoment(origin: widget.origin, accessToken: token, momentId: item.id),
+        (token) => _gateway.deleteMoment(
+          origin: widget.origin,
+          accessToken: token,
+          momentId: item.id,
+        ),
       );
       if (!mounted) return;
-      setState(() => _items = _items.where((candidate) => candidate.id != item.id).toList(growable: false));
+      setState(
+        () => _items = _items
+            .where((candidate) => candidate.id != item.id)
+            .toList(growable: false),
+      );
     } catch (error) {
       _showError(error);
     }
   }
 
-  Future<void> _confirmDeleteComment(MomentItem item, MomentComment comment) async {
+  Future<void> _confirmDeleteComment(
+    MomentItem item,
+    MomentComment comment,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('删除评论？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('取消')),
-          TextButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('删除', style: TextStyle(color: DdColors.danger))),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除', style: TextStyle(color: DdColors.danger)),
+          ),
         ],
       ),
     );
@@ -915,7 +1370,10 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   void _replace(MomentItem item) {
     if (!mounted) return;
     setState(() {
-      _items = [for (final current in _items) if (current.id == item.id) item else current];
+      _items = [
+        for (final current in _items)
+          if (current.id == item.id) item else current,
+      ];
     });
   }
 
@@ -938,7 +1396,9 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
   void _showError(Object error) {
     if (!mounted) return;
     final message = _friendlyError(error);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _friendlyError(Object error) {
@@ -963,14 +1423,28 @@ class _MomentMediaTile extends StatelessWidget {
     required this.info,
     required this.grant,
     required this.retryGrant,
+    required this.loadVideoMetadata,
+    required this.scrollListenable,
     required this.heroTag,
+    this.singleMedia = false,
   });
 
   final String mediaId;
   final Future<MediaObjectInfo> info;
   final Future<MediaDownloadGrant> grant;
   final Future<MediaDownloadGrant> Function() retryGrant;
+  final Future<VideoMediaMetadata> Function(Uri url) loadVideoMetadata;
+  final Listenable scrollListenable;
   final String heroTag;
+  final bool singleMedia;
+
+  Widget _frame(Widget child, {double aspectRatio = 1}) {
+    if (!singleMedia) return child;
+    final safeRatio = aspectRatio.isFinite && aspectRatio > 0
+        ? aspectRatio
+        : 1.0;
+    return AspectRatio(aspectRatio: safeRatio, child: child);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -978,74 +1452,167 @@ class _MomentMediaTile extends StatelessWidget {
       future: Future.wait<Object>([info, grant]),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return Container(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            alignment: Alignment.center,
-            child: const Icon(Icons.broken_image_outlined, color: DdColors.textTertiary),
+          return _frame(
+            Container(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.broken_image_outlined,
+                color: DdColors.textTertiary,
+              ),
+            ),
           );
         }
         final values = snapshot.data;
         if (values == null) {
-          return Container(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            alignment: Alignment.center,
-            child: const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          return _frame(
+            Container(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              alignment: Alignment.center,
+              child: const SizedBox.square(
+                dimension: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
           );
         }
         final metadata = values[0] as MediaObjectInfo;
         final download = values[1] as MediaDownloadGrant;
         if (metadata.isVideo) {
-          return GestureDetector(
-            key: Key('moment-video-$mediaId'),
-            onTap: () => Navigator.of(context).push<void>(
-              MaterialPageRoute<void>(
-                builder: (_) => VideoViewerPage(
-                  url: download.url,
-                  fileName: metadata.originalName.isEmpty ? 'moment-video.mp4' : metadata.originalName,
-                  mimeType: metadata.mimeType.isEmpty ? 'video/mp4' : metadata.mimeType,
-                  retryUrlResolver: () async => (await retryGrant()).url,
-                ),
-              ),
-            ),
-            child: Container(
-              color: const Color(0xFF202020),
-              alignment: Alignment.center,
-              child: const Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircleAvatar(
-                    radius: 22,
-                    backgroundColor: Color(0xAA000000),
-                    child: Icon(Icons.play_arrow_rounded, size: 32, color: Colors.white),
+          return FutureBuilder<VideoMediaMetadata>(
+            future: loadVideoMetadata(download.url),
+            builder: (context, videoSnapshot) {
+              final preview = videoSnapshot.data;
+              if (preview == null) {
+                if (videoSnapshot.hasError) {
+                  return _videoFallback(context, metadata, download);
+                }
+                return _frame(
+                  Container(
+                    key: Key('moment-video-$mediaId'),
+                    color: const Color(0xFF202020),
+                    alignment: Alignment.center,
+                    child: const SizedBox.square(
+                      dimension: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        color: Colors.white70,
+                      ),
+                    ),
                   ),
-                  SizedBox(height: 6),
-                  Text('视频', style: TextStyle(fontSize: 11, color: Colors.white70)),
-                ],
-              ),
-            ),
+                );
+              }
+              return KeyedSubtree(
+                key: Key('moment-video-$mediaId'),
+                child: _frame(
+                  InlineVideoPreview(
+                    playbackId: 'moment-$mediaId',
+                    posterBytes: preview.posterJpeg,
+                    declaredDuration: Duration(
+                      milliseconds: preview.durationMs,
+                    ),
+                    sourceResolver: () async {
+                      if (download.expiresAt.isAfter(
+                        DateTime.now().toUtc().add(const Duration(seconds: 30)),
+                      )) {
+                        return download.url;
+                      }
+                      return (await retryGrant()).url;
+                    },
+                    onOpenFull: () => _openVideo(context, metadata, download),
+                    scrollListenable: scrollListenable,
+                    autoPlayWhenVisible: true,
+                    openFullOnTap: true,
+                  ),
+                  aspectRatio: preview.width / preview.height,
+                ),
+              );
+            },
           );
         }
-        return GestureDetector(
-          onTap: () => Navigator.of(context).push<void>(
-            MaterialPageRoute<void>(
-              builder: (_) => _MomentImageViewer(url: download.url, heroTag: heroTag),
+        return _frame(
+          GestureDetector(
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    _MomentImageViewer(url: download.url, heroTag: heroTag),
+              ),
             ),
-          ),
-          child: Hero(
-            tag: heroTag,
-            child: Image.network(
-              download.url.toString(),
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              errorBuilder: (_, _, _) => Container(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                alignment: Alignment.center,
-                child: const Icon(Icons.broken_image_outlined, color: DdColors.textTertiary),
+            child: Hero(
+              tag: heroTag,
+              child: Image.network(
+                download.url.toString(),
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                errorBuilder: (_, _, _) => Container(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.broken_image_outlined,
+                    color: DdColors.textTertiary,
+                  ),
+                ),
               ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _videoFallback(
+    BuildContext context,
+    MediaObjectInfo metadata,
+    MediaDownloadGrant download,
+  ) {
+    return _frame(
+      GestureDetector(
+        key: Key('moment-video-$mediaId'),
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _openVideo(context, metadata, download),
+        child: Container(
+          color: const Color(0xFF202020),
+          alignment: Alignment.center,
+          child: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: Color(0xAA000000),
+                child: Icon(
+                  Icons.play_arrow_rounded,
+                  size: 32,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(height: 6),
+              Text(
+                '点击播放',
+                style: TextStyle(fontSize: 11, color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openVideo(
+    BuildContext context,
+    MediaObjectInfo metadata,
+    MediaDownloadGrant download,
+  ) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => VideoViewerPage(
+          url: download.url,
+          fileName: metadata.originalName.isEmpty
+              ? 'moment-video.mp4'
+              : metadata.originalName,
+          mimeType: metadata.mimeType.isEmpty ? 'video/mp4' : metadata.mimeType,
+          retryUrlResolver: () async => (await retryGrant()).url,
+        ),
+      ),
     );
   }
 }
@@ -1059,12 +1626,18 @@ class _MomentImageViewer extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white),
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
       body: Center(
         child: InteractiveViewer(
           minScale: 0.8,
           maxScale: 5,
-          child: Hero(tag: heroTag, child: Image.network(url.toString(), fit: BoxFit.contain)),
+          child: Hero(
+            tag: heroTag,
+            child: Image.network(url.toString(), fit: BoxFit.contain),
+          ),
         ),
       ),
     );

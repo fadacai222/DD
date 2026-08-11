@@ -77,6 +77,13 @@ type UpdateGroupInput struct {
 	AvatarMediaID *string `json:"avatarMediaId"`
 }
 
+func (input UpdateGroupInput) hasChanges() bool {
+	return input.Name != nil ||
+		input.Announcement != nil ||
+		input.JoinMode != nil ||
+		input.AvatarMediaID != nil
+}
+
 type InviteMembersInput struct {
 	UserIDs []string `json:"userIds"`
 }

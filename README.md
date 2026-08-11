@@ -1,173 +1,202 @@
-# DD：开源自托管 IM
+# DD：开源自托管多端即时通讯
 
-> 当前项目名：DD。项目目标是提供独立、自托管、多端即时通讯能力；**UI 与交互习惯参考微信，功能开放性与能力丰富度参考 Telegram，WhatsApp 不作为产品设计参考**；品牌、图标和素材保持 DD 原创。
+> 当前事实快照：2026-08-12 04:xx
+>
+> 项目路径：`C:\Users\admin\Desktop\复刻微信`
 
-这是一个面向个人、团队和小型社区的开源自托管即时通讯系统。目标是让任何拥有公网服务器、域名和基础 Docker 运维能力的人，都能搭建一套独立可控的 IM 服务。
+DD 是一个正在收敛中的自托管即时通讯产品。产品方向是：**信息层级与交互克制参考微信；媒体能力、性能、开放性与响应速度参考 Telegram；品牌、图标、提示音和素材保持 DD 原创。**
 
-## 项目目标
+当前仓库已经不是基础 Demo：账号、联系人、可靠消息、媒体/Sticker、群聊、正式通话、朋友圈、二维码与 Push 主链都已经进入正式代码。项目仍处于 **Alpha/Beta 收敛期**，不能宣称 Stable 1.0 或“商业上线完成”。
 
-- 仅使用邮箱注册和登录，不强制绑定手机号。
-- 支持好友、单聊、群聊、语音消息、语音通话、视频通话、朋友圈和扫码。
-- 同时提供 Web、Windows/macOS/Linux、Android、iOS 客户端。
-- 数据、账号、媒体文件和通信基础设施由部署者自行掌控。
-- 默认通过 Docker Compose 完成单机部署，并保留后续横向扩展能力。
-- 采用模块化单体起步，避免首版被微服务复杂度拖死。
-- 加密功能只使用经过审计的协议和实现，不自行发明密码学。
+> **当前 worktree 还有一个新的 Flutter 全局门禁失败：** 2026-08-12 本轮重新执行 ASCII 短路径 `dart analyze --fatal-infos` 时，`clients/app/lib/features/shell/presentation/main_shell_page.dart:1122` 报 `StickerPanelResult` 不是可见类型；该类型实际定义在 `features/messaging/domain/sticker_models.dart`，当前 Shell 缺少对应可见引用/导入，同时还有 3 个 directive ordering info。服务端 `go test ./...` 当前通过。修掉此 Flutter gate 之前，当前提交不能称 release-green。
 
-## 重要边界
+## 当前可交付平台
 
-1. **不会像素级复制微信。** 可以复用用户熟悉的信息架构和交互习惯，但不能复制微信名称、商标、图标、插画、提示音、文案和专有素材，否则存在版权、商标和应用商店审核风险。
-2. **首版为单实例自托管。** 不同部署实例之间默认不能互加好友或跨服聊天。跨服务器联邦属于后续独立大版本。
-3. **iOS 后台推送无法完全摆脱 Apple Push Notification service。** 自托管服务器仍需由部署者配置 APNs 证书或密钥。
-4. **音视频需要公网 UDP、较大带宽和正确的 NAT/TURN 配置。** 只有普通 HTTP 反向代理并不足以保证通话可用。
-5. **朋友圈并不天然适合端到端加密。** 首版采用精细可见范围、传输加密和服务端静态加密；真正的朋友圈端到端加密需要另行设计密钥分发和成员变更机制。
-
-## 文档导航
-
-- [需求完善总览](docs/00-需求完善总览.md)
-- [产品需求规格书 PRD](docs/01-产品需求规格书-PRD.md)
-- [技术架构与模块设计](docs/02-技术架构与模块设计.md)
-- [安全隐私与威胁模型](docs/03-安全隐私与威胁模型.md)
-- [部署运维与开源交付规范](docs/04-部署运维与开源交付规范.md)
-- [API 与数据模型草案](docs/05-API与数据模型草案.md)
-- [测试验收与发布标准](docs/06-测试验收与发布标准.md)
-- [P0 实时通信 PoC](docs/07-P0实时通信PoC.md)
-- [P0 音视频通话 PoC](docs/08-P0音视频通话PoC.md)
-- [P0 E2EE 候选库评估](docs/09-P0-E2EE候选库评估.md)
-- [P2 账号认证垂直切片](docs/10-P2账号认证垂直切片.md)
-- [P3 好友与关系链](docs/11-P3好友关系链.md)
-- [产品体验与 UI / 功能基线](docs/12-产品体验与UI功能基线.md)
-- [开发进度跟踪](开发进度跟踪.md)
-- [当前人工测试](人工测试.md)
-- [开发实施计划](tasks/plan.md)
-- [开发 Todolist](tasks/todo.md)
-- [架构决策记录](docs/decisions/)
-
-## 推荐技术路线
-
-- 多端客户端：Flutter，统一覆盖 Android、iOS、Web、Windows、macOS、Linux。
-- 管理后台：React + TypeScript，仅用于实例管理员。
-- 核心服务端：Go 模块化单体。
-- API：REST + OpenAPI；实时事件：WebSocket；音视频：WebRTC。
-- 数据：PostgreSQL + Redis + S3 兼容对象存储（默认 MinIO）。
-- 音视频：自托管 LiveKit；必要时配置内置 TURN 或外置 coturn。
-- 入口：Caddy 或 Nginx。
-- 部署：Docker Compose 起步；后续提供 Kubernetes Helm Chart。
-
-## 官方技术依据
-
-- Flutter 支持移动端、桌面端和 Web：
-  https://docs.flutter.dev/reference/supported-platforms
-- Flutter Web：
-  https://docs.flutter.dev/platform-integration/web
-- LiveKit 自托管：
-  https://docs.livekit.io/transport/self-hosting/
-- LiveKit 生产部署和 TURN：
-  https://docs.livekit.io/transport/self-hosting/deployment/
-- coturn：
-  https://github.com/coturn/coturn
-- Signal X3DH：
-  https://signal.org/docs/specifications/x3dh/
-- Signal Double Ratchet：
-  https://signal.org/docs/specifications/doubleratchet/
-- Signal Sesame 多设备会话管理：
-  https://signal.org/docs/specifications/sesame/
-
-## 当前状态
-
-截至 2026-08-09，项目已经推进到 **P4 可靠消息/同步主链基本形成 + P5 私有媒体主链持续收口**，当前重点不是继续堆大模块，而是把 Android / Windows / Web 的真人交互、媒体缓存、Saved Messages、自聊/直聊、通知、通话与商业客户端细节验收关闭。
-
-### P0 已完成当前 Windows / Web / Android 验收批次
-
-- REST / WebSocket 实时通信 PoC 已通过。
-- Windows ↔ Web、Windows ↔ Android、Web ↔ Android 音视频人工验收均通过。
-- 呼叫、来电、接听、拒绝、取消、45 秒超时、挂断同步均通过。
-- Windows / Web / Android TURN relay-only 人工诊断通过。
-- TURN/UDP 使用 `3478` 入口和 `30000-30019/udp` relay 范围。
-- Android 后台 / 锁屏 / 短时断网恢复、媒体控制、窄屏适配通过本轮人工验收。
-- 公网 TURN/TLS、4G/5G 跨运营商、iOS/macOS/Linux 仍属于后续专项。
-
-### P1 工程基础已经形成
-
-仓库已有：
+当前仓库实际存在并持续构建的 Flutter 平台：
 
 ```text
-Go: api / worker / migrate
-Flutter: Windows / Web / Android
-Admin: React + TypeScript
-PostgreSQL / Redis / MinIO / Mailpit / LiveKit
-OpenAPI / Realtime Schema / Migration / CI
+Windows
+Web
+Android
 ```
 
-### P2 正式账号主体已落地
+当前**没有** `clients/app/ios/`、`clients/app/macos/`、`clients/app/linux/` 正式平台工程，因此不能把 Flutter 理论支持写成已经交付。
 
-当前已包含：
+根目录当前发布物：
 
-- 邮箱验证码、注册事务、Argon2id。
-- 登录失败限流和 Auth 安全审计。
-- Access / Refresh Token、轮换、Family 重放整族撤销。
-- 密码找回 / 重置，成功后撤销全部旧会话。
-- `/api/v1/me` 资料和隐私。
-- 设备列表、指定设备远程退出、全部退出。
-- 被撤销设备的 Access Token 下一次请求立即失效。
-- Native `flutter_secure_storage` + App 启动自动恢复。
-- Web HttpOnly Cookie + 页面启动自动恢复，不把 Refresh Token 放进 JS 存储。
-- Flutter 注册、登录、密码找回、资料、隐私、设备管理 UI。
-- 最近 5 个历史登录账号（头像/昵称/DDID/邮箱）、切换账号、资料自动保存。
-- Windows 单实例 + Native 安全存储串行化/Auth bundle，Access Token 401 单飞刷新并重试。
-- PostgreSQL + Mailpit 真实账号生命周期集成测试已进入 CI。
+```text
+DD-Windows.lnk
+DD-Android.apk
+```
 
-### P3 联系人关系链主体已落地
+Web 通过 `scripts/start-dd-web.ps1` 启动已构建的 Release 静态文件。
 
-正式关系链现在支持：
+## 已形成的正式主链
 
-- 精确 DDID 搜索（底层 API 字段仍兼容 `handle`），不返回邮箱。
-- 好友申请、接受、拒绝、撤销、过期。
-- 同向重复申请幂等。
-- 双方并发互相申请自动收敛为好友。
-- 接受好友时原子创建双向 contacts，并创建/复用 DIRECT conversation。
-- 联系人备注、标签、星标。
-- 删除好友但保留历史会话语义。
-- 拉黑、解除拉黑、取消 PENDING、搜索隐藏和再申请阻断。
-- Flutter 联系人正式信息架构：新的朋友、标签、联系人分组、资料详情、添加朋友与黑名单管理；桌面端为通讯录目录 + 详情双栏。
-- 好友关系现在用于联系人管理；非好友知道 DDID 也能直接私聊，Block 才阻断新消息。
-- PostgreSQL 真库并发集成和 P3 Flutter Widget/API Client 自动测试。
+| 阶段 | 当前状态 | 主要能力 |
+|---|---|---|
+| P0 | `IMPLEMENTED` | REST/WebSocket/Realtime、LiveKit/TURN PoC 基础 |
+| P2 | `IMPLEMENTED + AUTO-VERIFIED` | 邮箱注册登录、验证码、密码重置、Access/Refresh、设备管理、资料隐私 |
+| P3 | `IMPLEMENTED + AUTO-VERIFIED` | DDID、好友申请、联系人、Block、备注/标签/星标 |
+| P4 | `IMPLEMENTED + AUTO-VERIFIED` | Durable Outbox、Cursor Sync、未读、编辑/撤回/回复/转发/搜索/置顶/归档 |
+| P5 | `IMPLEMENTED / MODULE-AUTO-EVIDENCE / GLOBAL-GATE-PASS` | 图片/GIF/Sticker/文件/语音/视频、缓存、传输中心、Emoji、自定义表情、Telegram Sticker Relay |
+| P6 | `IMPLEMENTED / MODULE-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | 群聊、角色、审批、群头像、群消息、群昵称、群通话入口 |
+| P7 | `IMPLEMENTED / MODULE-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | 正式 PostgreSQL Calls、Bearer Principal、多设备接听仲裁、LiveKit token |
+| P8 | `IMPLEMENTED / MODULE-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | 朋友圈 Feed、9 图/单视频、点赞评论回复、隐私、互动未读与互动焦点 |
+| P9 | `IMPLEMENTED / QR-DIRECTED-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | 个人码、群二维码、扫码登录 |
+| P10 | `IMPLEMENTED / PUSH-DIRECTED-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | Push job/Worker、FCM/APNs/UnifiedPush、Flutter token、Android data-only FCM |
+| P11 | `OUT-OF-SCOPE` | V1 明确不做 Production E2EE |
+| P12 | `PLANNED` | Admin / Abuse / Data Rights |
+| P13 | `PARTIAL INFRA` | Production Self-host / Backup / Upgrade / Observability |
+| P14 | `PLANNED` | iOS / macOS 正式交付 |
 
-详细设计见 [P3 好友与关系链](docs/11-P3好友关系链.md)。
+详细状态以 [开发进度跟踪.md](开发进度跟踪.md) 和 [未开发任务.md](未开发任务.md) 为准。
 
-### P4 / P5 当前在制主链
+## 2026-08-12 最近收口重点
 
-当前工作树已包含：
+当前 worktree 已包含以下新实现/修复，均以代码事实为准；没有真人复测的项目仍保持 `FIXED-PENDING-RETEST`：
 
-- PostgreSQL sequence + Durable Outbox + Sync cursor + Redis 跨节点唤醒 + pending 幂等重试。
-- 未读/已读可见性、不限时撤回、回复定位、全局文本搜索。
-- 会话归档、最多 10 个置顶、Android 左右滑快捷操作。
-- `我的收藏` 唯一 SELF 自聊、普通消息收藏复制、单目标转发、会话内消息置顶。
-- IMAGE / GIF / STICKER / FILE / VOICE 真实消息链；文件流式上传/下载；Windows 拖拽确认。
-- 图片/GIF/Sticker/语音按 `userId + mediaId` 隔离的 512 MiB 本地持久化媒体缓存。
-- 新的朋友关系 Outbox/实时刷新与好友接受 SYSTEM 消息。
+- Telegram Sticker Relay 已支持静态 WebP/PNG、动态 TGS、视频 WebM；TGS 使用 gzip Lottie 渲染，WebM/MP4 使用静音循环视频 Sticker。
+- Telegram Sticker Pack 已有 4 秒静默账号同步，整包分享使用正式 `STICKER_PACK` 消息并携带首个表情真实缩略图。
+- 视频 Sticker 已接入持久 `VideoFileCache`，重新打开表情面板不再依赖每次重新完整下载。
+- 自定义 Sticker 支持 PNG/WebP/GIF/MP4/WebM，单项上限 64 MiB；失败/取消会释放媒体 reservation。
+- Android 大视频选择已改为原生 `ACTION_OPEN_DOCUMENT` + 64 KiB 流式复制到 App cache，针对 100 MiB/500 MiB 级文件选择阶段 Java 堆 OOM 的修复已落代码。
+- Android FCM 用户可见消息改为 data-only + HIGH priority，由 DD 自己的通知链统一渲染 sender avatar、DD small icon 与点击导航；头像使用短时 HMAC capability URL，不在 Push payload 放 Access/Refresh Token。
+- 朋友圈互动未读已持久化，发现页/桌面 Rail/朋友圈入口显示 `1..99 / 99+`；自己的朋友圈封面下有“互动焦点”，可查看点赞/评论历史。
+- 设置已新增“性能”页，包含节能、减少动画、视频自动预览、硬件加速视频解码，并持久化为设备本地设置。
+- Windows 系统托盘、联系人详情、Mention 资料悬浮窗、群聊目录分栏、群通话入口、全局 SnackBar/Dialog/Input、Android 文件打开/分享/APK 安装器链等均已有本轮修复和定向测试。
 
-这些能力以“代码已实现 / 待真人关闭”为主，不等于当前批次已经全部人工通过。完整状态看 `开发进度跟踪.md` 和 `人工测试.md`。
+## 关键技术栈
 
-本地人工验收现在统一使用：
+- 客户端：Flutter
+- 管理后台：React + TypeScript + Vite
+- 服务端：Go 模块化单体
+- API：REST + OpenAPI
+- 实时：WebSocket + Redis realtime bus
+- 数据库：PostgreSQL
+- 对象存储：S3 兼容存储（开发默认 MinIO）
+- 音视频：LiveKit + TURN/STUN
+- Push：FCM HTTP v1 / APNs / UnifiedPush
+- 本地开发基础设施：Docker Compose
+
+当前正式 Go 业务包主要包括：
+
+```text
+auth
+contacts
+groups
+calls
+messaging
+moments
+media
+stickers
+qrcode
+realtimebus
+realtimev1
+push
+```
+
+数据库 migration 当前推进到 `000030_sticker_pack_share`。
+
+## 本地开发
+
+### 启动完整开发环境
 
 ```powershell
+cd C:\Users\admin\Desktop\复刻微信
 powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
 ```
 
-测试完成：
+停止：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-auth-dev.ps1
 ```
 
-具体只看根目录 [人工测试.md](人工测试.md)，不要重复跑已经归档的 P0/P2/P3 测试。当前代码已经进一步加入：DDID 非好友直接私聊（好友审批不再是聊天前置，Block 才是硬阻断）、Android 会话左右滑、Telegram 式唯一 `我的收藏` SELF 自聊、归档/最多 10 个置顶、转发/消息置顶/全局搜索、历史登录/切换账号、关系实时刷新、图片/GIF/Sticker/文件/语音真实媒体链与本地持久化缓存。**这些最新在制改动仍要按人工测试文档做 Windows/Android 跨端关闭，不能因为代码存在就写成真人已通过。** 独立“已送达”、完整 SQLite、本地剪贴板媒体发送、杀进程可靠 Push、正式 P7 通话持久化、公网 TURN/TLS 等仍未完成。
+脚本会检查 Docker、自动识别本机私网 IPv4、构建 API/Worker/客户端并维护 `.data` 状态。若已有状态文件或关键端口被未知进程占用，脚本会拒绝误杀未知进程。
 
-详细当前完成度见 [开发进度跟踪.md](开发进度跟踪.md)。
+### 构建客户端
 
-仍需冻结的高风险决策：
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target android
+powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target windows
+powershell -ExecutionPolicy Bypass -File .\scripts\build-client.ps1 -Target web
+```
 
-- 开源许可证最终选择（项目产品名已统一为 **DD**）。
-- 是否要求首个公开版本必须包含私聊端到端加密。
-- 是否允许公开注册，还是默认邀请制/管理员审批。
-- iOS 推送与 App Store 发布路线。
+发布根目录快捷产物：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-client-artifacts.ps1
+```
+
+Android 一键更新：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\update-android-client.ps1
+```
+
+## 自动门禁
+
+当前 `.github/workflows/ci.yml` 已定义以下门禁结构。2026-08-12 本轮复核已重新通过 ASCII 短路径 `dart analyze --fatal-infos` 与 Flutter 全量测试；workflow 存在仍不等于真实设备/生产环境已经 release-green：
+
+- Go format / `go test ./...` / `go vet ./...`
+- migration apply
+- Auth / Contacts / Groups / Calls / Messaging / Push PostgreSQL integration
+- Redis realtime cross-node integration
+- OpenAPI runtime contract + Redocly strict lint
+- Admin typecheck/build
+- Flutter analyze/test/Web Release/Android Release
+- Windows Release + real-engine MP4 poster smoke
+- Web/Android/Windows artifact upload
+
+当前仍缺的重要 CI 门禁：
+
+- 独立 Secret Scan
+- Moments 指定 PostgreSQL integration step
+- QR 指定 PostgreSQL integration step
+- iOS/macOS runner
+- 真 FCM/APNs 设备级 delivery/click 不适合伪造成普通 CI，需要真实设备/受控环境验收
+
+## 安全边界
+
+1. **V1 不提供端到端加密。** 当前聊天依赖 TLS/WSS、服务端鉴权、私有对象存储和权限控制；服务端在授权边界内仍能读取消息明文，禁止宣传“服务器无法读取消息”。
+2. Telegram Bot Token、Firebase service-account、Push provider 密钥等必须通过 `.env` / 私密文件注入，不进入 Git。
+3. Push 只负责提醒和唤醒，消息数据库与业务真相仍由 Sync/Calls/Moments API 提供。
+4. 媒体下载使用短时授权；Push 头像使用短时 capability URL，不下发用户 Access/Refresh Token。
+5. 当前首版仍是单实例优先，不支持跨实例联邦。
+6. 公网音视频仍需要正确配置 UDP、TURN/TLS、带宽和 NAT；开发环境通过不等于生产公网通过。
+
+## 文档入口
+
+开发时按以下顺序读：
+
+1. [docs/README.md](docs/README.md) —— 文档中心和事实优先级。
+2. [docs/15-当前实现状态与开发路线.md](docs/15-当前实现状态与开发路线.md) —— 当前真实状态与下一步。
+3. [开发进度跟踪.md](开发进度跟踪.md) —— 根目录产品/研发快照。
+4. [未开发任务.md](未开发任务.md) —— 只列仍缺代码或闭环的事项。
+5. 再按任务加载对应专题文档。
+
+主要专题：
+
+- [产品需求规格书](docs/01-产品需求规格书-PRD.md)
+- [技术架构与模块设计](docs/02-技术架构与模块设计.md)
+- [安全隐私与威胁模型](docs/03-安全隐私与威胁模型.md)
+- [部署运维与开源交付规范](docs/04-部署运维与开源交付规范.md)
+- [API 与数据模型](docs/05-API与数据模型草案.md)
+- [测试验收与发布标准](docs/06-测试验收与发布标准.md)
+- [产品体验与 UI / 功能基线](docs/12-产品体验与UI功能基线.md)
+- [架构决策记录](docs/decisions/)
+
+## 当前真正剩余的大项
+
+开发主线不再是重做 P6/P7/P8/P9/P10，而是：
+
+```text
+修复当前真人回归暴露的问题
+→ CI Secret Scan + Moments/QR 指定 PG 门禁
+→ P12 Admin / Abuse / Data Rights
+→ P13 Production Self-host / Backup / Upgrade / Observability
+→ P14 iOS / macOS
+```
+
+并行保留 P6/P7/P8/P9/P10 的多端、弱网、真机、长时通话、二维码、Push 和大媒体人工验收债务。

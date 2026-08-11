@@ -6,6 +6,18 @@ import '../../auth/data/auth_api_client.dart' show normalizeAuthOrigin;
 import '../../auth/data/auth_http_client.dart';
 import '../domain/moment_models.dart';
 
+abstract interface class MomentActivityGateway {
+  Future<MomentActivitySummary> getActivitySummary({
+    required Uri origin,
+    required String accessToken,
+  });
+
+  Future<MomentActivitySummary> markActivityRead({
+    required Uri origin,
+    required String accessToken,
+  });
+}
+
 abstract interface class MomentsGateway {
   Future<List<MomentItem>> listFeed({
     required Uri origin,
@@ -87,7 +99,7 @@ abstract interface class MomentsGateway {
   void close();
 }
 
-final class MomentsApiClient implements MomentsGateway {
+final class MomentsApiClient implements MomentsGateway, MomentActivityGateway {
   MomentsApiClient({http.Client? httpClient})
     : _client = httpClient ?? createAuthHttpClient(),
       _ownsClient = httpClient == null;
@@ -264,7 +276,7 @@ final class MomentsApiClient implements MomentsGateway {
   }) async => MomentProfile.fromJson(
     _decodeData(
       await _client.get(
-        normalizeAuthOrigin(origin).resolve('/api/v1/moments/profile/$userId'),
+        normalizeAuthOrigin(origin).resolve('/api/v1/moment-profiles/$userId'),
         headers: _headers(accessToken),
       ),
       const {200},
@@ -280,9 +292,37 @@ final class MomentsApiClient implements MomentsGateway {
   }) async => MomentProfile.fromJson(
     _decodeData(
       await _client.patch(
-        normalizeAuthOrigin(origin).resolve('/api/v1/moments/profile/$userId'),
+        normalizeAuthOrigin(origin).resolve('/api/v1/moment-profiles/$userId'),
         headers: _jsonHeaders(accessToken),
         body: jsonEncode({'coverMediaId': coverMediaId}),
+      ),
+      const {200},
+    ),
+  );
+
+  @override
+  Future<MomentActivitySummary> getActivitySummary({
+    required Uri origin,
+    required String accessToken,
+  }) async => MomentActivitySummary.fromJson(
+    _decodeData(
+      await _client.get(
+        normalizeAuthOrigin(origin).resolve('/api/v1/moment-activity'),
+        headers: _headers(accessToken),
+      ),
+      const {200},
+    ),
+  );
+
+  @override
+  Future<MomentActivitySummary> markActivityRead({
+    required Uri origin,
+    required String accessToken,
+  }) async => MomentActivitySummary.fromJson(
+    _decodeData(
+      await _client.post(
+        normalizeAuthOrigin(origin).resolve('/api/v1/moment-activity/read'),
+        headers: _headers(accessToken),
       ),
       const {200},
     ),

@@ -108,6 +108,72 @@ final class MomentProfile {
   final bool canEdit;
 }
 
+final class MomentActivityItem {
+  const MomentActivityItem({
+    required this.id,
+    required this.kind,
+    required this.actor,
+    required this.momentId,
+    required this.createdAt,
+    required this.read,
+    this.commentId,
+    this.commentText = '',
+  });
+
+  factory MomentActivityItem.fromJson(Map<String, dynamic> json) =>
+      MomentActivityItem(
+        id: json['id'] as String? ?? '',
+        kind: json['kind'] as String? ?? '',
+        actor: MomentUserPreview.fromJson(
+          json['actor'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+        ),
+        momentId: json['momentId'] as String? ?? '',
+        commentId: json['commentId'] as String?,
+        commentText: json['commentText'] as String? ?? '',
+        createdAt: DateTime.parse(json['createdAt'] as String).toUtc(),
+        read: json['read'] as bool? ?? false,
+      );
+
+  final String id;
+  final String kind;
+  final MomentUserPreview actor;
+  final String momentId;
+  final String? commentId;
+  final String commentText;
+  final DateTime createdAt;
+  final bool read;
+
+  MomentActivityItem copyWith({bool? read}) => MomentActivityItem(
+    id: id,
+    kind: kind,
+    actor: actor,
+    momentId: momentId,
+    commentId: commentId,
+    commentText: commentText,
+    createdAt: createdAt,
+    read: read ?? this.read,
+  );
+}
+
+final class MomentActivitySummary {
+  const MomentActivitySummary({
+    required this.unreadCount,
+    this.items = const [],
+  });
+
+  factory MomentActivitySummary.fromJson(Map<String, dynamic> json) =>
+      MomentActivitySummary(
+        unreadCount: (json['unreadCount'] as num?)?.toInt() ?? 0,
+        items: (json['items'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MomentActivityItem.fromJson)
+            .toList(growable: false),
+      );
+
+  final int unreadCount;
+  final List<MomentActivityItem> items;
+}
+
 final class MomentPreference {
   const MomentPreference({
     required this.target,

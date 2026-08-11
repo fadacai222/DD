@@ -26,6 +26,7 @@ import (
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
 	"example.com/selfhosted-im/server/internal/platform/maildelivery"
+	"example.com/selfhosted-im/server/internal/push"
 	"example.com/selfhosted-im/server/internal/qrcode"
 	"example.com/selfhosted-im/server/internal/realtimebus"
 	"example.com/selfhosted-im/server/internal/stickers"
@@ -54,6 +55,7 @@ func main() {
 	var stickersService httpapi.StickersService
 	var momentsService httpapi.MomentsService
 	var qrService httpapi.QRService
+	var pushService httpapi.PushService
 	var realtimeEventBus httpapi.RealtimeEventBus
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -172,6 +174,11 @@ func main() {
 			logger.Error("qr service initialization failed", "error", err)
 			os.Exit(2)
 		}
+		pushService, err = push.NewService(push.Config{Pool: pool})
+		if err != nil {
+			logger.Error("push service initialization failed", "error", err)
+			os.Exit(2)
+		}
 	}
 
 	if config.RedisURL != "" {
@@ -215,6 +222,8 @@ func main() {
 			StickersService:    stickersService,
 			MomentsService:     momentsService,
 			QRService:          qrService,
+			PushService:        pushService,
+			PushAvatarSecret:   config.AuthTokenSecret,
 			RealtimeEventBus:   realtimeEventBus,
 			Logger:             logger,
 		}),

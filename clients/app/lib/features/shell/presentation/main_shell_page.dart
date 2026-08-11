@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -9,13 +10,16 @@ import '../../../core/media/avatar_image_processor.dart';
 import '../../../core/media/image_viewer_page.dart';
 import '../../../core/media/media_cache_budget.dart';
 import '../../../core/notifications/app_notification_service.dart';
+import '../../../core/performance/app_performance_store.dart';
 import '../../../core/sound/app_sound_service.dart';
+import '../../../core/theme/app_theme_mode_store.dart';
 import '../../../core/widgets/dd_floating_navigation_bar.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/data/auth_api_client.dart';
 import '../../auth/domain/account_management.dart';
 import '../../auth/domain/auth_session.dart';
 import '../../auth/presentation/account_management_page.dart';
+import '../../auth/presentation/performance_settings_page.dart';
 import '../../auth/presentation/personal_profile_page.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
 import '../../calls/domain/call_session.dart';
@@ -27,14 +31,24 @@ import '../../contacts/domain/contact_models.dart';
 import '../../contacts/presentation/contacts_page.dart';
 import '../../contacts/presentation/peer_profile_page.dart';
 import '../../messaging/application/messaging_coordinator.dart';
+import '../../messaging/data/chat_appearance_store.dart';
+import '../../messaging/domain/emoji_catalog.dart';
+import '../../messaging/domain/sticker_models.dart';
+import '../../messaging/presentation/chat_background_settings_page.dart';
 import '../../messaging/presentation/conversations_page.dart';
 import '../../messaging/presentation/conversations_page_controller.dart';
 import '../../messaging/presentation/desktop_video_pip.dart';
 import '../../messaging/presentation/group_chats_page.dart';
+import '../../messaging/presentation/media_storage_settings_page.dart';
 import '../../messaging/presentation/saved_messages_page.dart';
+import '../../messaging/presentation/sticker_library_sheet.dart';
 import '../../messaging/presentation/text_chat_page.dart';
+import '../../messaging/presentation/transfer_center_page.dart';
+import '../../moments/application/moment_activity_controller.dart';
+import '../../moments/data/moments_api_client.dart';
 import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
+import '../../push/application/push_registration_service.dart';
 import '../../qrcode/presentation/my_qr_page.dart';
 import '../../qrcode/presentation/qr_scanner_page.dart';
 
@@ -46,6 +60,7 @@ class MainShellPage extends StatefulWidget {
     required this.authGateway,
     required this.onRefreshSession,
     required this.onProfileChanged,
+    required this.onManageAccounts,
     required this.onLogout,
   });
 
@@ -54,6 +69,7 @@ class MainShellPage extends StatefulWidget {
   final AuthGateway authGateway;
   final Future<String?> Function() onRefreshSession;
   final Future<void> Function(AccountProfile profile) onProfileChanged;
+  final Future<void> Function() onManageAccounts;
   final Future<void> Function() onLogout;
 
   @override
@@ -71,9 +87,13 @@ class _MainShellPageState extends State<MainShellPage>
   late final AppNotificationService _notificationService;
   StreamSubscription<IncomingMessageNotice>? _incomingMessageSubscription;
   StreamSubscription<RelationshipNotice>? _relationshipSubscription;
+  StreamSubscription<String>? _eventAvailableReasonSubscription;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   late final CallDebugController _callMediaController;
   late final TwoPartyCallController _callController;
+  late final PushRegistrationService _pushRegistrationService;
+  late final MomentsApiClient _momentsApi;
+  late final MomentActivityController _momentActivityController;
   late final Future<bool> _callStartup;
   bool _callRouteOpen = false;
   int _avatarRevision = 0;
@@ -96,10 +116,30 @@ class _MainShellPageState extends State<MainShellPage>
     unawaited(MediaCacheBudgetStore.shared(widget.session.user.id).load());
     _notificationService = AppNotificationService.shared;
     unawaited(_notificationService.initialize(requestPermission: false));
+    _pushRegistrationService = PushRegistrationService(
+      onNotificationOpened: _handlePushNotificationOpened,
+      onNotificationReceived: _handlePushNotificationReceived,
+    );
+    unawaited(
+      _pushRegistrationService.start(
+        origin: widget.origin,
+        accessToken: widget.session.tokens.accessToken,
+      ),
+    );
     _incomingMessageSubscription = _messagingCoordinator.incomingMessages
         .listen(_handleIncomingMessage);
     _relationshipSubscription = _messagingCoordinator.relationshipNotices
         .listen(_handleRelationshipNotice);
+    _momentsApi = MomentsApiClient();
+    _momentActivityController = MomentActivityController(
+      origin: widget.origin,
+      accessToken: widget.session.tokens.accessToken,
+      gateway: _momentsApi,
+    );
+    _eventAvailableReasonSubscription = _messagingCoordinator
+        .eventAvailableReasons
+        .listen(_momentActivityController.handleRealtimeReason);
+    unawaited(_momentActivityController.refresh());
     unawaited(_messagingCoordinator.initialize());
     _callMediaController = CallDebugController();
     _callController = TwoPartyCallController(
@@ -122,12 +162,23 @@ class _MainShellPageState extends State<MainShellPage>
     if (oldToken != nextToken) {
       unawaited(_messagingCoordinator.updateAccessToken(nextToken));
       _callController.updateAccessToken(nextToken);
+      _momentActivityController.updateAccessToken(nextToken);
+      unawaited(_momentActivityController.refresh());
+      unawaited(
+        _pushRegistrationService.updateSession(
+          origin: widget.origin,
+          accessToken: nextToken,
+        ),
+      );
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_momentActivityController.refresh());
+    }
   }
 
   @override
@@ -135,14 +186,18 @@ class _MainShellPageState extends State<MainShellPage>
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_incomingMessageSubscription?.cancel());
     unawaited(_relationshipSubscription?.cancel());
+    unawaited(_eventAvailableReasonSubscription?.cancel());
     _messageBannerTimer?.cancel();
     _messageBanner?.remove();
     _messageBanner = null;
     _messagingCoordinator.dispose();
+    _momentActivityController.dispose();
+    _momentsApi.close();
     _conversationsController.dispose();
     _callController.removeListener(_handleCallState);
     _callController.dispose();
     _callMediaController.dispose();
+    unawaited(_pushRegistrationService.dispose());
     super.dispose();
   }
 
@@ -168,6 +223,7 @@ class _MainShellPageState extends State<MainShellPage>
                         session: widget.session,
                         avatarRevision: _avatarRevision,
                         unreadCount: _messagingCoordinator.totalUnreadCount,
+                        momentActivityController: _momentActivityController,
                         selectedIndex: _index,
                         onSelected: _selectMainSection,
                         onSettings: _openAccountManagement,
@@ -213,9 +269,15 @@ class _MainShellPageState extends State<MainShellPage>
                       selectedIcon: Icon(Icons.people_rounded),
                       label: '联系人',
                     ),
-                    const DdFloatingNavigationDestination(
-                      icon: Icon(Icons.explore_outlined),
-                      selectedIcon: Icon(Icons.explore_rounded),
+                    DdFloatingNavigationDestination(
+                      icon: _MomentActivityNavigationIcon(
+                        controller: _momentActivityController,
+                        icon: Icons.explore_outlined,
+                      ),
+                      selectedIcon: _MomentActivityNavigationIcon(
+                        controller: _momentActivityController,
+                        icon: Icons.explore_rounded,
+                      ),
                       label: '发现',
                     ),
                     const DdFloatingNavigationDestination(
@@ -231,6 +293,21 @@ class _MainShellPageState extends State<MainShellPage>
         },
       ),
     );
+  }
+
+  void _handlePushNotificationReceived(Map<String, dynamic> data) {
+    final eventType = data['eventType']?.toString().trim().toUpperCase() ?? '';
+    if (eventType.startsWith('MOMENT_')) {
+      unawaited(_momentActivityController.refresh());
+    }
+  }
+
+  void _handlePushNotificationOpened(Map<String, dynamic> data) {
+    final conversationId = data['conversationId']?.toString().trim() ?? '';
+    if (conversationId.isEmpty || !mounted) return;
+    setState(() => _index = 0);
+    unawaited(_messagingCoordinator.syncNow());
+    _conversationsController.openConversation(conversationId);
   }
 
   void _selectMainSection(int value) {
@@ -282,14 +359,31 @@ class _MainShellPageState extends State<MainShellPage>
         onUnauthorized: widget.onRefreshSession,
         onOpenDirectChat: _openDirectChatFromContacts,
         onOpenGroups: _openGroupDirectory,
+        onRefreshGroups: _refreshGroupDirectory,
+        desktopGroupsContent: AnimatedBuilder(
+          animation: _messagingCoordinator,
+          builder: (context, _) => GroupChatsPage(
+            origin: widget.origin,
+            accessToken: widget.session.tokens.accessToken,
+            conversations: _messagingCoordinator.conversations,
+            embedded: true,
+            onOpenConversation: (conversation) async {
+              if (!mounted) return;
+              setState(() => _index = 0);
+              _conversationsController.openConversation(conversation.id);
+            },
+          ),
+        ),
         onStartAudioCall: (peerId, peerName) =>
             _startCall(peerId, peerName, CallKind.audio),
         onStartVideoCall: (peerId, peerName) =>
             _startCall(peerId, peerName, CallKind.video),
       ),
       _DiscoveryPage(
+        activityController: _momentActivityController,
         onOpenMoments: _openMoments,
         onOpenScanner: _openQrScanner,
+        onOpenStickers: _openStickerManagement,
       ),
       _MePage(
         origin: widget.origin,
@@ -297,13 +391,15 @@ class _MainShellPageState extends State<MainShellPage>
         avatarRevision: _avatarRevision,
         avatarBusy: _avatarBusy,
         onOpenProfile: _openPersonalProfile,
-        onRefresh: () async {
-          await widget.onRefreshSession();
-        },
         onOpenSaved: _openSavedMessagesFromMe,
         onOpenMyQr: _openMyQr,
-        onOpenSettings: _openAccountManagement,
-        onSwitchAccount: widget.onLogout,
+        onManageAccounts: widget.onManageAccounts,
+        onOpenPrivacyAndDevices: _openAccountManagement,
+        onOpenAppearance: _openAppearance,
+        onOpenChatBackground: _openChatBackgroundSettings,
+        onOpenMediaAndCache: _openMediaStorageSettings,
+        onOpenPerformance: _openPerformanceSettings,
+        onOpenTransferCenter: _openTransferCenter,
         onLogout: widget.onLogout,
       ),
     ];
@@ -476,9 +572,12 @@ class _MainShellPageState extends State<MainShellPage>
     });
   }
 
+  Future<void> _refreshGroupDirectory() =>
+      _messagingCoordinator.refreshConversations();
+
   Future<void> _openGroupDirectory() async {
     try {
-      await _messagingCoordinator.refreshConversations();
+      await _refreshGroupDirectory();
       if (!mounted) return;
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
@@ -523,6 +622,7 @@ class _MainShellPageState extends State<MainShellPage>
   }
 
   Future<void> _openMoments() async {
+    unawaited(_momentActivityController.markRead());
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => MomentsFeedPage(
@@ -555,10 +655,7 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
-  Future<void> _openPeerMomentPrivacy(
-    String userId,
-    String displayName,
-  ) async {
+  Future<void> _openPeerMomentPrivacy(String userId, String displayName) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
     await Navigator.of(context).push<void>(
@@ -614,9 +711,9 @@ class _MainShellPageState extends State<MainShellPage>
         setState(() => _index = 0);
         _conversationsController.openConversation(group.id);
       case QrScanResultKind.loginApproved:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已确认新设备登录。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已确认新设备登录。')));
     }
   }
 
@@ -652,10 +749,8 @@ class _MainShellPageState extends State<MainShellPage>
             handle: result.user.handle,
             displayName: result.user.displayName,
             onOpenMoments: result.relationship == 'CONTACT'
-                ? () => _openPeerMoments(
-                    result.user.id,
-                    result.user.displayName,
-                  )
+                ? () =>
+                      _openPeerMoments(result.user.id, result.user.displayName)
                 : null,
             onOpenMomentPrivacy: result.relationship == 'CONTACT'
                 ? () => _openPeerMomentPrivacy(
@@ -674,9 +769,9 @@ class _MainShellPageState extends State<MainShellPage>
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法打开二维码用户资料：$error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法打开二维码用户资料：$error')));
     } finally {
       client.close();
     }
@@ -916,6 +1011,136 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
+  Future<void> _openAppearance() async {
+    final store = AppThemeModeStore.shared;
+    unawaited(store.load());
+    final selected = await showModalBottomSheet<ThemeMode>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (sheetContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '外观',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          for (final option in const <(ThemeMode, String, IconData)>[
+            (ThemeMode.system, '跟随系统', Icons.brightness_auto_outlined),
+            (ThemeMode.light, '浅色', Icons.light_mode_outlined),
+            (ThemeMode.dark, '深色', Icons.dark_mode_outlined),
+          ])
+            ListTile(
+              key: Key('theme-mode-${option.$1.name}'),
+              leading: Icon(option.$3),
+              title: Text(option.$2),
+              trailing: store.mode == option.$1
+                  ? const Icon(Icons.check_rounded, color: DdColors.green)
+                  : null,
+              onTap: () => Navigator.pop(sheetContext, option.$1),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+    if (selected == null || selected == store.mode) return;
+    try {
+      await store.setMode(selected);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('外观设置保存失败，请重试。')),
+      );
+    }
+  }
+
+  Future<void> _openChatBackgroundSettings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatBackgroundSettingsPage(
+          store: ChatAppearanceStore.shared(widget.session.user.id),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openMediaStorageSettings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MediaStorageSettingsPage(userId: widget.session.user.id),
+      ),
+    );
+  }
+
+  Future<void> _openPerformanceSettings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PerformanceSettingsPage(store: AppPerformanceStore.shared),
+      ),
+    );
+  }
+
+  Future<void> _openTransferCenter() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => TransferCenterPage(
+          controller: _messagingCoordinator.mediaTransfers,
+        ),
+      ),
+    );
+  }
+
+  Future<Uint8List> _stickerMediaBytes(String mediaId) async {
+    final mediaApi = _messagingCoordinator.transferMediaApi;
+    final grant = await _messagingCoordinator.withAuthorizedToken(
+      (token) => mediaApi.createDownloadUrl(
+        origin: widget.origin,
+        accessToken: token,
+        mediaId: mediaId,
+      ),
+    );
+    return mediaApi.downloadMedia(url: grant.url);
+  }
+
+  Future<Uri> _stickerMediaUrl(String mediaId, int expectedSizeBytes) async {
+    final grant = await _messagingCoordinator.withAuthorizedToken(
+      (token) => _messagingCoordinator.transferMediaApi.createDownloadUrl(
+        origin: widget.origin,
+        accessToken: token,
+        mediaId: mediaId,
+      ),
+    );
+    return grant.url;
+  }
+
+  Future<void> _openStickerManagement() async {
+    await showModalBottomSheet<StickerPanelResult>(
+      context: context,
+      isScrollControlled: true,
+      constraints: const BoxConstraints(maxWidth: 560),
+      builder: (_) => StickerLibrarySheet(
+        origin: widget.origin,
+        accessToken: _messagingCoordinator.accessToken,
+        emoji: EmojiCatalog.all,
+        emojiCategories: EmojiCatalog.categories,
+        recentEmoji: _messagingCoordinator.recentEmoji,
+        mediaBytesLoader: _stickerMediaBytes,
+        mediaUrlResolver: _stickerMediaUrl,
+        onAddCustomSticker: (_) async => null,
+        allowCustomStickerCreation: false,
+        initialTabKey: 'custom',
+        onTabChanged: (tabKey) =>
+            unawaited(_messagingCoordinator.rememberStickerPanelTab(tabKey)),
+      ),
+    );
+  }
+
   Future<void> _openAccountManagement() async {
     final logout = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
@@ -923,7 +1148,6 @@ class _MainShellPageState extends State<MainShellPage>
           gateway: widget.authGateway,
           origin: widget.origin,
           session: widget.session,
-          messagingCoordinator: _messagingCoordinator,
         ),
       ),
     );
@@ -939,6 +1163,7 @@ class _DesktopRail extends StatelessWidget {
     required this.session,
     required this.avatarRevision,
     required this.unreadCount,
+    required this.momentActivityController,
     required this.selectedIndex,
     required this.onSelected,
     required this.onSettings,
@@ -948,6 +1173,7 @@ class _DesktopRail extends StatelessWidget {
   final AuthSession session;
   final int avatarRevision;
   final int unreadCount;
+  final MomentActivityController momentActivityController;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
   final VoidCallback onSettings;
@@ -964,59 +1190,63 @@ class _DesktopRail extends StatelessWidget {
           child: Column(
             children: [
               const SizedBox(height: 16),
-            Tooltip(
-              message: session.user.displayName,
-              child: _RailAvatar(
-                origin: origin,
-                accessToken: session.tokens.accessToken,
-                userId: session.user.id,
-                name: session.user.displayName,
-                revision: avatarRevision,
+              Tooltip(
+                message: session.user.displayName,
+                child: _RailAvatar(
+                  origin: origin,
+                  accessToken: session.tokens.accessToken,
+                  userId: session.user.id,
+                  name: session.user.displayName,
+                  revision: avatarRevision,
+                ),
               ),
-            ),
               const SizedBox(height: 22),
-            _RailButton(
-              key: const Key('shell-rail-messages'),
-              icon: Icons.chat_bubble_outline_rounded,
-              selectedIcon: Icons.chat_bubble_rounded,
-              label: '消息',
-              badgeCount: unreadCount,
-              selected: selectedIndex == 0,
-              onTap: () => onSelected(0),
-            ),
-            _RailButton(
-              key: const Key('shell-rail-contacts'),
-              icon: Icons.people_outline_rounded,
-              selectedIcon: Icons.people_rounded,
-              label: '联系人',
-              selected: selectedIndex == 1,
-              onTap: () => onSelected(1),
-            ),
-            _RailButton(
-              key: const Key('shell-rail-discovery'),
-              icon: Icons.explore_outlined,
-              selectedIcon: Icons.explore_rounded,
-              label: '发现',
-              selected: selectedIndex == 2,
-              onTap: () => onSelected(2),
-            ),
-            const Spacer(),
-            _RailButton(
-              key: const Key('shell-rail-me'),
-              icon: Icons.person_outline_rounded,
-              selectedIcon: Icons.person_rounded,
-              label: '我的',
-              selected: selectedIndex == 3,
-              onTap: () => onSelected(3),
-            ),
-            _RailButton(
-              key: const Key('shell-rail-settings'),
-              icon: Icons.settings_outlined,
-              selectedIcon: Icons.settings_rounded,
-              label: '设置',
-              selected: false,
-              onTap: onSettings,
-            ),
+              _RailButton(
+                key: const Key('shell-rail-messages'),
+                icon: Icons.chat_bubble_outline_rounded,
+                selectedIcon: Icons.chat_bubble_rounded,
+                label: '消息',
+                badgeCount: unreadCount,
+                selected: selectedIndex == 0,
+                onTap: () => onSelected(0),
+              ),
+              _RailButton(
+                key: const Key('shell-rail-contacts'),
+                icon: Icons.people_outline_rounded,
+                selectedIcon: Icons.people_rounded,
+                label: '联系人',
+                selected: selectedIndex == 1,
+                onTap: () => onSelected(1),
+              ),
+              AnimatedBuilder(
+                animation: momentActivityController,
+                builder: (context, _) => _RailButton(
+                  key: const Key('shell-rail-discovery'),
+                  icon: Icons.explore_outlined,
+                  selectedIcon: Icons.explore_rounded,
+                  label: '发现',
+                  badgeCount: momentActivityController.unreadCount,
+                  selected: selectedIndex == 2,
+                  onTap: () => onSelected(2),
+                ),
+              ),
+              const Spacer(),
+              _RailButton(
+                key: const Key('shell-rail-me'),
+                icon: Icons.person_outline_rounded,
+                selectedIcon: Icons.person_rounded,
+                label: '我的',
+                selected: selectedIndex == 3,
+                onTap: () => onSelected(3),
+              ),
+              _RailButton(
+                key: const Key('shell-rail-settings'),
+                icon: Icons.settings_outlined,
+                selectedIcon: Icons.settings_rounded,
+                label: '设置',
+                selected: false,
+                onTap: onSettings,
+              ),
               const SizedBox(height: 12),
             ],
           ),
@@ -1052,6 +1282,35 @@ class _UnreadNavigationIcon extends StatelessWidget {
   }
 }
 
+class _MomentActivityNavigationIcon extends StatelessWidget {
+  const _MomentActivityNavigationIcon({
+    required this.controller,
+    required this.icon,
+  });
+
+  final MomentActivityController controller;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Icon(icon),
+          if (controller.unreadCount > 0)
+            Positioned(
+              right: -9,
+              top: -7,
+              child: _UnreadBadge(count: controller.unreadCount),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _UnreadBadge extends StatelessWidget {
   const _UnreadBadge({required this.count});
 
@@ -1060,22 +1319,25 @@ class _UnreadBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = count > 99 ? '99+' : '$count';
-    return Container(
-      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: DdColors.danger,
-        borderRadius: BorderRadius.circular(DdRadii.pill),
-        border: Border.all(color: Colors.white, width: 1),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 9,
-          height: 1,
-          fontWeight: FontWeight.w600,
+    final diameter = text.length >= 3 ? 24.0 : (text.length == 2 ? 20.0 : 16.0);
+    return SizedBox.square(
+      dimension: diameter,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: DdColors.danger,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 1),
+        ),
+        child: Center(
+          child: Text(
+            text,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: text.length >= 3 ? 8 : 9,
+              height: 1,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ),
     );
@@ -1202,12 +1464,16 @@ class _RailAvatar extends StatelessWidget {
 
 class _DiscoveryPage extends StatelessWidget {
   const _DiscoveryPage({
+    required this.activityController,
     required this.onOpenMoments,
     required this.onOpenScanner,
+    required this.onOpenStickers,
   });
 
+  final MomentActivityController activityController;
   final Future<void> Function() onOpenMoments;
   final Future<void> Function() onOpenScanner;
+  final Future<void> Function() onOpenStickers;
 
   @override
   Widget build(BuildContext context) {
@@ -1225,6 +1491,12 @@ class _DiscoveryPage extends StatelessWidget {
                   icon: Icons.camera_alt_outlined,
                   label: '朋友圈',
                   trailing: '',
+                  trailingWidget: AnimatedBuilder(
+                    animation: activityController,
+                    builder: (context, _) => activityController.unreadCount > 0
+                        ? _UnreadBadge(count: activityController.unreadCount)
+                        : const SizedBox.shrink(),
+                  ),
                   onTap: () => unawaited(onOpenMoments()),
                 ),
                 const SizedBox(height: 8),
@@ -1236,10 +1508,12 @@ class _DiscoveryPage extends StatelessWidget {
                   onTap: () => unawaited(onOpenScanner()),
                 ),
                 const SizedBox(height: 8),
-                const _FeatureRow(
-                  icon: Icons.widgets_outlined,
-                  label: '更多能力',
-                  trailing: '按路线逐步开放',
+                _FeatureRow(
+                  key: const Key('discovery-stickers'),
+                  icon: Icons.emoji_emotions_outlined,
+                  label: '表情',
+                  trailing: '',
+                  onTap: () => unawaited(onOpenStickers()),
                 ),
               ],
             ),
@@ -1256,12 +1530,14 @@ class _FeatureRow extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.trailing,
+    this.trailingWidget,
     this.onTap,
   });
 
   final IconData icon;
   final String label;
   final String trailing;
+  final Widget? trailingWidget;
   final VoidCallback? onTap;
 
   @override
@@ -1281,7 +1557,9 @@ class _FeatureRow extends StatelessWidget {
                 Expanded(
                   child: Text(label, style: const TextStyle(fontSize: 15)),
                 ),
-                if (trailing.isNotEmpty)
+                if (trailingWidget != null)
+                  trailingWidget!
+                else if (trailing.isNotEmpty)
                   Text(
                     trailing,
                     style: const TextStyle(
@@ -1311,11 +1589,15 @@ class _MePage extends StatelessWidget {
     required this.avatarRevision,
     required this.avatarBusy,
     required this.onOpenProfile,
-    required this.onRefresh,
     required this.onOpenSaved,
     required this.onOpenMyQr,
-    required this.onOpenSettings,
-    required this.onSwitchAccount,
+    required this.onManageAccounts,
+    required this.onOpenPrivacyAndDevices,
+    required this.onOpenAppearance,
+    required this.onOpenChatBackground,
+    required this.onOpenMediaAndCache,
+    required this.onOpenPerformance,
+    required this.onOpenTransferCenter,
     required this.onLogout,
   });
 
@@ -1324,11 +1606,15 @@ class _MePage extends StatelessWidget {
   final int avatarRevision;
   final bool avatarBusy;
   final Future<void> Function() onOpenProfile;
-  final Future<void> Function() onRefresh;
   final Future<void> Function() onOpenSaved;
   final Future<void> Function() onOpenMyQr;
-  final VoidCallback onOpenSettings;
-  final Future<void> Function() onSwitchAccount;
+  final Future<void> Function() onManageAccounts;
+  final VoidCallback onOpenPrivacyAndDevices;
+  final Future<void> Function() onOpenAppearance;
+  final Future<void> Function() onOpenChatBackground;
+  final Future<void> Function() onOpenMediaAndCache;
+  final Future<void> Function() onOpenPerformance;
+  final Future<void> Function() onOpenTransferCenter;
   final Future<void> Function() onLogout;
 
   @override
@@ -1438,22 +1724,47 @@ class _MePage extends StatelessWidget {
                 _SettingsRow(
                   key: const Key('shell-account-management'),
                   icon: Icons.manage_accounts_outlined,
-                  label: '账号、隐私与设备',
-                  onTap: onOpenSettings,
+                  label: '账号管理',
+                  onTap: () => onManageAccounts(),
                 ),
                 _SettingsRow(
-                  key: const Key('auth-refresh'),
-                  icon: Icons.refresh_rounded,
-                  label: '刷新登录会话',
-                  onTap: () => onRefresh(),
+                  key: const Key('shell-privacy-devices'),
+                  icon: Icons.privacy_tip_outlined,
+                  label: '隐私与设备',
+                  onTap: onOpenPrivacyAndDevices,
                 ),
                 const SizedBox(height: 8),
                 _SettingsRow(
-                  key: const Key('shell-switch-account'),
-                  icon: Icons.switch_account_rounded,
-                  label: '切换账号',
-                  onTap: () => onSwitchAccount(),
+                  key: const Key('shell-appearance'),
+                  icon: Icons.brightness_6_outlined,
+                  label: '外观',
+                  onTap: () => onOpenAppearance(),
                 ),
+                _SettingsRow(
+                  key: const Key('shell-chat-background'),
+                  icon: Icons.wallpaper_rounded,
+                  label: '聊天背景',
+                  onTap: () => onOpenChatBackground(),
+                ),
+                _SettingsRow(
+                  key: const Key('shell-media-cache'),
+                  icon: Icons.storage_rounded,
+                  label: '媒体与缓存',
+                  onTap: () => onOpenMediaAndCache(),
+                ),
+                _SettingsRow(
+                  key: const Key('shell-performance'),
+                  icon: Icons.speed_rounded,
+                  label: '性能',
+                  onTap: () => onOpenPerformance(),
+                ),
+                _SettingsRow(
+                  key: const Key('shell-transfer-center'),
+                  icon: Icons.swap_vert_circle_outlined,
+                  label: '传输中心',
+                  onTap: () => onOpenTransferCenter(),
+                ),
+                const SizedBox(height: 8),
                 _SettingsRow(
                   key: const Key('shell-logout'),
                   icon: Icons.logout_rounded,

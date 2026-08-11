@@ -128,6 +128,23 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 	`, callID, principal.UserID, calleeID, principal.DeviceID, conversationID, roomName, kind, now, ringExpiresAt); err != nil {
 		return Call{}, fmt.Errorf("insert call: %w", err)
 	}
+	callPayload, err := json.Marshal(map[string]any{
+		"callId":         callID.String(),
+		"conversationId": conversationID.String(),
+		"callerUserId":   principal.UserID.String(),
+		"callerName":     callerName,
+		"kind":           kind,
+	})
+	if err != nil {
+		return Call{}, fmt.Errorf("marshal call ringing outbox: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO outbox_events(
+		  aggregate_type,aggregate_id,event_type,conversation_id,target_user_id,payload_json,created_at,available_at
+		) VALUES('CALL',$1,'CALL_RINGING',$2,$3,$4::jsonb,$5,$5)
+	`, callID, conversationID, calleeID, string(callPayload), now); err != nil {
+		return Call{}, fmt.Errorf("insert call ringing outbox: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Call{}, fmt.Errorf("commit create call: %w", err)
 	}

@@ -128,9 +128,7 @@ void main() {
     expect(momentsOpens, 1);
   });
 
-  testWidgets('contact profile exposes moments privacy entry', (
-    tester,
-  ) async {
+  testWidgets('contact profile exposes moments privacy entry', (tester) async {
     final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
     var privacyOpens = 0;
     await tester.pumpWidget(
@@ -280,6 +278,48 @@ void main() {
     tester.view.resetPhysicalSize();
     tester.view.resetDevicePixelRatio();
   });
+
+  testWidgets(
+    'embedded desktop profile measures the pane instead of the whole window',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topRight,
+            child: SizedBox(
+              width: 340,
+              height: 720,
+              child: PeerProfilePage(
+                origin: Uri.parse('http://127.0.0.1:18473'),
+                accessToken: 'token',
+                userId: _bob.id,
+                handle: _bob.handle,
+                displayName: _bob.displayName,
+                gateway: gateway,
+                embedded: true,
+                onMessage: () async {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final infoCard = tester.getSize(
+        find.byKey(const Key('peer-profile-info-card')),
+      );
+      expect(infoCard.width, greaterThan(280));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'legacy stable-id 404 falls back to exact handle for a real contact',

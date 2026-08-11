@@ -18,9 +18,11 @@ type fakeMediaService struct {
 	createPrincipal account.Principal
 	createInput     media.CreateUploadInput
 	completeID      uuid.UUID
+	cancelID        uuid.UUID
 	downloadID      uuid.UUID
 	createErr       error
 	completeErr     error
+	cancelErr       error
 }
 
 func (fake *fakeMediaService) CreateUpload(_ context.Context, principal account.Principal, input media.CreateUploadInput) (media.UploadGrant, error) {
@@ -44,6 +46,11 @@ func (fake *fakeMediaService) CompleteUpload(_ context.Context, _ account.Princi
 		return media.CompleteUploadResult{}, fake.completeErr
 	}
 	return media.CompleteUploadResult{Media: media.MediaObject{ID: "00000000-0000-0000-0000-000000000222", Status: media.StatusReady}}, nil
+}
+
+func (fake *fakeMediaService) CancelUpload(_ context.Context, _ account.Principal, uploadID uuid.UUID) error {
+	fake.cancelID = uploadID
+	return fake.cancelErr
 }
 
 func (fake *fakeMediaService) GetMedia(_ context.Context, _ account.Principal, mediaID uuid.UUID) (media.MediaObject, error) {
@@ -81,6 +88,28 @@ func TestMediaUploadEndpointAuthenticatesAndForwardsReservation(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Data.UploadID == "" {
 		t.Fatalf("decode media grant: err=%v data=%#v", err, envelope.Data)
+	}
+}
+
+func TestMediaCancelReleasesUploadReservation(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	service := &fakeMediaService{}
+	handler := NewHandler(Config{
+		AuthService:  &stablePrincipalAuthService{principal: principal},
+		MediaService: service,
+	})
+	uploadID := uuid.New()
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/media/uploads/"+uploadID.String()+"/cancel", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if service.cancelID != uploadID {
+		t.Fatalf("canceled upload = %s want %s", service.cancelID, uploadID)
 	}
 }
 

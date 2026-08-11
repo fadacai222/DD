@@ -20,6 +20,8 @@ abstract final class DdRadii {
   static const double media = 16;
   static const double surface = 18;
   static const double sheet = 22;
+  static const double dialog = 14;
+  static const double input = 10;
   static const double control = 12;
 }
 
@@ -47,7 +49,8 @@ abstract final class DdDesktopTokens {
       ? const Color(0xFF191B1D)
       : const Color(0xFFF2F4F5);
 
-  static Color hoverSurface(Brightness brightness) => brightness == Brightness.dark
+  static Color hoverSurface(Brightness brightness) =>
+      brightness == Brightness.dark
       ? const Color(0xFF2A2E31)
       : const Color(0xFFE9EEF0);
 
@@ -74,13 +77,19 @@ abstract final class DdDesktopTokens {
   static Color activeIndicator(Brightness brightness) => DdColors.green;
 }
 
+abstract final class DdFeedbackTokens {
+  // Reserve the persistent composer / floating navigation area so transient
+  // feedback never sits on top of bottom controls.
+  static const double snackBarBottomInset = 88;
+}
+
 abstract final class DdFloatingNavigationTokens {
   static const double height = 70;
   static const double horizontalMargin = 12;
   static const double topGap = 6;
   static const double bottomGap = 8;
   static const double outerRadius = 34;
-  static const double itemRadius = 25;
+  static const double itemRadius = DdRadii.pill;
   static const Duration animationDuration = Duration(milliseconds: 180);
 
   static Color surface(Brightness brightness) => brightness == Brightness.dark
@@ -113,13 +122,43 @@ abstract final class AppTheme {
 
   static ThemeData _build(Brightness brightness) {
     final dark = brightness == Brightness.dark;
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: DdColors.green,
-      brightness: brightness,
-      primary: DdColors.green,
-      error: DdColors.danger,
-      surface: dark ? const Color(0xFF202020) : DdColors.panelStrong,
-    );
+    final scaffold = dark ? const Color(0xFF191919) : DdColors.panel;
+    final surface = dark ? const Color(0xFF232323) : DdColors.panelStrong;
+    final subtle = dark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F5F5);
+    final divider = dark ? const Color(0xFF353535) : DdColors.divider;
+    final inputBorder = dark
+        ? const Color(0xFF444444)
+        : const Color(0xFFD8D8D8);
+    final inputFocusBorder = dark
+        ? const Color(0xFF666666)
+        : const Color(0xFFB7B7B7);
+    final colorScheme =
+        ColorScheme.fromSeed(
+          seedColor: DdColors.green,
+          brightness: brightness,
+          primary: DdColors.green,
+          error: DdColors.danger,
+          surface: surface,
+        ).copyWith(
+          surfaceTint: Colors.transparent,
+          surfaceContainerLowest: dark ? const Color(0xFF1D1D1D) : Colors.white,
+          surfaceContainerLow: dark
+              ? const Color(0xFF252525)
+              : const Color(0xFFFAFAFA),
+          surfaceContainer: dark
+              ? const Color(0xFF292929)
+              : const Color(0xFFF7F7F7),
+          surfaceContainerHigh: dark
+              ? const Color(0xFF2E2E2E)
+              : const Color(0xFFF3F3F3),
+          surfaceContainerHighest: dark
+              ? const Color(0xFF343434)
+              : const Color(0xFFEEEEEE),
+          outline: dark ? const Color(0xFF565656) : const Color(0xFFCFCFCF),
+          outlineVariant: dark
+              ? const Color(0xFF3C3C3C)
+              : const Color(0xFFE3E3E3),
+        );
 
     final base = ThemeData(
       colorScheme: colorScheme,
@@ -135,11 +174,6 @@ abstract final class AppTheme {
         'Noto Sans CJK SC',
       ],
     );
-
-    final scaffold = dark ? const Color(0xFF191919) : DdColors.panel;
-    final surface = dark ? const Color(0xFF232323) : DdColors.panelStrong;
-    final subtle = dark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F5F5);
-    final divider = dark ? const Color(0xFF353535) : DdColors.divider;
 
     return base.copyWith(
       scaffoldBackgroundColor: scaffold,
@@ -171,25 +205,72 @@ abstract final class AppTheme {
           borderRadius: BorderRadius.circular(DdRadii.surface),
         ),
       ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: surface,
+        surfaceTintColor: Colors.transparent,
+        elevation: 12,
+        shadowColor: Colors.black.withValues(alpha: dark ? 0.42 : 0.16),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(DdRadii.dialog),
+        ),
+        titleTextStyle: TextStyle(
+          color: dark ? Colors.white : DdColors.textPrimary,
+          fontSize: 18,
+          height: 1.25,
+          fontWeight: FontWeight.w600,
+        ),
+        contentTextStyle: TextStyle(
+          color: dark ? const Color(0xFFD0D0D0) : const Color(0xFF555555),
+          fontSize: 14,
+          height: 1.55,
+        ),
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: subtle,
         isDense: true,
+        hintStyle: TextStyle(
+          color: dark ? const Color(0xFF909090) : DdColors.textSecondary,
+          fontWeight: FontWeight.w400,
+        ),
+        labelStyle: TextStyle(
+          color: dark ? const Color(0xFFA0A0A0) : DdColors.textSecondary,
+          fontWeight: FontWeight.w400,
+        ),
+        floatingLabelStyle: TextStyle(
+          color: dark ? const Color(0xFFCCCCCC) : const Color(0xFF555555),
+          fontWeight: FontWeight.w500,
+        ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 12,
           vertical: 11,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(DdRadii.pill),
-          borderSide: BorderSide.none,
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: BorderSide(color: inputBorder, width: 0.8),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(DdRadii.pill),
-          borderSide: BorderSide.none,
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: BorderSide(color: inputBorder, width: 0.8),
+        ),
+        disabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: BorderSide(
+            color: inputBorder.withValues(alpha: 0.55),
+            width: 0.8,
+          ),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(DdRadii.pill),
-          borderSide: const BorderSide(color: DdColors.green, width: 1),
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: BorderSide(color: inputFocusBorder, width: 1),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: const BorderSide(color: DdColors.danger, width: 0.9),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(DdRadii.input),
+          borderSide: const BorderSide(color: DdColors.danger, width: 1),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -207,7 +288,28 @@ abstract final class AppTheme {
           elevation: const WidgetStatePropertyAll(0),
           shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(DdRadii.pill),
+              borderRadius: BorderRadius.circular(DdRadii.input),
+            ),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.disabled)) {
+              return DdColors.textTertiary;
+            }
+            return dark ? const Color(0xFFE0E0E0) : const Color(0xFF444444);
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            final color = states.contains(WidgetState.disabled)
+                ? inputBorder.withValues(alpha: 0.55)
+                : inputBorder;
+            return BorderSide(color: color, width: 0.8);
+          }),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(DdRadii.input),
             ),
           ),
         ),
@@ -220,6 +322,11 @@ abstract final class AppTheme {
             }
             return DdColors.greenPressed;
           }),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(DdRadii.input),
+            ),
+          ),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
@@ -276,7 +383,13 @@ abstract final class AppTheme {
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        width: 320,
+        insetPadding: const EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          DdFeedbackTokens.snackBarBottomInset,
+        ),
         backgroundColor: dark
             ? const Color(0xFF333333)
             : const Color(0xFF333333),

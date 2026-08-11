@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../theme/app_theme.dart';
-
 class DdProfileEditField extends StatelessWidget {
   const DdProfileEditField({
     super.key,
@@ -19,6 +17,7 @@ class DdProfileEditField extends StatelessWidget {
     this.autocorrect = true,
     this.enableSuggestions = true,
     this.counterText,
+    this.underline = false,
     this.onSubmitted,
   });
 
@@ -36,13 +35,23 @@ class DdProfileEditField extends StatelessWidget {
   final bool autocorrect;
   final bool enableSuggestions;
   final String? counterText;
+  final bool underline;
   final ValueChanged<String>? onSubmitted;
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final idleColor = dark ? const Color(0xFF3A3A3A) : const Color(0xFFE2E2E2);
-    const focusedColor = DdColors.greenPressed;
+    final scheme = Theme.of(context).colorScheme;
+    final enabledBorder = underline
+        ? UnderlineInputBorder(
+            borderSide: BorderSide(color: scheme.outlineVariant, width: 0.8),
+          )
+        : null;
+    final focusedBorder = underline
+        ? UnderlineInputBorder(
+            borderSide: BorderSide(color: scheme.outline, width: 1),
+          )
+        : null;
+
     return TextField(
       key: fieldKey,
       controller: controller,
@@ -60,21 +69,11 @@ class DdProfileEditField extends StatelessWidget {
         labelText: label,
         hintText: hint,
         counterText: counterText,
-        filled: false,
-        isDense: true,
-        contentPadding: const EdgeInsets.fromLTRB(0, 10, 0, 9),
-        border: UnderlineInputBorder(
-          borderSide: BorderSide(color: idleColor, width: 0.8),
-        ),
-        enabledBorder: UnderlineInputBorder(
-          borderSide: BorderSide(color: idleColor, width: 0.8),
-        ),
-        disabledBorder: UnderlineInputBorder(
-          borderSide: BorderSide(color: idleColor, width: 0.6),
-        ),
-        focusedBorder: const UnderlineInputBorder(
-          borderSide: BorderSide(color: focusedColor, width: 1.2),
-        ),
+        filled: underline ? false : null,
+        border: enabledBorder,
+        enabledBorder: enabledBorder,
+        disabledBorder: enabledBorder,
+        focusedBorder: focusedBorder,
       ),
     );
   }

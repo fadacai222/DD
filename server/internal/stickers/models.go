@@ -20,11 +20,14 @@ var (
 )
 
 const (
-	MaximumCustomStickers      = 500
-	MaximumCustomStickerBatch  = 100
-	MaximumStickerPacks        = 64
-	MaximumTelegramPackItems   = 120
-	MaximumTelegramStickerSize = 10 * 1024 * 1024
+	MaximumCustomStickers              = 500
+	MaximumCustomStickerBatch          = 100
+	MaximumStickerPacks                = 64
+	MaximumTelegramPackItems           = 120
+	MaximumTelegramStickerSize         = 10 * 1024 * 1024
+	MaximumTelegramStaticStickerSize   = 512 * 1024
+	MaximumTelegramAnimatedStickerSize = 64 * 1024
+	MaximumTelegramVideoStickerSize    = 256 * 1024
 )
 
 type CustomSticker struct {

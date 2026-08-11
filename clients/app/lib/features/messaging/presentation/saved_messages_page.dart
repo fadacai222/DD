@@ -142,7 +142,12 @@ class _SavedMessagesPageState extends State<SavedMessagesPage> {
     if (content == null || mediaId == null || mediaId.isEmpty) {
       return _SavedCompactMediaPreview(message: message);
     }
-    if (!const {'IMAGE', 'GIF', 'STICKER'}.contains(message.type) ||
+    if (!const {
+          'IMAGE',
+          'GIF',
+          'STICKER',
+          'STICKER_PACK',
+        }.contains(message.type) ||
         !content.isImage) {
       return _SavedCompactMediaPreview(message: message);
     }
@@ -473,7 +478,12 @@ class SavedMessagesConversationView extends StatelessWidget {
   }
 
   Widget _content(ChatMessage message) {
-    if (const {'IMAGE', 'GIF', 'STICKER'}.contains(message.type)) {
+    if (const {
+      'IMAGE',
+      'GIF',
+      'STICKER',
+      'STICKER_PACK',
+    }.contains(message.type)) {
       return mediaBuilder?.call(message) ??
           _SavedCompactMediaPreview(message: message);
     }
@@ -639,6 +649,7 @@ class _SavedCompactMediaPreview extends StatelessWidget {
       'IMAGE' => _fallbackVisual(Icons.image_outlined, '图片'),
       'GIF' => _fallbackVisual(Icons.gif_box_outlined, 'GIF'),
       'STICKER' => _fallbackVisual(Icons.emoji_emotions_outlined, '表情'),
+      'STICKER_PACK' => _fallbackVisual(Icons.auto_awesome_rounded, '表情包'),
       _ => const Text('消息'),
     };
   }

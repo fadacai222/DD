@@ -38,8 +38,7 @@ void main() {
     final profileField = tester.widget<TextField>(
       find.byKey(const Key('profile-edit-field')),
     );
-    expect(profileField.decoration?.border, isA<UnderlineInputBorder>());
-    expect(profileField.decoration?.border, isNot(isA<OutlineInputBorder>()));
+    expect(profileField.decoration?.border, isNull);
     await tester.enterText(
       find.byKey(const Key('profile-edit-field')),
       'Alice New',
@@ -125,7 +124,7 @@ void main() {
     final emailField = tester.widget<TextField>(
       find.byKey(const Key('profile-email-field')),
     );
-    expect(emailField.decoration?.border, isA<UnderlineInputBorder>());
+    expect(emailField.decoration?.border, isNull);
     await tester.enterText(
       find.byKey(const Key('profile-email-field')),
       'new@example.com',

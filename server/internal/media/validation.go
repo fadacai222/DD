@@ -12,12 +12,13 @@ import (
 )
 
 const (
-	maxImageBytes   int64 = 25 * 1024 * 1024
-	maxGIFBytes     int64 = 50 * 1024 * 1024
-	maxVoiceBytes   int64 = 25 * 1024 * 1024
-	maxVideoBytes   int64 = 2 * 1024 * 1024 * 1024
-	maxStickerBytes int64 = 64 * 1024 * 1024
-	maxFileBytes    int64 = 2 * 1024 * 1024 * 1024
+	maxImageBytes      int64 = 25 * 1024 * 1024
+	maxGIFBytes        int64 = 50 * 1024 * 1024
+	maxVoiceBytes      int64 = 25 * 1024 * 1024
+	maxVideoBytes      int64 = 2 * 1024 * 1024 * 1024
+	maxStickerBytes    int64 = 64 * 1024 * 1024
+	maxStickerTGSBytes int64 = 64 * 1024
+	maxFileBytes       int64 = 2 * 1024 * 1024 * 1024
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -52,7 +53,11 @@ func validateUploadInput(input CreateUploadInput) error {
 		}
 	case PurposeSticker:
 		maxBytes = maxStickerBytes
-		if mimeType != "image/png" && mimeType != "image/webp" && mimeType != "image/gif" {
+		switch mimeType {
+		case "image/png", "image/webp", "image/gif", "video/mp4", "video/webm":
+		case "application/x-tgsticker":
+			maxBytes = maxStickerTGSBytes
+		default:
 			return ErrInvalidInput
 		}
 	case PurposeChatVoice:

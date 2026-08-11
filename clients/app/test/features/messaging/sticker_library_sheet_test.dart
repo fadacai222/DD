@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/messaging/data/sticker_api_client.dart';
 import 'package:im_client/features/messaging/domain/sticker_models.dart';
 import 'package:im_client/features/messaging/presentation/sticker_library_sheet.dart';
+import 'package:im_client/features/messaging/presentation/widgets/telegram_tgs_sticker.dart';
 
 void main() {
   testWidgets('sheet exposes emoji custom and dynamic pack tabs', (
@@ -33,12 +35,96 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'GIF custom sticker renders actual animated image instead of label',
+    (tester) async {
+      final gateway = _FakeStickerGateway(custom: [_custom('gif-1')]);
+      await _openSheet(tester, gateway);
+
+      await tester.tap(find.byKey(const Key('sticker-tab-custom')));
+      await tester.pumpAndSettle();
+
+      final cell = find.byKey(const Key('custom-sticker-gif-1'));
+      expect(cell, findsOneWidget);
+      expect(
+        find.descendant(of: cell, matching: find.byType(Image)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: cell, matching: find.text('GIF')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'video custom stickers retry visibility after bottom sheet entrance animation',
+    (tester) async {
+      final resolved = <String>[];
+      final gateway = _FakeStickerGateway(custom: [_videoCustom('video-1')]);
+      await _openSheet(
+        tester,
+        gateway,
+        initialTabKey: 'custom',
+        mediaUrlResolver: (mediaId, expectedSizeBytes) async {
+          resolved.add('$mediaId:$expectedSizeBytes');
+          throw StateError('stop before native playback in widget test');
+        },
+      );
+
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+
+      expect(find.byKey(const Key('custom-sticker-video-1')), findsOneWidget);
+      expect(resolved, contains('media-video-1:1024'));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('Telegram TGS sticker animates without unsupported warning', (
+    tester,
+  ) async {
+    final gateway = _FakeStickerGateway(packs: [_tgsPack()]);
+    await _openSheet(tester, gateway, mediaBytesLoader: _tgsMediaBytes);
+
+    await tester.tap(find.byKey(const Key('sticker-tab-pack-tgs-pack')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(find.byType(TelegramTgsSticker), findsWidgets);
+    expect(find.textContaining('动态/视频表情暂不支持'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('legacy partial Telegram pack refreshes when opened', (
+    tester,
+  ) async {
+    final refreshed = _refreshedPartialPack();
+    final gateway = _FakeStickerGateway(
+      packs: [_legacyPartialPack()],
+      partialRefreshResult: refreshed,
+    );
+    await _openSheet(
+      tester,
+      gateway,
+      mediaBytesLoader: _mixedPartialMediaBytes,
+    );
+
+    await tester.tap(find.byKey(const Key('sticker-tab-pack-partial-pack')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 160));
+
+    expect(gateway.importedSetNames, ['Animated_by_TestBot']);
+    expect(find.textContaining('动态/视频表情暂不支持'), findsNothing);
+    expect(find.textContaining('个表情导入失败'), findsNothing);
+    expect(find.byType(TelegramTgsSticker), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('sheet restores semantic tab and reports tab changes', (
     tester,
   ) async {
-    final gateway = _FakeStickerGateway(
-      packs: [_pack('pack-1', 'Animals')],
-    );
+    final gateway = _FakeStickerGateway(packs: [_pack('pack-1', 'Animals')]);
     final changedTabs = <String>[];
     await _openSheet(
       tester,
@@ -56,15 +142,34 @@ void main() {
     expect(find.byKey(const Key('sticker-custom-grid')), findsOneWidget);
   });
 
+  testWidgets(
+    'open sticker sheet silently syncs packs added on another device',
+    (tester) async {
+      final gateway = _FakeStickerGateway();
+      await _openSheet(tester, gateway);
+
+      expect(
+        find.byKey(const Key('sticker-tab-pack-remote-pack')),
+        findsNothing,
+      );
+
+      gateway.packs.add(_pack('remote-pack', 'Remote'));
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+
+      expect(
+        find.byKey(const Key('sticker-tab-pack-remote-pack')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('missing remembered pack falls back to custom stickers', (
     tester,
   ) async {
     final gateway = _FakeStickerGateway(custom: [_custom('custom-1')]);
-    await _openSheet(
-      tester,
-      gateway,
-      initialTabKey: 'pack:removed-pack',
-    );
+    await _openSheet(tester, gateway, initialTabKey: 'pack:removed-pack');
 
     expect(find.byKey(const Key('sticker-custom-grid')), findsOneWidget);
     expect(find.byKey(const Key('custom-sticker-custom-1')), findsOneWidget);
@@ -237,6 +342,9 @@ Future<void> _openSheet(
   onAddCustomSticker,
   String initialTabKey = 'emoji',
   ValueChanged<String>? onTabChanged,
+  Future<Uint8List> Function(String mediaId)? mediaBytesLoader,
+  Future<Uri> Function(String mediaId, int expectedSizeBytes)?
+  mediaUrlResolver,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -252,9 +360,9 @@ Future<void> _openSheet(
                 accessToken: 'token',
                 emoji: const ['😀', '😂'],
                 recentEmoji: const ['😀'],
-                mediaBytesLoader: _mediaBytes,
-                onAddCustomSticker:
-                    onAddCustomSticker ?? (_) async => null,
+                mediaBytesLoader: mediaBytesLoader ?? _mediaBytes,
+                mediaUrlResolver: mediaUrlResolver,
+                onAddCustomSticker: onAddCustomSticker ?? (_) async => null,
                 initialTabKey: initialTabKey,
                 onTabChanged: onTabChanged,
                 gateway: gateway,
@@ -276,6 +384,86 @@ Future<Uint8List> _mediaBytes(String _) async => Uint8List.fromList(
   ),
 );
 
+Future<Uint8List> _tgsMediaBytes(String _) async => Uint8List.fromList(
+  gzip.encode(
+    utf8.encode(
+      '{"v":"5.7.4","fr":60,"ip":0,"op":60,"w":512,"h":512,"nm":"DD test","ddd":0,"assets":[],"layers":[]}',
+    ),
+  ),
+);
+
+Future<Uint8List> _mixedPartialMediaBytes(String mediaId) =>
+    mediaId == 'media-static' ? _mediaBytes(mediaId) : _tgsMediaBytes(mediaId);
+
+StickerPackItemGroup _tgsPack() => StickerPackItemGroup(
+  id: 'tgs-pack',
+  setName: 'Animated_by_TestBot',
+  title: 'Animated',
+  coverMediaId: 'media-tgs',
+  supportedStickerCount: 1,
+  unsupportedStickerCount: 0,
+  sortOrder: 0,
+  items: [
+    StickerPackItem(
+      id: 'item-tgs',
+      mediaId: 'media-tgs',
+      emoji: '✨',
+      mimeType: 'application/x-tgsticker',
+      width: 512,
+      height: 512,
+      sizeBytes: 1024,
+      sortOrder: 0,
+    ),
+  ],
+  updatedAt: DateTime.utc(2026, 8, 12, 3, 49),
+);
+
+StickerPackItemGroup _legacyPartialPack() => StickerPackItemGroup(
+  id: 'partial-pack',
+  setName: 'Animated_by_TestBot',
+  title: 'Animated',
+  coverMediaId: 'media-static',
+  supportedStickerCount: 1,
+  unsupportedStickerCount: 1,
+  sortOrder: 0,
+  items: [
+    StickerPackItem(
+      id: 'item-static',
+      mediaId: 'media-static',
+      emoji: '🙂',
+      mimeType: 'image/webp',
+      width: 512,
+      height: 512,
+      sizeBytes: 2048,
+      sortOrder: 0,
+    ),
+  ],
+  updatedAt: DateTime.utc(2026, 8, 11, 23, 30),
+);
+
+StickerPackItemGroup _refreshedPartialPack() => StickerPackItemGroup(
+  id: 'partial-pack',
+  setName: 'Animated_by_TestBot',
+  title: 'Animated',
+  coverMediaId: 'media-tgs',
+  supportedStickerCount: 1,
+  unsupportedStickerCount: 0,
+  sortOrder: 0,
+  items: [
+    StickerPackItem(
+      id: 'item-tgs-refreshed',
+      mediaId: 'media-tgs',
+      emoji: '✨',
+      mimeType: 'application/x-tgsticker',
+      width: 512,
+      height: 512,
+      sizeBytes: 1024,
+      sortOrder: 0,
+    ),
+  ],
+  updatedAt: DateTime.utc(2026, 8, 12, 4, 20),
+);
+
 CustomStickerItem _custom(String id) => CustomStickerItem(
   id: id,
   mediaId: 'media-$id',
@@ -285,6 +473,17 @@ CustomStickerItem _custom(String id) => CustomStickerItem(
   sizeBytes: 1024,
   sortOrder: 0,
   createdAt: DateTime.utc(2026, 8, 10, 7, 30),
+);
+
+CustomStickerItem _videoCustom(String id) => CustomStickerItem(
+  id: id,
+  mediaId: 'media-$id',
+  mimeType: 'video/mp4',
+  width: 288,
+  height: 512,
+  sizeBytes: 1024,
+  sortOrder: 0,
+  createdAt: DateTime.utc(2026, 8, 12, 3, 55),
 );
 
 StickerPackItemGroup _pack(String id, String title) => StickerPackItemGroup(
@@ -314,11 +513,13 @@ final class _FakeStickerGateway implements StickerGateway {
   _FakeStickerGateway({
     List<CustomStickerItem> custom = const [],
     List<StickerPackItemGroup> packs = const [],
+    this.partialRefreshResult,
   }) : custom = List<CustomStickerItem>.from(custom),
        packs = List<StickerPackItemGroup>.from(packs);
 
   final List<CustomStickerItem> custom;
   final List<StickerPackItemGroup> packs;
+  final StickerPackItemGroup? partialRefreshResult;
   final List<String> importedSetNames = [];
   final List<String> removedPackIds = [];
   final List<String> deletedStickerIds = [];
@@ -372,6 +573,16 @@ final class _FakeStickerGateway implements StickerGateway {
     required String setName,
   }) async {
     importedSetNames.add(setName);
+    final refresh = partialRefreshResult;
+    if (refresh != null && refresh.setName == setName) {
+      final index = packs.indexWhere((pack) => pack.setName == setName);
+      if (index >= 0) {
+        packs[index] = refresh;
+      } else {
+        packs.add(refresh);
+      }
+      return refresh;
+    }
     final pack = _pack('imported-pack', 'Imported');
     packs.add(pack);
     return pack;

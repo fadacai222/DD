@@ -25,6 +25,8 @@ class ContactsPage extends StatefulWidget {
     this.onUnauthorized,
     this.onOpenDirectChat,
     this.onOpenGroups,
+    this.onRefreshGroups,
+    this.desktopGroupsContent,
     this.onStartAudioCall,
     this.onStartVideoCall,
   });
@@ -40,6 +42,8 @@ class ContactsPage extends StatefulWidget {
   final Future<String?> Function()? onUnauthorized;
   final Future<void> Function(String peerId, String peerName)? onOpenDirectChat;
   final Future<void> Function()? onOpenGroups;
+  final Future<void> Function()? onRefreshGroups;
+  final Widget? desktopGroupsContent;
   final Future<void> Function(String peerId, String peerName)? onStartAudioCall;
   final Future<void> Function(String peerId, String peerName)? onStartVideoCall;
 
@@ -287,8 +291,8 @@ class _ContactsPageState extends State<ContactsPage>
           key: const Key('desktop-groups-directory'),
           icon: Icons.group_rounded,
           label: '群聊',
-          selected: false,
-          onTap: () => unawaited(widget.onOpenGroups?.call()),
+          selected: _desktopSection == 'groups',
+          onTap: _openDesktopGroups,
         ),
         _DirectoryAction(
           icon: Icons.manage_accounts_outlined,
@@ -371,10 +375,42 @@ class _ContactsPageState extends State<ContactsPage>
       'add' => _desktopPane('添加联系人', _buildSearchTab()),
       'blocks' => _desktopPane('黑名单', _buildBlocksTab()),
       'manage' => _desktopPane('通讯录管理', _buildContactsTab()),
+      'groups' => _desktopPane(
+        '群聊',
+        widget.desktopGroupsContent ?? _desktopEmptyGroups(),
+      ),
       'contact' => _selectedContactDetail(),
       _ => _desktopEmptyContact(),
     };
   }
+
+  void _openDesktopGroups() {
+    setState(() {
+      _desktopSection = 'groups';
+      _selectedContactId = null;
+    });
+    final refreshGroups = widget.onRefreshGroups;
+    if (refreshGroups == null) return;
+    unawaited(_refreshDesktopGroups(refreshGroups));
+  }
+
+  Future<void> _refreshDesktopGroups(Future<void> Function() refreshGroups) async {
+    try {
+      await refreshGroups();
+    } catch (error) {
+      if (!mounted || _desktopSection != 'groups') return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('群聊列表加载失败：$error')),
+      );
+    }
+  }
+
+  Widget _desktopEmptyGroups() => const Center(
+    child: Text(
+      '暂无群聊',
+      style: TextStyle(color: DdColors.textTertiary),
+    ),
+  );
 
   Widget _desktopPane(String title, Widget child) {
     return Column(
@@ -420,104 +456,353 @@ class _ContactsPageState extends State<ContactsPage>
       }
     }
     if (selected == null) return _desktopEmptyContact();
+
     final contact = selected;
     final title = contact.remark.isEmpty
         ? contact.user.displayName
         : contact.remark;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 480),
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _contactAvatar(contact.user, size: 72),
-              const SizedBox(height: 14),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 5),
-              Text(
-                '@${contact.user.handle}',
-                style: const TextStyle(color: DdColors.textSecondary),
-              ),
-              if (contact.tags.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  contact.tags.join(' · '),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: DdColors.textTertiary,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 24),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                alignment: WrapAlignment.center,
-                children: [
-                  if (widget.onOpenDirectChat != null)
-                    FilledButton.icon(
-                      key: const Key('desktop-contact-message'),
-                      onPressed: _busy
-                          ? null
-                          : () => widget.onOpenDirectChat!(
-                              contact.user.id,
-                              title,
+    final nickname = contact.user.displayName.trim();
+    final handle = contact.user.handle.trim();
+    final brightness = Theme.of(context).brightness;
+    final surface = Theme.of(context).colorScheme.surface;
+    final divider = DdDesktopTokens.borderSubtle(brightness);
+
+    return ColoredBox(
+      key: const Key('desktop-contact-detail'),
+      color: surface,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(46, 46, 46, 34),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 470),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _contactAvatar(contact.user, size: 72),
+                    const SizedBox(width: 18),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 1),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 20,
+                                      height: 1.2,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (contact.isStarred) ...[
+                                  const SizedBox(width: 6),
+                                  const Icon(
+                                    Icons.star_rounded,
+                                    size: 16,
+                                    color: Color(0xFFFFA928),
+                                  ),
+                                ],
+                              ],
                             ),
-                      icon: const Icon(
-                        Icons.chat_bubble_outline_rounded,
-                        size: 18,
+                            if (contact.remark.isNotEmpty &&
+                                nickname.isNotEmpty &&
+                                nickname != title) ...[
+                              const SizedBox(height: 7),
+                              Text(
+                                '昵称：$nickname',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: DdColors.textSecondary,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 5),
+                            Text(
+                              handle.isEmpty ? 'DDID：暂不可用' : 'DDID：$handle',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                color: DdColors.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      label: const Text('发消息'),
                     ),
-                  if (widget.onStartAudioCall != null)
-                    OutlinedButton.icon(
-                      onPressed: _busy
-                          ? null
-                          : () => widget.onStartAudioCall!(
-                              contact.user.id,
-                              title,
-                            ),
-                      icon: const Icon(Icons.call_outlined, size: 18),
-                      label: const Text('语音通话'),
+                    const SizedBox(width: 8),
+                    PopupMenuButton<String>(
+                      key: const Key('desktop-contact-more'),
+                      enabled: !_busy,
+                      tooltip: '更多联系人操作',
+                      offset: const Offset(0, 34),
+                      icon: const Icon(Icons.more_horiz_rounded, size: 22),
+                      onSelected: (value) {
+                        if (value == 'moment-privacy') {
+                          unawaited(_openDesktopMomentPrivacy(contact));
+                          return;
+                        }
+                        unawaited(_contactAction(contact, value));
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                          value: 'edit',
+                          child: Text('备注与标签'),
+                        ),
+                        PopupMenuItem(
+                          value: 'moment-privacy',
+                          child: Text('朋友圈权限'),
+                        ),
+                        PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Text(
+                            '删除联系人',
+                            style: TextStyle(color: DdColors.danger),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'block',
+                          child: Text(
+                            '拉黑',
+                            style: TextStyle(color: DdColors.danger),
+                          ),
+                        ),
+                      ],
                     ),
-                  if (widget.onStartVideoCall != null)
-                    OutlinedButton.icon(
-                      onPressed: _busy
-                          ? null
-                          : () => widget.onStartVideoCall!(
-                              contact.user.id,
-                              title,
-                            ),
-                      icon: const Icon(Icons.videocam_outlined, size: 18),
-                      label: const Text('视频通话'),
-                    ),
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : () => _editContact(contact),
-                    icon: const Icon(Icons.edit_outlined, size: 18),
-                    label: const Text('备注与标签'),
+                  ],
+                ),
+                const SizedBox(height: 30),
+                Divider(height: 1, thickness: 0.5, color: divider),
+                const SizedBox(height: 23),
+                const Text(
+                  '朋友资料',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: DdColors.textSecondary,
                   ),
-                  OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () => _contactAction(contact, 'block'),
-                    icon: const Icon(Icons.block_outlined, size: 18),
-                    label: const Text('拉黑'),
+                ),
+                const SizedBox(height: 16),
+                _desktopProfileInfoRow(
+                  label: '备注',
+                  value: contact.remark.isEmpty ? '未设置' : contact.remark,
+                ),
+                if (contact.tags.isNotEmpty) ...[
+                  const SizedBox(height: 15),
+                  _desktopProfileInfoRow(
+                    label: '标签',
+                    value: contact.tags.join(' · '),
                   ),
                 ],
-              ),
-            ],
+                const SizedBox(height: 24),
+                Divider(height: 1, thickness: 0.5, color: divider),
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: const Key('desktop-contact-moments'),
+                    hoverColor: DdDesktopTokens.hoverSurface(brightness),
+                    splashColor: Colors.transparent,
+                    onTap: _busy
+                        ? null
+                        : () => unawaited(_openDesktopMoments(contact)),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 19),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 92,
+                            child: Text(
+                              '朋友圈',
+                              style: TextStyle(fontSize: 13.5),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              '查看',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                color: DdColors.textSecondary,
+                              ),
+                            ),
+                          ),
+                          Icon(
+                            Icons.chevron_right_rounded,
+                            size: 19,
+                            color: DdColors.textTertiary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Divider(height: 1, thickness: 0.5, color: divider),
+                const SizedBox(height: 23),
+                const Text(
+                  '更多信息',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: DdColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _desktopProfileInfoRow(
+                  label: '个性签名',
+                  value: contact.user.bio.trim().isEmpty
+                      ? '未设置'
+                      : contact.user.bio.trim(),
+                ),
+                const SizedBox(height: 15),
+                _desktopProfileInfoRow(
+                  label: '添加时间',
+                  value: _formatContactDate(contact.createdAt),
+                ),
+                if (widget.onOpenDirectChat != null ||
+                    widget.onStartAudioCall != null ||
+                    widget.onStartVideoCall != null) ...[
+                  const SizedBox(height: 32),
+                  Divider(height: 1, thickness: 0.5, color: divider),
+                  const SizedBox(height: 18),
+                  Row(
+                    key: const Key('desktop-contact-actions'),
+                    children: [
+                      if (widget.onOpenDirectChat != null)
+                        Expanded(
+                          child: _DesktopContactQuickAction(
+                            key: const Key('desktop-contact-message'),
+                            icon: Icons.chat_bubble_outline_rounded,
+                            label: '发消息',
+                            onTap: _busy
+                                ? null
+                                : () => unawaited(
+                                    widget.onOpenDirectChat!(
+                                      contact.user.id,
+                                      title,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      if (widget.onStartAudioCall != null)
+                        Expanded(
+                          child: _DesktopContactQuickAction(
+                            key: const Key('desktop-contact-audio'),
+                            icon: Icons.call_outlined,
+                            label: '语音聊天',
+                            onTap: _busy
+                                ? null
+                                : () => unawaited(
+                                    widget.onStartAudioCall!(
+                                      contact.user.id,
+                                      title,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      if (widget.onStartVideoCall != null)
+                        Expanded(
+                          child: _DesktopContactQuickAction(
+                            key: const Key('desktop-contact-video'),
+                            icon: Icons.videocam_outlined,
+                            label: '视频聊天',
+                            onTap: _busy
+                                ? null
+                                : () => unawaited(
+                                    widget.onStartVideoCall!(
+                                      contact.user.id,
+                                      title,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  Widget _desktopProfileInfoRow({
+    required String label,
+    required String value,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13.5,
+              color: DdColors.textSecondary,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13.5, height: 1.35),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openDesktopMoments(ContactItem contact) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentsFeedPage(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+          currentUserId: widget.currentUserId,
+          currentUserDisplayName: '',
+          authorId: contact.user.id,
+          authorDisplayName: contact.remark.isEmpty
+              ? contact.user.displayName
+              : contact.remark,
+          onUnauthorized: widget.onUnauthorized ?? () async => null,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openDesktopMomentPrivacy(ContactItem contact) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => MomentContactPrivacyPage(
+          origin: widget.origin,
+          accessToken: widget.accessToken,
+          targetUserId: contact.user.id,
+          targetDisplayName: contact.remark.isEmpty
+              ? contact.user.displayName
+              : contact.remark,
+          onUnauthorized: widget.onUnauthorized ?? () async => null,
+        ),
+      ),
+    );
+  }
+
+  static String _formatContactDate(DateTime value) {
+    final local = value.toLocal();
+    String twoDigits(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)}';
   }
 
   Widget _desktopEmptyContact() {
@@ -1047,16 +1332,16 @@ class _ContactsPageState extends State<ContactsPage>
                 ? const Color(0xFF2F2F2F)
                 : const Color(0xFFF1F1F1),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(26),
+              borderRadius: BorderRadius.circular(DdRadii.input),
               borderSide: BorderSide.none,
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(26),
+              borderRadius: BorderRadius.circular(DdRadii.input),
               borderSide: BorderSide.none,
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(26),
-              borderSide: const BorderSide(color: DdColors.green, width: 1.2),
+              borderRadius: BorderRadius.circular(DdRadii.input),
+              borderSide: BorderSide.none,
             ),
           ),
         ),
@@ -1509,6 +1794,62 @@ class _ContactsPageState extends State<ContactsPage>
       );
     }
     return '请求失败：$error';
+  }
+}
+
+class _DesktopContactQuickAction extends StatelessWidget {
+  const _DesktopContactQuickAction({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const actionColor = Color(0xFF576B95);
+    final enabled = onTap != null;
+    final color = enabled ? actionColor : DdColors.textTertiary;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: label,
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(DdRadii.control),
+          hoverColor: DdDesktopTokens.hoverSurface(
+            Theme.of(context).brightness,
+          ),
+          splashColor: Colors.transparent,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 23, color: color),
+                const SizedBox(height: 7),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: color,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

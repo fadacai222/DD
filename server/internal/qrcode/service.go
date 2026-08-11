@@ -277,7 +277,7 @@ func (service *Service) CreateLogin(
 	payload := buildPayload("login", service.publicBaseURL, "nonce", nonce)
 	return LoginSession{
 		Status: "PENDING", Nonce: nonce, Payload: payload,
-		Device: DeviceInput{Name: device.Name, Platform: device.Platform, AppVersion: device.AppVersion},
+		Device:    DeviceInput{Name: device.Name, Platform: device.Platform, AppVersion: device.AppVersion},
 		ExpiresAt: expiresAt,
 	}, nil
 }
@@ -534,8 +534,8 @@ func loadLoginRow(ctx context.Context, queryer rowQueryer, nonceHash [32]byte, l
 
 func loginSessionFromRow(state loginRow) LoginSession {
 	return LoginSession{
-		Status: state.Status,
-		Device: DeviceInput{Name: state.DeviceName, Platform: state.Platform, AppVersion: state.AppVersion},
+		Status:    state.Status,
+		Device:    DeviceInput{Name: state.DeviceName, Platform: state.Platform, AppVersion: state.AppVersion},
 		ExpiresAt: state.ExpiresAt,
 		ScannedAt: utcTimePointer(state.ScannedAt), ConfirmedAt: utcTimePointer(state.ConfirmedAt),
 	}

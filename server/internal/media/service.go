@@ -140,6 +140,63 @@ func (service *Service) CreateUpload(ctx context.Context, principal account.Prin
 	}, nil
 }
 
+// CancelUpload releases an unfinished upload reservation immediately. Clients call
+// this on failed/retried/cancelled transfers so transient failures cannot consume
+// the per-user active-upload quota for the full reservation TTL.
+func (service *Service) CancelUpload(ctx context.Context, principal account.Principal, uploadID uuid.UUID) error {
+	if uploadID == uuid.Nil {
+		return ErrInvalidInput
+	}
+	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin media upload cancel: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var mediaID uuid.UUID
+	var storageKey string
+	err = tx.QueryRow(ctx, `
+		SELECT m.id,m.storage_key
+		FROM media_uploads u
+		JOIN media_objects m ON m.id=u.media_id
+		WHERE u.id=$1 AND u.owner_user_id=$2
+		  AND u.completed_at IS NULL
+		  AND m.status='UPLOADING'
+		FOR UPDATE OF u,m
+	`, uploadID, principal.UserID).Scan(&mediaID, &storageKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A completion response can be lost after the server committed READY.
+		// Treat an already-finalized own reservation as an idempotent no-op, but
+		// keep unknown/foreign upload IDs indistinguishable from not found.
+		var own bool
+		if lookupErr := tx.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM media_uploads WHERE id=$1 AND owner_user_id=$2
+			)
+		`, uploadID, principal.UserID).Scan(&own); lookupErr != nil {
+			return fmt.Errorf("check media upload cancel ownership: %w", lookupErr)
+		}
+		if own {
+			return tx.Commit(ctx)
+		}
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock media upload cancel: %w", err)
+	}
+
+	if err := service.store.Delete(ctx, storageKey); err != nil {
+		return fmt.Errorf("delete canceled media object %s: %w", mediaID, err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM media_objects WHERE id=$1 AND status='UPLOADING'`, mediaID); err != nil {
+		return fmt.Errorf("delete canceled media reservation %s: %w", mediaID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit media upload cancel: %w", err)
+	}
+	return nil
+}
+
 func (service *Service) ImportManagedSticker(ctx context.Context, input ManagedStickerInput) (MediaObject, error) {
 	if len(input.Bytes) == 0 {
 		return MediaObject{}, ErrInvalidInput

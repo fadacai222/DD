@@ -26,7 +26,9 @@ func (f *fakeQRService) UserPayload(userID uuid.UUID) (qrcode.Payload, error) {
 func (f *fakeQRService) CreateGroupInvite(_ context.Context, _ account.Principal, groupID uuid.UUID, _ qrcode.CreateGroupInviteInput) (qrcode.GroupInvite, error) {
 	return qrcode.GroupInvite{ID: uuid.NewString(), GroupID: groupID.String(), Payload: "dd://qr/v1/group?nonce=test", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, f.err
 }
-func (f *fakeQRService) RevokeGroupInvite(_ context.Context, _ account.Principal, _ uuid.UUID) error { return f.err }
+func (f *fakeQRService) RevokeGroupInvite(_ context.Context, _ account.Principal, _ uuid.UUID) error {
+	return f.err
+}
 func (f *fakeQRService) RedeemGroupInvite(_ context.Context, _ account.Principal, nonce string) (qrcode.GroupRedeemResult, []uuid.UUID, error) {
 	f.lastNonce = nonce
 	return qrcode.GroupRedeemResult{}, nil, f.err

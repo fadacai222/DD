@@ -197,9 +197,22 @@ final class RemoteMediaActionService {
     required String suggestedName,
   }) async {
     final fileName = MediaExportService.safeFileName(suggestedName);
+    final file = url.scheme == 'file'
+        ? File(url.toFilePath())
+        : await _downloadTransferFile(
+            url: url,
+            transferKey: 'video-share-${url.hashCode}',
+            fileName: fileName,
+            expectedBytes: null,
+            cancellation: null,
+            onProgress: null,
+          );
+    if (!await file.exists()) {
+      throw FileSystemException('待分享的视频文件不存在。', file.path);
+    }
     if (_platform == TargetPlatform.android) {
-      final shared = await _channel.invokeMethod<bool>('shareRemoteFile', {
-        'url': url.toString(),
+      final shared = await _channel.invokeMethod<bool>('shareLocalFile', {
+        'path': file.path,
         'mimeType': mimeType,
         'fileName': fileName,
       });
@@ -211,14 +224,6 @@ final class RemoteMediaActionService {
       }
       return '已打开系统分享';
     }
-    final file = await _downloadTransferFile(
-      url: url,
-      transferKey: 'video-share-${url.hashCode}',
-      fileName: fileName,
-      expectedBytes: null,
-      cancellation: null,
-      onProgress: null,
-    );
     await Pasteboard.writeFiles(<String>[file.path]);
     return '视频文件已复制，可粘贴到支持文件的应用';
   }

@@ -266,12 +266,14 @@ final class ConversationItem {
     this.peer,
     this.group,
     this.lastMessage,
+    this.lastMessageSender,
   });
 
   factory ConversationItem.fromJson(Map<String, dynamic> json) {
     final rawPeer = json['peer'];
     final rawGroup = json['group'];
     final rawLastMessage = json['lastMessage'];
+    final rawLastMessageSender = json['lastMessageSender'];
     final rawPreferences = json['preferences'];
     if (rawPreferences is! Map<String, dynamic>) {
       throw const FormatException('Conversation preferences are malformed');
@@ -295,6 +297,9 @@ final class ConversationItem {
       lastMessage: rawLastMessage is Map<String, dynamic>
           ? ChatMessage.fromJson(rawLastMessage)
           : null,
+      lastMessageSender: rawLastMessageSender is Map<String, dynamic>
+          ? MessagingUserPreview.fromJson(rawLastMessageSender)
+          : null,
       preferences: ConversationPreferences.fromJson(rawPreferences),
       createdAt: _requiredDate(json, 'createdAt'),
       updatedAt: _requiredDate(json, 'updatedAt'),
@@ -311,6 +316,7 @@ final class ConversationItem {
   final int unreadCount;
   final bool canWrite;
   final ChatMessage? lastMessage;
+  final MessagingUserPreview? lastMessageSender;
   final ConversationPreferences preferences;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -529,11 +535,18 @@ final class PendingTextMessage {
   bool get isImage => type == 'IMAGE';
   bool get isGif => type == 'GIF';
   bool get isSticker => type == 'STICKER';
+  bool get isStickerPack => type == 'STICKER_PACK';
   bool get isFile => type == 'FILE';
   bool get isVoice => type == 'VOICE';
   bool get isVideo => type == 'VIDEO';
   bool get isMedia =>
-      isImage || isGif || isSticker || isFile || isVoice || isVideo;
+      isImage ||
+      isGif ||
+      isSticker ||
+      isStickerPack ||
+      isFile ||
+      isVoice ||
+      isVideo;
 
   PendingTextMessage copyWith({String? lastError}) => PendingTextMessage(
     clientMessageId: clientMessageId,

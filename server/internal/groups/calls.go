@@ -126,9 +126,10 @@ func (service *Service) StartGroupCall(
 	}
 	if created {
 		if err := insertGroupOutboxTx(ctx, tx, groupID, "GROUP_CALL_STARTED", nil, map[string]any{
-			"groupId": groupID.String(),
-			"callId":  sessionID.String(),
-			"kind":    kind,
+			"groupId":         groupID.String(),
+			"callId":          sessionID.String(),
+			"kind":            kind,
+			"startedByUserId": principal.UserID.String(),
 		}, now); err != nil {
 			return GroupCallJoin{}, nil, err
 		}

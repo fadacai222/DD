@@ -11,9 +11,11 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/media/camera_capture_service.dart';
 import '../../../core/media/chat_image_processor.dart';
 import '../../../core/media/chat_voice_recorder.dart';
+import '../../../core/media/dd_file_picker.dart';
 import '../../../core/media/image_viewer_page.dart';
 import '../../../core/media/media_cache_manager.dart';
 import '../../../core/media/remote_media_action_service.dart';
+import '../../../core/platform/external_url_opener.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
 import '../../auth/presentation/widgets/profile_avatar.dart';
@@ -34,6 +36,7 @@ import '../application/messaging_coordinator.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
 import '../data/custom_sticker_processor.dart';
+import '../data/link_preview_api_client.dart';
 import '../data/media_api_client.dart';
 import '../data/media_auto_download_store.dart';
 import '../data/media_download_grant_cache.dart';
@@ -52,6 +55,7 @@ import 'chat_details_page.dart';
 import 'chat_wallpaper_surface.dart';
 import 'conversation_media_page.dart';
 import 'desktop_inspector.dart';
+import 'desktop_mention_profile_dialog.dart';
 import 'desktop_video_pip.dart';
 import 'mention_composer_controller.dart';
 import 'mention_rich_text.dart';
@@ -59,7 +63,10 @@ import 'mention_suggestion_overlay.dart';
 import 'sticker_library_sheet.dart';
 import 'video_viewer_page.dart';
 import 'widgets/inline_video_preview.dart';
+import 'widgets/looping_video_sticker.dart';
 import 'widgets/media_transfer_progress.dart';
+import 'widgets/message_link_preview.dart';
+import 'widgets/telegram_tgs_sticker.dart';
 
 class TextChatPage extends StatefulWidget {
   const TextChatPage({
@@ -116,6 +123,7 @@ class _TextChatPageState extends State<TextChatPage>
   late final ScrollController _scrollController;
   late final ChatAppearanceStore _appearanceStore;
   late final MediaApiClient _mediaApi;
+  late final LinkPreviewApiClient _linkPreviewApi;
   late final CameraCaptureGateway _cameraCapture;
   late final GroupCallGateway _groupCallGateway;
   late final bool _ownsGroupCallGateway;
@@ -142,8 +150,12 @@ class _TextChatPageState extends State<TextChatPage>
   late final ChatVoicePlayer _voicePlayer;
   final MediaDownloadGrantCache _mediaDownloadGrants =
       MediaDownloadGrantCache();
+  final Map<String, Future<Uri>> _stickerVideoSourceInflight =
+      <String, Future<Uri>>{};
   final RemoteMediaActionService _remoteMediaActions =
       RemoteMediaActionService();
+  final Map<String, Future<LinkPreviewData>> _linkPreviewCache =
+      <String, Future<LinkPreviewData>>{};
   Timer? _draftSaveTimer;
   late final MediaTransferController _uploadTransfers;
   bool _stickerSending = false;
@@ -197,6 +209,7 @@ class _TextChatPageState extends State<TextChatPage>
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
+    _linkPreviewApi = LinkPreviewApiClient();
     _uploadTransfers = widget.coordinator.mediaTransfers;
     _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     _ownsGroupCallGateway = widget.groupCallGateway == null;
@@ -208,7 +221,8 @@ class _TextChatPageState extends State<TextChatPage>
         (_) => unawaited(_refreshActiveGroupCall()),
       );
     }
-    _mediaPreferencesStore = widget.mediaPreferencesStore ??
+    _mediaPreferencesStore =
+        widget.mediaPreferencesStore ??
         MediaAutoDownloadStore.shared(widget.currentUserId);
     _mediaPreferences = _mediaPreferencesStore.value;
     _mediaPreferencesStore.addListener(_onMediaPreferencesChanged);
@@ -331,6 +345,7 @@ class _TextChatPageState extends State<TextChatPage>
     _groupCallRefreshTimer?.cancel();
     if (_ownsGroupCallGateway) _groupCallGateway.close();
     _mediaApi.close();
+    _linkPreviewApi.close();
     _contactsApi.close();
     if (_ownsGroupsApi) _groupsApi.close();
     super.dispose();
@@ -392,9 +407,25 @@ class _TextChatPageState extends State<TextChatPage>
                       key: const Key('chat-message-surface'),
                       behavior: HitTestBehavior.translucent,
                       onTap: _dismissKeyboard,
-                      child: messages.isEmpty && pending.isEmpty
-                          ? _emptyState(conversation)
-                          : _messageList(conversation, messages, pending),
+                      child: AnimatedBuilder(
+                        animation: _uploadTransfers,
+                        builder: (context, _) {
+                          final visualTransfers = _pendingVisualUploadTasks(
+                            conversation.id,
+                          );
+                          if (messages.isEmpty &&
+                              pending.isEmpty &&
+                              visualTransfers.isEmpty) {
+                            return _emptyState(conversation);
+                          }
+                          return _messageList(
+                            conversation,
+                            messages,
+                            pending,
+                            visualTransfers,
+                          );
+                        },
+                      ),
                     ),
                   ),
                   _composerBar(conversation),
@@ -418,7 +449,8 @@ class _TextChatPageState extends State<TextChatPage>
             titleSpacing: 0,
             title: _chatTitle(conversation),
             actions: [
-              if (!widget.savedMessagesMode && conversation.type != 'GROUP') ...[
+              if (!widget.savedMessagesMode &&
+                  conversation.type != 'GROUP') ...[
                 IconButton(
                   key: const Key('chat-audio-call-mobile'),
                   tooltip: '语音通话',
@@ -940,6 +972,7 @@ class _TextChatPageState extends State<TextChatPage>
       'IMAGE' => '[图片]',
       'GIF' => '[GIF]',
       'STICKER' => '[表情]',
+      'STICKER_PACK' => '[表情包]',
       'VOICE' => '[语音]',
       'VIDEO' => '[视频]',
       'FILE' => '[文件] ${message.content?.fileName ?? ''}',
@@ -1060,10 +1093,12 @@ class _TextChatPageState extends State<TextChatPage>
     ConversationItem conversation,
     List<ChatMessage> messages,
     List<PendingTextMessage> pending,
+    List<MediaTransferTask> visualTransfers,
   ) {
     final hasOlder = widget.coordinator.canLoadOlder(conversation.id);
     final offset = hasOlder ? 1 : 0;
-    final count = offset + messages.length + pending.length;
+    final count =
+        offset + messages.length + pending.length + visualTransfers.length;
     return ListView.builder(
       controller: _scrollController,
       padding: EdgeInsets.fromLTRB(
@@ -1103,16 +1138,236 @@ class _TextChatPageState extends State<TextChatPage>
           );
         }
         final pendingIndex = contentIndex - messages.length;
-        final pendingMessage = pending[pendingIndex];
-        final previousTime = pendingIndex > 0
-            ? pending[pendingIndex - 1].createdAt
+        if (pendingIndex < pending.length) {
+          final pendingMessage = pending[pendingIndex];
+          final previousTime = pendingIndex > 0
+              ? pending[pendingIndex - 1].createdAt
+              : (messages.isEmpty ? null : messages.last.createdAt);
+          return _withDateSeparator(
+            pendingMessage.createdAt,
+            previousTime: previousTime,
+            child: RepaintBoundary(child: _pendingRow(pendingMessage)),
+          );
+        }
+        final transferIndex = pendingIndex - pending.length;
+        final transfer = visualTransfers[transferIndex];
+        final previousTime = transferIndex > 0
+            ? visualTransfers[transferIndex - 1].createdAt
+            : pending.isNotEmpty
+            ? pending.last.createdAt
             : (messages.isEmpty ? null : messages.last.createdAt);
         return _withDateSeparator(
-          pendingMessage.createdAt,
+          transfer.createdAt,
           previousTime: previousTime,
-          child: RepaintBoundary(child: _pendingRow(pendingMessage)),
+          child: RepaintBoundary(child: _pendingMediaTransferRow(transfer)),
         );
       },
+    );
+  }
+
+  List<MediaTransferTask> _pendingVisualUploadTasks(String conversationId) {
+    final tasks = _uploadTransfers
+        .tasksForConversation(conversationId)
+        .where(
+          (task) =>
+              _isInlineVisualUploadTask(task) &&
+              task.state.phase != MediaTransferPhase.canceled &&
+              task.state.phase != MediaTransferPhase.done,
+        )
+        .toList(growable: false);
+    tasks.sort((left, right) => left.createdAt.compareTo(right.createdAt));
+    return tasks;
+  }
+
+  bool _isInlineVisualUploadTask(MediaTransferTask task) =>
+      task.direction == MediaTransferDirection.upload &&
+      (task.kind == MediaTransferKind.image ||
+          task.kind == MediaTransferKind.video);
+
+  Widget _pendingMediaTransferRow(MediaTransferTask task) {
+    final preview = task.visualPreview;
+    final width = preview == null || preview.width <= 0 ? 4 : preview.width;
+    final height = preview == null || preview.height <= 0 ? 3 : preview.height;
+    final size = preview == null
+        ? const Size(196, 147)
+        : _chatImageDisplaySize(width, height);
+    return Padding(
+      key: Key('pending-media-transfer-${task.id}'),
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Flexible(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(DdRadii.media),
+              child: SizedBox(
+                width: size.width,
+                height: size.height,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _pendingMediaPreviewSurface(task),
+                    _pendingMediaTransferControl(task),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          _avatar(
+            widget.currentUserId,
+            widget.currentUserDisplayName.isEmpty
+                ? '我'
+                : widget.currentUserDisplayName,
+            mine: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pendingMediaPreviewSurface(MediaTransferTask task) {
+    final preview = task.visualPreview;
+    if (preview == null || preview.posterBytes.isEmpty) {
+      return ColoredBox(
+        color: const Color(0xFFE2E2E2),
+        child: Center(
+          child: Icon(
+            task.kind == MediaTransferKind.video
+                ? Icons.videocam_outlined
+                : Icons.image_outlined,
+            size: 34,
+            color: DdColors.textTertiary,
+          ),
+        ),
+      );
+    }
+    if (task.kind == MediaTransferKind.video &&
+        preview.localPlaybackUri != null) {
+      final durationMs = preview.durationMs ?? 0;
+      return InlineVideoPreview(
+        key: Key('pending-video-preview-${task.id}'),
+        playbackId: 'pending-${task.id}',
+        posterBytes: preview.posterBytes,
+        declaredDuration: Duration(milliseconds: durationMs),
+        sourceResolver: () async => preview.localPlaybackUri!,
+        onOpenFull: () {},
+        scrollListenable: _scrollController,
+        autoPlayWhenVisible:
+            !kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.android &&
+            widget.hostVisible,
+        openFullOnTap: false,
+      );
+    }
+    return Image.memory(
+      preview.posterBytes,
+      key: Key('pending-image-preview-${task.id}'),
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      filterQuality: FilterQuality.medium,
+      errorBuilder: (_, _, _) => const ColoredBox(
+        color: Color(0xFFE2E2E2),
+        child: Center(
+          child: Icon(
+            Icons.broken_image_outlined,
+            color: DdColors.textTertiary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _pendingMediaTransferControl(MediaTransferTask task) {
+    final state = task.state;
+    final failed = state.phase == MediaTransferPhase.failed;
+    final paused = state.phase == MediaTransferPhase.paused;
+    final primaryIcon = failed
+        ? Icons.refresh_rounded
+        : paused
+        ? Icons.play_arrow_rounded
+        : state.canCancel
+        ? Icons.close_rounded
+        : Icons.more_horiz_rounded;
+    final VoidCallback? primaryAction = failed && task.canRetry
+        ? () => _uploadTransfers.retry(task.id)
+        : paused
+        ? () => _uploadTransfers.resume(task.id)
+        : state.canCancel
+        ? () => _uploadTransfers.cancel(task.id)
+        : null;
+    final primaryKey = failed
+        ? Key('pending-media-retry-${task.id}')
+        : paused
+        ? Key('pending-media-resume-${task.id}')
+        : Key('pending-media-cancel-${task.id}');
+
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.08),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (paused || failed) ...[
+              Material(
+                color: Colors.black.withValues(alpha: 0.58),
+                shape: const CircleBorder(),
+                child: IconButton(
+                  key: Key('pending-media-dismiss-${task.id}'),
+                  tooltip: failed ? '关闭' : '取消传输',
+                  onPressed: failed
+                      ? () => _uploadTransfers.dismiss(task.id)
+                      : () => _uploadTransfers.cancel(task.id),
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            SizedBox.square(
+              dimension: 54,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.62),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(3),
+                    child: CircularProgressIndicator(
+                      key: Key('pending-media-progress-${task.id}'),
+                      value: state.progress,
+                      strokeWidth: 2.8,
+                      backgroundColor: Colors.white30,
+                      color: failed ? DdColors.danger : Colors.white,
+                    ),
+                  ),
+                  IconButton(
+                    key: primaryKey,
+                    tooltip: failed
+                        ? '重试'
+                        : paused
+                        ? '继续'
+                        : state.canCancel
+                        ? '取消传输'
+                        : '正在提交',
+                    onPressed: primaryAction,
+                    padding: EdgeInsets.zero,
+                    icon: Icon(primaryIcon, color: Colors.white, size: 24),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1316,15 +1571,24 @@ class _TextChatPageState extends State<TextChatPage>
     final recalled = message.isRecalled;
     if (recalled) return const SizedBox.shrink();
     final callSummary = _parseCallSummary(message.content?.text);
+    final stickerPackShare =
+        (message.type == 'TEXT' || message.type == 'STICKER_PACK')
+        ? _parseStickerPackShare(message.content?.text)
+        : null;
+    final stickerVideoVisual =
+        message.type == 'STICKER' &&
+        _isVideoStickerMime(message.content?.mimeType) &&
+        message.content?.isImage == true;
     final imageVisual =
         const {'IMAGE', 'GIF', 'STICKER'}.contains(message.type) &&
+        !stickerVideoVisual &&
         message.content?.isImage == true;
     final videoVisual =
         message.type == 'VIDEO' &&
         message.content?.hasMedia == true &&
         message.content?.hasVideoPoster == true &&
         message.content?.durationMs != null;
-    final standaloneVisual = imageVisual || videoVisual;
+    final standaloneVisual = imageVisual || stickerVideoVisual || videoVisual;
     final voiceContent =
         !recalled &&
         message.type == 'VOICE' &&
@@ -1364,6 +1628,15 @@ class _TextChatPageState extends State<TextChatPage>
                 ],
                 if (callSummary != null)
                   _callSummaryBubble(callSummary)
+                else if (stickerPackShare != null)
+                  _stickerPackShareCard(
+                    stickerPackShare,
+                    previewMessage: message.type == 'STICKER_PACK'
+                        ? message
+                        : null,
+                  )
+                else if (stickerVideoVisual)
+                  _chatVideoSticker(message)
                 else if (imageVisual)
                   _chatImage(message)
                 else if (videoVisual)
@@ -1373,26 +1646,7 @@ class _TextChatPageState extends State<TextChatPage>
                 else if (fileContent)
                   _fileBubble(message, mine)
                 else
-                  MentionRichText(
-                    text: message.content?.text ?? '[${message.type}]',
-                    entities:
-                        message.content?.entities ?? const <MessageEntity>[],
-                    style: TextStyle(
-                      fontSize: 15,
-                      height: 1.38,
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white
-                          : DdColors.textPrimary,
-                    ),
-                    mentionStyle: TextStyle(
-                      fontSize: 15,
-                      height: 1.38,
-                      fontWeight: FontWeight.w600,
-                      color: ddMentionColor(Theme.of(context).brightness),
-                    ),
-                    onMentionTap: (userId) =>
-                        unawaited(_openMentionProfile(userId)),
-                  ),
+                  _textMessageBody(message),
               ],
             ),
           ),
@@ -1434,6 +1688,75 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Widget _textMessageBody(ChatMessage message) {
+    final text = message.content?.text ?? '[${message.type}]';
+    final links = extractHttpUrls(text);
+    final firstLink = links.isEmpty ? null : links.first;
+    final brightness = Theme.of(context).brightness;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MentionRichText(
+          text: text,
+          entities: message.content?.entities ?? const <MessageEntity>[],
+          style: TextStyle(
+            fontSize: 15,
+            height: 1.38,
+            color: brightness == Brightness.dark
+                ? Colors.white
+                : DdColors.textPrimary,
+          ),
+          mentionStyle: TextStyle(
+            fontSize: 15,
+            height: 1.38,
+            fontWeight: FontWeight.w600,
+            color: ddMentionColor(brightness),
+          ),
+          linkStyle: TextStyle(
+            fontSize: 15,
+            height: 1.38,
+            color: ddMentionColor(brightness),
+          ),
+          onMentionTap: (userId) => unawaited(_openMentionProfile(userId)),
+          onLinkTap: (uri) => unawaited(_openExternalLink(uri)),
+        ),
+        if (firstLink != null)
+          MessageLinkPreview(
+            key: Key('message-link-preview-${message.id}'),
+            url: firstLink,
+            loader: _loadLinkPreview,
+            onOpen: (uri) => unawaited(_openExternalLink(uri)),
+          ),
+      ],
+    );
+  }
+
+  Future<LinkPreviewData> _loadLinkPreview(Uri url) {
+    final key = url.toString();
+    final cached = _linkPreviewCache[key];
+    if (cached != null) return cached;
+    if (_linkPreviewCache.length >= 64) {
+      _linkPreviewCache.remove(_linkPreviewCache.keys.first);
+    }
+    final future = widget.coordinator.withAuthorizedToken(
+      (token) => _linkPreviewApi.getPreview(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        url: url,
+      ),
+    );
+    _linkPreviewCache[key] = future;
+    return future;
+  }
+
+  Future<void> _openExternalLink(Uri uri) async {
+    final opened = await openExternalHttpUrl(uri);
+    if (opened || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('无法调用系统浏览器打开这个链接。')),
+    );
+  }
+
   ({bool video, String text})? _parseCallSummary(String? raw) {
     final text = raw?.trim() ?? '';
     const audioPrefix = '语音通话 · ';
@@ -1451,6 +1774,182 @@ class _TextChatPageState extends State<TextChatPage>
       }
     }
     return null;
+  }
+
+  ({String setName, String title})? _parseStickerPackShare(String? raw) {
+    final value = raw?.trim() ?? '';
+    if (value.isEmpty) return null;
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        uri.scheme != 'dd' ||
+        uri.host != 'stickers' ||
+        uri.pathSegments.length != 2 ||
+        uri.pathSegments.first != 'telegram') {
+      return null;
+    }
+    final setName = uri.pathSegments[1].trim();
+    if (setName.isEmpty) return null;
+    final title = uri.queryParameters['title']?.trim() ?? '';
+    return (setName: setName, title: title.isEmpty ? setName : title);
+  }
+
+  Widget _stickerPackShareCard(
+    ({String setName, String title}) share, {
+    ChatMessage? previewMessage,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        key: Key('telegram-sticker-pack-card-${share.setName}'),
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        onTap: () => unawaited(_importSharedStickerPack(share)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 220, maxWidth: 300),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+            child: Row(
+              children: [
+                _stickerPackSharePreview(previewMessage),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        share.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      const Text(
+                        'Telegram 表情包 · 点击添加',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: DdColors.textTertiary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _stickerPackSharePreview(ChatMessage? message) {
+    final content = message?.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    if (message == null ||
+        content == null ||
+        mediaId.isEmpty ||
+        (content.width ?? 0) <= 0 ||
+        (content.height ?? 0) <= 0) {
+      return _stickerPackShareFallback();
+    }
+
+    const previewSize = 48.0;
+    final mimeType = content.mimeType?.trim() ?? '';
+    if (_isVideoStickerMime(mimeType)) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          key: Key('telegram-sticker-pack-preview-${message.id}'),
+          width: previewSize,
+          height: previewSize,
+          child: LoopingVideoSticker(
+            playbackId: 'sticker-pack-preview-${message.id}',
+            sourceResolver: () => _resolveCachedStickerVideo(
+              mediaId,
+              expectedSizeBytes: content.sizeBytes ?? 0,
+            ),
+            scrollListenable: _scrollController,
+          ),
+        ),
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
+        key: Key('telegram-sticker-pack-preview-${message.id}'),
+        width: previewSize,
+        height: previewSize,
+        child: FutureBuilder<Uint8List>(
+          future: _mediaBytesFor(mediaId, kind: MediaCacheKind.stickerGif),
+          builder: (context, snapshot) {
+            final bytes = snapshot.data;
+            if (bytes == null || bytes.isEmpty) {
+              if (snapshot.hasError) return _stickerPackShareFallback();
+              return _imageLoadingSurface();
+            }
+            if (isTelegramTgsMime(mimeType)) {
+              return TelegramTgsSticker(bytes: bytes);
+            }
+            return Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, _, _) => _stickerPackShareFallback(),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _stickerPackShareFallback() {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: DdColors.green.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      alignment: Alignment.center,
+      child: const Icon(
+        Icons.auto_awesome_rounded,
+        color: DdColors.greenPressed,
+        size: 24,
+      ),
+    );
+  }
+
+  Future<void> _importSharedStickerPack(
+    ({String setName, String title}) share,
+  ) async {
+    final ownsGateway = widget.stickerGateway == null;
+    final gateway = widget.stickerGateway ?? StickerApiClient();
+    try {
+      final pack = await gateway.importTelegramPack(
+        origin: widget.coordinator.origin,
+        accessToken: widget.coordinator.accessToken,
+        setName: share.setName,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已添加表情包「${pack.title}」')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('表情包添加失败：$error')));
+    } finally {
+      if (ownsGateway) gateway.close();
+    }
   }
 
   Widget _callSummaryBubble(({bool video, String text}) summary) {
@@ -1503,7 +2002,8 @@ class _TextChatPageState extends State<TextChatPage>
 
   Widget _fileBubble(ChatMessage message, bool mine) {
     final content = message.content!;
-    if (_mediaPreferences.files && !_autoFileCacheStarted.contains(message.id)) {
+    if (_mediaPreferences.files &&
+        !_autoFileCacheStarted.contains(message.id)) {
       _autoFileCacheStarted.add(message.id);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_ensureAutoFileCached(message));
@@ -1633,9 +2133,7 @@ class _TextChatPageState extends State<TextChatPage>
       if (mounted) _showImageError(result);
     } on PlatformException catch (error) {
       if (mounted) {
-        _showImageError(
-          error.message ?? '文件打开失败，请检查是否安装了支持此格式的应用。',
-        );
+        _showImageError(error.message ?? '文件打开失败，请检查是否安装了支持此格式的应用。');
       }
     } catch (_) {
       if (mounted) _showImageError('文件打开失败，请检查是否安装了支持此格式的应用。');
@@ -1905,10 +2403,7 @@ class _TextChatPageState extends State<TextChatPage>
         }
         return;
       }
-      final bytes = await _mediaBytesFor(
-        mediaId,
-        kind: MediaCacheKind.voice,
-      );
+      final bytes = await _mediaBytesFor(mediaId, kind: MediaCacheKind.voice);
       await _voicePlayer.stop();
       if (mounted) {
         setState(() {
@@ -1952,7 +2447,10 @@ class _TextChatPageState extends State<TextChatPage>
   Widget _chatImage(ChatMessage message) {
     final content = message.content!;
     final mediaId = content.mediaId!;
-    final size = _chatImageDisplaySize(content.width!, content.height!);
+    final sticker = message.type == 'STICKER';
+    final size = sticker
+        ? _chatStickerDisplaySize(content.width!, content.height!)
+        : _chatImageDisplaySize(content.width!, content.height!);
     final kind = message.type == 'IMAGE'
         ? MediaCacheKind.image
         : MediaCacheKind.stickerGif;
@@ -1961,8 +2459,11 @@ class _TextChatPageState extends State<TextChatPage>
         : _mediaPreferences.gifAndStickers;
     final allowed = autoLoad || _manualMediaLoads.contains(mediaId);
     return ClipRRect(
-      borderRadius: BorderRadius.circular(DdRadii.media),
+      borderRadius: sticker
+          ? BorderRadius.zero
+          : BorderRadius.circular(DdRadii.media),
       child: SizedBox(
+        key: Key('chat-visual-frame-${message.id}'),
         width: size.width,
         height: size.height,
         child: !allowed
@@ -1971,27 +2472,62 @@ class _TextChatPageState extends State<TextChatPage>
                 label: message.type == 'IMAGE' ? '点击下载图片' : '点击下载表情',
               )
             : FutureBuilder<Uint8List>(
-          future: _mediaBytesFor(mediaId, kind: kind),
-          builder: (context, snapshot) {
-            if (snapshot.hasData) {
-              final bytes = snapshot.data!;
-              return GestureDetector(
-                key: Key('chat-image-${message.id}'),
-                behavior: HitTestBehavior.opaque,
-                onTap: () => _openImageViewer(message, bytes),
-                child: Image.memory(
-                  bytes,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  filterQuality: FilterQuality.medium,
-                  errorBuilder: (_, _, _) => _imageLoadFailure(mediaId),
-                ),
-              );
-            }
-            if (snapshot.hasError) return _imageLoadFailure(mediaId);
-            return _imageLoadingSurface();
-          },
+                future: _mediaBytesFor(mediaId, kind: kind),
+                builder: (context, snapshot) {
+                  if (snapshot.hasData) {
+                    final bytes = snapshot.data!;
+                    if (sticker && isTelegramTgsMime(content.mimeType)) {
+                      return TelegramTgsSticker(
+                        key: Key('chat-tgs-sticker-${message.id}'),
+                        bytes: bytes,
+                      );
+                    }
+                    return GestureDetector(
+                      key: Key('chat-image-${message.id}'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _openImageViewer(message, bytes),
+                      child: Image.memory(
+                        bytes,
+                        fit: sticker ? BoxFit.contain : BoxFit.cover,
+                        gaplessPlayback: true,
+                        filterQuality: FilterQuality.medium,
+                        errorBuilder: (_, _, _) => _imageLoadFailure(mediaId),
+                      ),
+                    );
+                  }
+                  if (snapshot.hasError) return _imageLoadFailure(mediaId);
+                  return _imageLoadingSurface();
+                },
+              ),
+      ),
+    );
+  }
+
+  Widget _chatVideoSticker(ChatMessage message) {
+    final content = message.content!;
+    final mediaId = content.mediaId!;
+    final size = _chatStickerDisplaySize(content.width!, content.height!);
+    final autoLoad =
+        _mediaPreferences.gifAndStickers || _manualMediaLoads.contains(mediaId);
+    if (!autoLoad) {
+      return SizedBox(
+        width: size.width,
+        height: size.height,
+        child: _manualVisualDownloadSurface(mediaId, label: '点击播放表情'),
+      );
+    }
+    return SizedBox(
+      key: Key('chat-video-sticker-frame-${message.id}'),
+      width: size.width,
+      height: size.height,
+      child: LoopingVideoSticker(
+        key: Key('chat-video-sticker-${message.id}'),
+        playbackId: 'sticker-${message.id}',
+        sourceResolver: () => _resolveCachedStickerVideo(
+          mediaId,
+          expectedSizeBytes: content.sizeBytes ?? 0,
         ),
+        scrollListenable: _scrollController,
       ),
     );
   }
@@ -2014,10 +2550,7 @@ class _TextChatPageState extends State<TextChatPage>
         width: size.width,
         height: size.height,
         child: FutureBuilder<Uint8List>(
-          future: _mediaBytesFor(
-            posterMediaId,
-            kind: MediaCacheKind.image,
-          ),
+          future: _mediaBytesFor(posterMediaId, kind: MediaCacheKind.image),
           builder: (context, snapshot) {
             if (!snapshot.hasData) {
               if (snapshot.hasError) return _imageLoadFailure(posterMediaId);
@@ -2198,7 +2731,8 @@ class _TextChatPageState extends State<TextChatPage>
                 MediaTransferState(
                   phase: MediaTransferPhase.uploading,
                   transferredBytes: received,
-                  totalBytes: total ??
+                  totalBytes:
+                      total ??
                       (expectedSizeBytes > 0 ? expectedSizeBytes : null),
                 ),
               );
@@ -2291,6 +2825,52 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Future<Uri> _resolveCachedStickerVideo(
+    String mediaId, {
+    required int expectedSizeBytes,
+  }) {
+    final id = mediaId.trim();
+    if (id.isEmpty) {
+      return Future<Uri>.error(const FormatException('视频表情媒体引用无效。'));
+    }
+    final current = _stickerVideoSourceInflight[id];
+    if (current != null) return current;
+
+    final request = _resolveCachedStickerVideoOnce(
+      id,
+      expectedSizeBytes: expectedSizeBytes,
+    ).whenComplete(() {
+      _stickerVideoSourceInflight.remove(id);
+    });
+    _stickerVideoSourceInflight[id] = request;
+    return request;
+  }
+
+  Future<Uri> _resolveCachedStickerVideoOnce(
+    String mediaId, {
+    required int expectedSizeBytes,
+  }) async {
+    final cached = await _videoFileCache.cachedUri(
+      mediaId,
+      expectedSizeBytes: expectedSizeBytes,
+    );
+    if (cached != null) return cached;
+
+    await _cacheVideoInBackground(
+      mediaId,
+      expectedSizeBytes: expectedSizeBytes,
+      onProgress: (_, _) {},
+    );
+    final stored = await _videoFileCache.cachedUri(
+      mediaId,
+      expectedSizeBytes: expectedSizeBytes,
+    );
+    if (stored != null) return stored;
+
+    // Web/no-file-cache fallback: still allow playback from a fresh signed URL.
+    return (await _downloadGrantFor(mediaId)).url;
+  }
+
   Future<void> _cacheVideoInBackground(
     String mediaId, {
     required int expectedSizeBytes,
@@ -2350,6 +2930,20 @@ class _TextChatPageState extends State<TextChatPage>
     return Size(displayWidth, displayHeight);
   }
 
+  bool _isVideoStickerMime(String? mimeType) {
+    final normalized = (mimeType ?? '').split(';').first.trim().toLowerCase();
+    return normalized == 'video/mp4' || normalized == 'video/webm';
+  }
+
+  Size _chatStickerDisplaySize(int width, int height) {
+    final maxEdge = widget.embedded ? 220.0 : 176.0;
+    final ratio = width / height;
+    if (ratio >= 1) {
+      return Size(maxEdge, maxEdge / ratio);
+    }
+    return Size(maxEdge * ratio, maxEdge);
+  }
+
   Widget _imageLoadingSurface() => Container(
     color: const Color(0xFFE9E9E9),
     alignment: Alignment.center,
@@ -2381,27 +2975,26 @@ class _TextChatPageState extends State<TextChatPage>
     ),
   );
 
-  Widget _manualVisualDownloadSurface(String mediaId, {required String label}) =>
-      Material(
-        color: const Color(0xFFE9E9E9),
-        child: InkWell(
-          key: Key('manual-media-$mediaId'),
-          onTap: () => setState(() => _manualMediaLoads.add(mediaId)),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.download_rounded,
-                  color: DdColors.textSecondary,
-                ),
-                const SizedBox(height: 5),
-                Text(label, style: const TextStyle(fontSize: 11)),
-              ],
-            ),
-          ),
+  Widget _manualVisualDownloadSurface(
+    String mediaId, {
+    required String label,
+  }) => Material(
+    color: const Color(0xFFE9E9E9),
+    child: InkWell(
+      key: Key('manual-media-$mediaId'),
+      onTap: () => setState(() => _manualMediaLoads.add(mediaId)),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.download_rounded, color: DdColors.textSecondary),
+            const SizedBox(height: 5),
+            Text(label, style: const TextStyle(fontSize: 11)),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 
   Future<Uint8List> _mediaBytesFor(
     String mediaId, {
@@ -2599,14 +3192,10 @@ class _TextChatPageState extends State<TextChatPage>
           userId: member.user.id,
           handle: member.user.handle,
           displayName: member.user.displayName,
-          onOpenMoments: () => _openPeerMoments(
-            member.user.id,
-            member.user.displayName,
-          ),
-          onOpenMomentPrivacy: () => _openPeerMomentPrivacy(
-            member.user.id,
-            member.user.displayName,
-          ),
+          onOpenMoments: () =>
+              _openPeerMoments(member.user.id, member.user.displayName),
+          onOpenMomentPrivacy: () =>
+              _openPeerMomentPrivacy(member.user.id, member.user.displayName),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () => widget.onOpenDirectChat!(member.user.id),
@@ -2891,7 +3480,9 @@ class _TextChatPageState extends State<TextChatPage>
               if (editingMessage != null) _editPreview(editingMessage),
               if (replyingTo != null && editingMessage == null)
                 _replyPreview(replyingTo),
-              if (widget.conversation.type == 'GROUP') _groupCallBanner(),
+              if (widget.conversation.type == 'GROUP' &&
+                  _activeGroupCall != null)
+                _groupCallBanner(),
               AnimatedBuilder(
                 animation: _uploadTransfers,
                 builder: (context, _) => _uploadTransferBanners(),
@@ -2906,15 +3497,16 @@ class _TextChatPageState extends State<TextChatPage>
                         ? _holdToTalkField()
                         : _composerField(),
                   ),
-                  IconButton(
-                    key: const Key('chat-emoji'),
-                    tooltip: '表情',
-                    onPressed: _showEmojiPicker,
-                    icon: const Icon(
-                      Icons.sentiment_satisfied_alt_rounded,
-                      size: 25,
+                  if (!_androidVoiceInputActive)
+                    IconButton(
+                      key: const Key('chat-emoji'),
+                      tooltip: '表情',
+                      onPressed: _showEmojiPicker,
+                      icon: const Icon(
+                        Icons.sentiment_satisfied_alt_rounded,
+                        size: 25,
+                      ),
                     ),
-                  ),
                   ValueListenableBuilder<TextEditingValue>(
                     valueListenable: _composer,
                     builder: (context, value, _) {
@@ -2963,7 +3555,10 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Widget _uploadTransferBanners() {
-    final tasks = _uploadTransfers.tasksForConversation(widget.conversation.id);
+    final tasks = _uploadTransfers
+        .tasksForConversation(widget.conversation.id)
+        .where((task) => !_isInlineVisualUploadTask(task))
+        .toList(growable: false);
     if (tasks.isEmpty) return const SizedBox.shrink();
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2984,9 +3579,10 @@ class _TextChatPageState extends State<TextChatPage>
     final icon = switch (task.kind) {
       MediaTransferKind.image => Icons.image_outlined,
       MediaTransferKind.video => Icons.videocam_outlined,
-      MediaTransferKind.file => task.direction == MediaTransferDirection.download
-          ? Icons.download_rounded
-          : Icons.upload_file_rounded,
+      MediaTransferKind.file =>
+        task.direction == MediaTransferDirection.download
+            ? Icons.download_rounded
+            : Icons.upload_file_rounded,
       MediaTransferKind.voice => Icons.mic_none_rounded,
       MediaTransferKind.gif => Icons.gif_box_outlined,
       MediaTransferKind.sticker => Icons.emoji_emotions_outlined,
@@ -3037,11 +3633,36 @@ class _TextChatPageState extends State<TextChatPage>
               icon: const Icon(Icons.refresh_rounded, size: 20),
             )
           else if (state.phase == MediaTransferPhase.paused)
-            IconButton(
-              key: Key('resume-upload-${task.id}'),
-              tooltip: '继续',
-              onPressed: () => _uploadTransfers.resume(task.id),
-              icon: const Icon(Icons.play_arrow_rounded, size: 20),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  key: Key('cancel-upload-${task.id}'),
+                  tooltip: '取消传输',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: () => _uploadTransfers.cancel(task.id),
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    size: 20,
+                    color: DdColors.danger,
+                  ),
+                ),
+                IconButton(
+                  key: Key('resume-upload-${task.id}'),
+                  tooltip: '继续',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 36,
+                    height: 36,
+                  ),
+                  onPressed: () => _uploadTransfers.resume(task.id),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                ),
+              ],
             )
           else if (state.phase == MediaTransferPhase.canceled ||
               state.phase == MediaTransferPhase.failed)
@@ -3091,6 +3712,9 @@ class _TextChatPageState extends State<TextChatPage>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
+
+  bool get _androidVoiceInputActive =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android && _voiceMode;
 
   Widget _voiceRecordingBanner() {
     final cancelling = _voiceCancelGesture;
@@ -3687,17 +4311,13 @@ class _TextChatPageState extends State<TextChatPage>
           currentUserDisplayName: widget.currentUserDisplayName,
           authorId: normalized,
           authorDisplayName: displayName,
-          onUnauthorized:
-              widget.coordinator.onUnauthorized ?? () async => null,
+          onUnauthorized: widget.coordinator.onUnauthorized ?? () async => null,
         ),
       ),
     );
   }
 
-  Future<void> _openPeerMomentPrivacy(
-    String userId,
-    String displayName,
-  ) async {
+  Future<void> _openPeerMomentPrivacy(String userId, String displayName) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
     final inspector = widget.inspectorController;
@@ -3725,8 +4345,7 @@ class _TextChatPageState extends State<TextChatPage>
           accessToken: widget.coordinator.accessToken,
           targetUserId: normalized,
           targetDisplayName: displayName,
-          onUnauthorized:
-              widget.coordinator.onUnauthorized ?? () async => null,
+          onUnauthorized: widget.coordinator.onUnauthorized ?? () async => null,
         ),
       ),
     );
@@ -3735,30 +4354,38 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _openMentionProfile(String userId) async {
     final normalized = userId.trim();
     if (normalized.isEmpty || !mounted) return;
+    final displayName = _mentionDisplayName(normalized);
+    final handle = _mentionHandle(normalized);
+    final canTarget = normalized != widget.currentUserId;
     final inspector = widget.inspectorController;
-    if (inspector != null) {
-      inspector.open(
-        DesktopInspectorEntry(
-          id: 'peer:$normalized',
-          title: '详细资料',
-          builder: (_) => PeerProfilePage(
-            origin: widget.coordinator.origin,
-            accessToken: widget.coordinator.accessToken,
-            userId: normalized,
-            handle: '',
-            displayName: '用户',
-            embedded: true,
-            onOpenMoments: () => _openPeerMoments(normalized, '用户'),
-            onOpenMomentPrivacy: () =>
-                _openPeerMomentPrivacy(normalized, '用户'),
-            onMessage: widget.onOpenDirectChat == null
-                ? null
-                : () async {
-                    inspector.close();
-                    await widget.onOpenDirectChat!(normalized);
-                  },
-          ),
-        ),
+    final nativeDesktop =
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.macOS ||
+            defaultTargetPlatform == TargetPlatform.linux);
+    if (inspector != null || nativeDesktop) {
+      inspector?.close();
+      await showDesktopMentionProfileDialog(
+        context: context,
+        origin: widget.coordinator.origin,
+        accessToken: widget.coordinator.accessToken,
+        userId: normalized,
+        handle: handle,
+        displayName: displayName,
+        onOpenMoments: () => _openPeerMoments(normalized, displayName),
+        onOpenMomentPrivacy: () =>
+            _openPeerMomentPrivacy(normalized, displayName),
+        onMessage: !canTarget || widget.onOpenDirectChat == null
+            ? null
+            : () => widget.onOpenDirectChat!(normalized),
+        onAudioCall: !canTarget || widget.onStartCall == null
+            ? null
+            : () =>
+                  widget.onStartCall!(normalized, displayName, CallKind.audio),
+        onVideoCall: !canTarget || widget.onStartCall == null
+            ? null
+            : () =>
+                  widget.onStartCall!(normalized, displayName, CallKind.video),
       );
       return;
     }
@@ -3769,11 +4396,12 @@ class _TextChatPageState extends State<TextChatPage>
           origin: widget.coordinator.origin,
           accessToken: widget.coordinator.accessToken,
           userId: normalized,
-          handle: '',
-          displayName: '用户',
-          onOpenMoments: () => _openPeerMoments(normalized, '用户'),
-          onOpenMomentPrivacy: () => _openPeerMomentPrivacy(normalized, '用户'),
-          onMessage: widget.onOpenDirectChat == null
+          handle: handle,
+          displayName: displayName,
+          onOpenMoments: () => _openPeerMoments(normalized, displayName),
+          onOpenMomentPrivacy: () =>
+              _openPeerMomentPrivacy(normalized, displayName),
+          onMessage: !canTarget || widget.onOpenDirectChat == null
               ? null
               : () async {
                   if (mounted) Navigator.of(context).pop();
@@ -3783,6 +4411,28 @@ class _TextChatPageState extends State<TextChatPage>
       ),
     );
     if (mounted) _updateReadVisibility();
+  }
+
+  String _mentionDisplayName(String userId) {
+    final peer = widget.conversation.peer;
+    if (peer != null &&
+        peer.id == userId &&
+        peer.displayName.trim().isNotEmpty) {
+      return peer.displayName.trim();
+    }
+    final member = _groupMembers[userId];
+    if (member != null && member.effectiveName.trim().isNotEmpty) {
+      return member.effectiveName.trim();
+    }
+    return '用户';
+  }
+
+  String _mentionHandle(String userId) {
+    final peer = widget.conversation.peer;
+    if (peer != null && peer.id == userId && peer.handle.trim().isNotEmpty) {
+      return peer.handle.trim();
+    }
+    return _groupMembers[userId]?.user.handle.trim() ?? '';
   }
 
   Future<void> _openPeerProfile(ConversationItem conversation) async {
@@ -3898,9 +4548,7 @@ class _TextChatPageState extends State<TextChatPage>
     );
     if (!mounted) return;
     setState(() {
-      _groupMembers = {
-        for (final member in members) member.user.id: member,
-      };
+      _groupMembers = {for (final member in members) member.user.id: member};
     });
   }
 
@@ -3932,8 +4580,7 @@ class _TextChatPageState extends State<TextChatPage>
               coordinator: widget.coordinator,
               conversation: conversation,
               embedded: true,
-              onResult: (result) =>
-                  unawaited(_handleChatDetailsResult(result)),
+              onResult: (result) => unawaited(_handleChatDetailsResult(result)),
               onOpenProfile: () => _pushPeerProfile(conversation),
               onOpenMomentPrivacy: conversation.peer == null
                   ? null
@@ -4366,6 +5013,37 @@ class _TextChatPageState extends State<TextChatPage>
     }
   }
 
+  Future<void> _shareStickerPack(StickerPackItemGroup pack) async {
+    final setName = pack.setName.trim();
+    if (setName.isEmpty) {
+      _showImageError('这个表情包缺少可分享的 Telegram 标识。');
+      return;
+    }
+    if (pack.items.isEmpty) {
+      _showImageError('这个表情包没有可用的表情，暂时无法分享。');
+      return;
+    }
+    final sortedItems = List<StickerPackItem>.from(pack.items)
+      ..sort((left, right) {
+        final byOrder = left.sortOrder.compareTo(right.sortOrder);
+        return byOrder != 0 ? byOrder : left.id.compareTo(right.id);
+      });
+    final preview = sortedItems.first;
+    final title = pack.title.trim().isEmpty ? setName : pack.title.trim();
+    await widget.coordinator.sendMedia(
+      widget.conversation.id,
+      type: 'STICKER_PACK',
+      mediaId: preview.mediaId,
+      width: preview.width,
+      height: preview.height,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已分享表情包「$title」')));
+    _scrollToBottom();
+  }
+
   Future<void> _showEmojiPicker() async {
     final selected = await showModalBottomSheet<StickerPanelResult>(
       context: context,
@@ -4378,6 +5056,11 @@ class _TextChatPageState extends State<TextChatPage>
         emojiCategories: EmojiCatalog.categories,
         recentEmoji: widget.coordinator.recentEmoji,
         mediaBytesLoader: _mediaBytesFor,
+        mediaUrlResolver: (mediaId, expectedSizeBytes) =>
+            _resolveCachedStickerVideo(
+              mediaId,
+              expectedSizeBytes: expectedSizeBytes,
+            ),
         onAddCustomSticker: _pickAndCreateCustomSticker,
         initialTabKey: widget.coordinator.stickerPanelTabKey,
         onTabChanged: (tabKey) =>
@@ -4392,6 +5075,8 @@ class _TextChatPageState extends State<TextChatPage>
         unawaited(widget.coordinator.rememberRecentEmoji(emoji));
       case StickerAssetPanelResult(:final asset):
         await _sendStickerAsset(asset);
+      case StickerPackSharePanelResult(:final pack):
+        await _shareStickerPack(pack);
     }
     if (mounted) _composerFocusNode.requestFocus();
   }
@@ -4452,6 +5137,33 @@ class _TextChatPageState extends State<TextChatPage>
                   unawaited(_pickAndSendFile());
                 },
               ),
+              if (widget.conversation.type == 'GROUP' &&
+                  _activeGroupCall == null) ...[
+                KeyedSubtree(
+                  key: const Key('group-call-menu-audio'),
+                  child: _ComposerAction(
+                    icon: Icons.call_outlined,
+                    label: '语音通话',
+                    enabled: !_groupCallBusy,
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      unawaited(_startGroupCall('AUDIO'));
+                    },
+                  ),
+                ),
+                KeyedSubtree(
+                  key: const Key('group-call-menu-video'),
+                  child: _ComposerAction(
+                    icon: Icons.videocam_outlined,
+                    label: '视频通话',
+                    enabled: !_groupCallBusy,
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      unawaited(_startGroupCall('VIDEO'));
+                    },
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -4516,7 +5228,17 @@ class _TextChatPageState extends State<TextChatPage>
         'video/x-matroska',
       ],
     );
-    final files = await openFiles(acceptedTypeGroups: const [typeGroup]);
+    late final List<XFile> files;
+    try {
+      files = await ddOpenFiles(
+        acceptedTypeGroups: const [typeGroup],
+        maxFiles: 30,
+        maxBytes: 2 * 1024 * 1024 * 1024,
+      );
+    } on PlatformException catch (error) {
+      if (mounted) _showImageError(error.message ?? '读取所选媒体失败。');
+      return;
+    }
     if (files.isEmpty || !mounted) return;
     if (files.length > 30) {
       _showImageError('一次最多从相册发送 30 个媒体文件。');
@@ -4561,6 +5283,7 @@ class _TextChatPageState extends State<TextChatPage>
           replyToMessageId: index == 0 ? replyToMessageId : null,
         ),
       );
+      _scrollToBottom();
     }
   }
 
@@ -4587,6 +5310,13 @@ class _TextChatPageState extends State<TextChatPage>
     task.throwIfCancelled();
     final processed = await processChatImage(source);
     task.throwIfCancelled();
+    task.setVisualPreview(
+      MediaTransferVisualPreview(
+        posterBytes: processed.bytes,
+        width: processed.width,
+        height: processed.height,
+      ),
+    );
     task.update(
       MediaTransferState(
         phase: MediaTransferPhase.uploading,
@@ -4639,16 +5369,28 @@ class _TextChatPageState extends State<TextChatPage>
     if (_stickerSending) return null;
     const typeGroup = XTypeGroup(
       label: '自定义表情',
-      extensions: <String>['png', 'jpg', 'jpeg', 'webp', 'gif'],
+      extensions: <String>['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm'],
       mimeTypes: <String>[
         'image/png',
         'image/jpeg',
         'image/webp',
         'image/gif',
+        'video/mp4',
+        'video/webm',
       ],
     );
-    final file = await openFile(acceptedTypeGroups: const [typeGroup]);
-    if (file == null || !mounted) return null;
+    XFile? file;
+    try {
+      file = await ddOpenFile(
+        acceptedTypeGroups: const [typeGroup],
+        maxBytes: 64 * 1024 * 1024,
+      );
+    } on PlatformException catch (error) {
+      if (mounted) _showImageError(error.message ?? '读取自定义表情失败。');
+      return null;
+    }
+    final selectedFile = file;
+    if (selectedFile == null || !mounted) return null;
 
     final cancellation = MediaUploadCancellation();
     final transferState = ValueNotifier<MediaTransferState>(
@@ -4661,7 +5403,7 @@ class _TextChatPageState extends State<TextChatPage>
         barrierDismissible: false,
         builder: (_) => _StickerTransferDialog(
           state: transferState,
-          fileName: file.name.isEmpty ? '自定义表情' : file.name,
+          fileName: selectedFile.name.isEmpty ? '自定义表情' : selectedFile.name,
           onCancel: cancellation.cancel,
         ),
       ),
@@ -4669,7 +5411,7 @@ class _TextChatPageState extends State<TextChatPage>
 
     try {
       final prepared = await prepareCustomSticker(
-        file,
+        selectedFile,
         cancellation: cancellation,
         onProgress: (processed, total) {
           if (transferState.value.phase != MediaTransferPhase.preparing) {
@@ -4908,6 +5650,7 @@ class _TextChatPageState extends State<TextChatPage>
         replyToMessageId: replyToMessageId,
       ),
     );
+    _scrollToBottom();
   }
 
   Future<void> _runVideoUpload(
@@ -4925,6 +5668,15 @@ class _TextChatPageState extends State<TextChatPage>
     );
     final metadata = await const VideoMediaProbe().probeFile(file);
     task.throwIfCancelled();
+    task.setVisualPreview(
+      MediaTransferVisualPreview(
+        posterBytes: metadata.posterJpeg,
+        width: metadata.width,
+        height: metadata.height,
+        durationMs: metadata.durationMs,
+        localPlaybackUri: _localPlaybackUri(file),
+      ),
+    );
     task.update(
       MediaTransferState(
         phase: MediaTransferPhase.uploading,
@@ -4990,6 +5742,18 @@ class _TextChatPageState extends State<TextChatPage>
     if (mounted) _scrollToBottom();
   }
 
+  Uri _localPlaybackUri(XFile file) {
+    final raw = file.path.trim();
+    final parsed = Uri.tryParse(raw);
+    if (parsed != null &&
+        parsed.scheme.isNotEmpty &&
+        parsed.scheme.length > 1) {
+      return parsed;
+    }
+    final windowsPath = RegExp(r'^[A-Za-z]:[\\/]').hasMatch(raw);
+    return Uri.file(raw, windows: windowsPath);
+  }
+
   String? _videoMimeType(String name) {
     final lower = name.toLowerCase();
     if (lower.endsWith('.mp4')) return 'video/mp4';
@@ -5000,7 +5764,13 @@ class _TextChatPageState extends State<TextChatPage>
   }
 
   Future<void> _pickAndSendFile() async {
-    final file = await openFile();
+    XFile? file;
+    try {
+      file = await ddOpenFile(maxBytes: 2 * 1024 * 1024 * 1024);
+    } on PlatformException catch (error) {
+      if (mounted) _showImageError(error.message ?? '读取所选文件失败。');
+      return;
+    }
     if (file == null || !mounted) return;
     await _sendFile(file);
   }
@@ -5100,6 +5870,9 @@ class _TextChatPageState extends State<TextChatPage>
   String _fileMimeType(String name) {
     final lower = name.toLowerCase();
     if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.apk')) {
+      return 'application/vnd.android.package-archive';
+    }
     if (lower.endsWith('.txt') ||
         lower.endsWith('.log') ||
         lower.endsWith('.md')) {
@@ -5192,6 +5965,12 @@ class _TextChatPageState extends State<TextChatPage>
             icon: Icons.forward_rounded,
             label: '转发',
           ),
+          if (!mine && _canAddStickerToLibrary(message))
+            const DdActionSheetItem(
+              value: 'add-sticker',
+              icon: Icons.add_reaction_outlined,
+              label: '添加到我的表情',
+            ),
           if (!widget.savedMessagesMode)
             const DdActionSheetItem(
               value: 'save',
@@ -5254,6 +6033,12 @@ class _TextChatPageState extends State<TextChatPage>
           icon: Icons.forward_rounded,
           label: '转发',
         ),
+        if (!mine && _canAddStickerToLibrary(message))
+          _contextMenuItem(
+            value: 'add-sticker',
+            icon: Icons.add_reaction_outlined,
+            label: '添加到我的表情',
+          ),
         if (!widget.savedMessagesMode)
           _contextMenuItem(
             value: 'save',
@@ -5293,6 +6078,15 @@ class _TextChatPageState extends State<TextChatPage>
       message.type == 'TEXT' &&
       (message.content?.text.trim().isNotEmpty ?? false);
 
+  bool _canAddStickerToLibrary(ChatMessage message) {
+    final content = message.content;
+    return !message.isRecalled &&
+        message.type == 'STICKER' &&
+        content?.hasMedia == true &&
+        (content?.width ?? 0) > 0 &&
+        (content?.height ?? 0) > 0;
+  }
+
   Future<void> _applyMessageAction(ChatMessage message, String? action) async {
     if (action == 'reply') {
       if (_editingMessage != null) _cancelEditing();
@@ -5308,6 +6102,8 @@ class _TextChatPageState extends State<TextChatPage>
       }
     } else if (action == 'forward') {
       await _forwardMessage(message);
+    } else if (action == 'add-sticker') {
+      await _addMessageStickerToLibrary(message);
     } else if (action == 'save') {
       await widget.coordinator.saveMessage(message);
       if (mounted) {
@@ -5326,6 +6122,41 @@ class _TextChatPageState extends State<TextChatPage>
       await _refreshPinnedMessages();
     } else if (action == 'delete') {
       await widget.coordinator.deleteLocally(message);
+    }
+  }
+
+  Future<void> _addMessageStickerToLibrary(ChatMessage message) async {
+    final content = message.content;
+    final mediaId = content?.mediaId?.trim() ?? '';
+    final width = content?.width ?? 0;
+    final height = content?.height ?? 0;
+    if (!_canAddStickerToLibrary(message) || mediaId.isEmpty) return;
+
+    final ownsGateway = widget.stickerGateway == null;
+    final gateway = widget.stickerGateway ?? StickerApiClient();
+    try {
+      await widget.coordinator.withAuthorizedToken(
+        (token) => gateway.createCustomSticker(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          mediaId: mediaId,
+          width: width,
+          height: height,
+        ),
+      );
+    } on StickerApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (error, stackTrace) {
+      unawaited(
+        ClientLog.error(
+          'Add received sticker failed: message=${message.id} media=$mediaId',
+          error: error,
+          stackTrace: stackTrace,
+        ),
+      );
+      if (mounted) _showImageError('添加表情失败，请稍后重试。');
+    } finally {
+      if (ownsGateway) gateway.close();
     }
   }
 
@@ -5533,6 +6364,7 @@ class _TextChatPageState extends State<TextChatPage>
         'IMAGE' => '[图片]',
         'GIF' => '[GIF]',
         'STICKER' => '[表情]',
+        'STICKER_PACK' => '[表情包]',
         'VOICE' => '[语音]',
         'FILE' => '[文件]',
         _ => '引用消息',

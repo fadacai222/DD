@@ -1021,7 +1021,31 @@
         }
       }
     },
-    "/api/v1/moments/profile/{userId}": {
+    "/api/v1/moment-activity": {
+      "get": {
+        "operationId": "getMomentActivitySummary",
+        "summary": "Get the authenticated user's durable Moments interaction inbox and unread count",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Unread count plus up to 30 recent visible likes, comments and replies", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentActivitySummaryResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moment-activity/read": {
+      "post": {
+        "operationId": "markMomentActivityRead",
+        "summary": "Mark all currently unread Moments interactions as read",
+        "tags": ["Moments"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Current unread count and recent interaction inbox after marking existing activity read", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MomentActivitySummaryResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/moment-profiles/{userId}": {
       "get": {
         "operationId": "getMomentProfile",
         "summary": "Get a visible user's Moments cover profile",
@@ -1209,6 +1233,112 @@
           "404": {"description": "Challenge not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "409": {"description": "Challenge is pending, scanned, or rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "410": {"description": "Challenge is expired or already consumed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/push/preferences": {
+      "get": {
+        "operationId": "getPushPreferences",
+        "summary": "Get background push preferences for the current user",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Push preferences", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Push service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "put": {
+        "operationId": "replacePushPreferences",
+        "summary": "Replace background push preferences",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["pushEnabled", "previewMode"], "properties": {"pushEnabled": {"type": "boolean"}, "previewMode": {"type": "string", "enum": ["FULL", "SENDER_ONLY", "HIDDEN"]}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Updated push preferences", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Push preferences are invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "updatePushPreferences",
+        "summary": "Update background push preferences",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["pushEnabled", "previewMode"], "properties": {"pushEnabled": {"type": "boolean"}, "previewMode": {"type": "string", "enum": ["FULL", "SENDER_ONLY", "HIDDEN"]}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Updated push preferences", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Push preferences are invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/push/endpoints": {
+      "get": {
+        "operationId": "listPushEndpoints",
+        "summary": "List push endpoint metadata for the current authenticated device",
+        "description": "Raw provider tokens and capability URLs are deliberately not returned.",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Current device push endpoint metadata", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "registerPushEndpoint",
+        "summary": "Register or rotate a push endpoint for the current authenticated device",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["provider", "endpoint"], "properties": {"provider": {"type": "string", "enum": ["FCM", "APNS", "UNIFIEDPUSH"]}, "endpoint": {"type": "string", "minLength": 1, "maxLength": 4096}, "appId": {"type": "string", "maxLength": 160}, "environment": {"type": "string", "enum": ["PRODUCTION", "SANDBOX"]}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Endpoint registered", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Endpoint is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Authenticated device is revoked or does not belong to the principal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Endpoint is already bound to another account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "put": {
+        "operationId": "putPushEndpoint",
+        "summary": "Idempotently register or rotate a push endpoint for the current device",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["provider", "endpoint"], "properties": {"provider": {"type": "string", "enum": ["FCM", "APNS", "UNIFIEDPUSH"]}, "endpoint": {"type": "string", "minLength": 1, "maxLength": 4096}, "appId": {"type": "string", "maxLength": 160}, "environment": {"type": "string", "enum": ["PRODUCTION", "SANDBOX"]}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Endpoint registered", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Endpoint is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Authenticated device is revoked or does not belong to the principal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Endpoint is already bound to another account", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/push/endpoints/{provider}": {
+      "delete": {
+        "operationId": "deletePushEndpoint",
+        "summary": "Remove one provider endpoint from the current authenticated device",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "provider", "in": "path", "required": true, "schema": {"type": "string", "enum": ["FCM", "APNS", "UNIFIEDPUSH"]}}],
+        "responses": {
+          "200": {"description": "Endpoint deleted", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Provider is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Endpoint was not registered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/push/test": {
+      "post": {
+        "operationId": "enqueuePushTest",
+        "summary": "Queue a durable push test for the current user",
+        "tags": ["Push"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "202": {"description": "Push test job queued", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Push service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -1606,6 +1736,23 @@
         }
       }
     },
+    "/api/v1/link-preview": {
+      "get": {
+        "operationId": "getLinkPreview",
+        "summary": "Fetch a safe server-side preview for a public HTTP/HTTPS link",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name": "url", "in": "query", "required": true, "schema": {"type": "string", "format": "uri", "maxLength": 4096}}
+        ],
+        "responses": {
+          "200": {"description": "Link preview metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LinkPreviewResponse"}}}},
+          "400": {"description": "The URL is invalid or targets a blocked/private address", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "502": {"description": "Preview target could not be fetched", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/sync": {
       "get": {
         "operationId": "syncMessagingEvents",
@@ -1637,6 +1784,20 @@
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "413": {"description": "Upload exceeds quota or size policy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "503": {"description": "Media service unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/media/uploads/{uploadId}/cancel": {
+      "delete": {
+        "operationId": "cancelMediaUpload",
+        "summary": "Cancel an unfinished media upload and release its reservation",
+        "tags": ["Media"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/UploadId"}],
+        "responses": {
+          "204": {"description": "Upload reservation released"},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Upload reservation not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -1758,7 +1919,7 @@
       "post": {
         "operationId": "importTelegramStickerPack",
         "summary": "Import or subscribe to a Telegram sticker pack through the DD server relay",
-        "description": "Clients send only a validated Telegram setName. DD never accepts an arbitrary relay URL. The server uses the configured Telegram Bot API credential, caches supported files in DD object storage, and returns stable DD mediaIds. Static WebP stickers are supported in this contract; unsupported animated/video formats are counted explicitly rather than silently rendered blank.",
+        "description": "Clients send only a validated Telegram setName. DD never accepts an arbitrary relay URL. The server uses the configured Telegram Bot API credential, validates and caches Telegram static WebP/PNG, animated TGS (application/x-tgsticker), and video WebM files in DD object storage, and returns stable DD mediaIds. unsupportedStickerCount is retained for source items that are malformed, type-conflicting, oversized, or otherwise fail import; valid animated/video stickers are supported.",
         "tags": ["Stickers"],
         "security": [{"bearerAuth": []}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImportTelegramStickerPackRequest"}}}},
@@ -2011,7 +2172,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "mediaId": {"type": "string", "format": "uuid"},
-          "mimeType": {"type": "string", "enum": ["image/png", "image/webp", "image/gif"]},
+          "mimeType": {"type": "string", "enum": ["image/png", "image/webp", "image/gif", "video/mp4", "video/webm", "application/x-tgsticker"]},
           "width": {"type": "integer", "minimum": 1, "maximum": 4096},
           "height": {"type": "integer", "minimum": 1, "maximum": 4096},
           "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1},
@@ -2065,7 +2226,7 @@
           "id": {"type": "string", "format": "uuid"},
           "mediaId": {"type": "string", "format": "uuid", "description": "Stable DD media id; Telegram file URLs are never persisted in chat history."},
           "emoji": {"type": "string", "maxLength": 32},
-          "mimeType": {"type": "string", "const": "image/webp"},
+          "mimeType": {"type": "string", "enum": ["image/webp", "image/png", "application/x-tgsticker", "video/webm"]},
           "width": {"type": "integer", "minimum": 1},
           "height": {"type": "integer", "minimum": 1},
           "sizeBytes": {"type": "integer", "format": "int64", "minimum": 1},
@@ -2082,7 +2243,7 @@
           "title": {"type": "string", "minLength": 1, "maxLength": 128},
           "coverMediaId": {"type": "string", "format": "uuid"},
           "supportedStickerCount": {"type": "integer", "minimum": 0, "maximum": 120},
-          "unsupportedStickerCount": {"type": "integer", "minimum": 0, "maximum": 120},
+          "unsupportedStickerCount": {"type": "integer", "minimum": 0, "maximum": 120, "description": "Compatibility counter for source items that fail validation/import because they are malformed, type-conflicting, oversized, or otherwise unusable. Valid TGS/WebM items are supported and are not counted here."},
           "sortOrder": {"type": "integer", "minimum": 0},
           "items": {"type": "array", "maxItems": 120, "items": {"$ref": "#/components/schemas/StickerItem"}},
           "updatedAt": {"type": "string", "format": "date-time"}
@@ -2553,6 +2714,31 @@
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/MomentListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
+      "MomentActivityItem": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "kind", "actor", "momentId", "createdAt", "read"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "kind": {"type": "string", "enum": ["LIKE", "COMMENT"]},
+          "actor": {"$ref": "#/components/schemas/MomentUserPreview"},
+          "momentId": {"type": "string", "format": "uuid"},
+          "commentId": {"type": "string", "format": "uuid"},
+          "commentText": {"type": "string", "maxLength": 1000},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "read": {"type": "boolean"}
+        }
+      },
+      "MomentActivitySummary": {
+        "type": "object", "additionalProperties": false, "required": ["unreadCount", "items"],
+        "properties": {
+          "unreadCount": {"type": "integer", "format": "int64", "minimum": 0},
+          "items": {"type": "array", "maxItems": 30, "items": {"$ref": "#/components/schemas/MomentActivityItem"}}
+        }
+      },
+      "MomentActivitySummaryResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/MomentActivitySummary"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
       "MomentProfile": {
         "type": "object", "additionalProperties": false,
         "required": ["user", "coverRevision", "canEdit"],
@@ -2978,7 +3164,7 @@
           "senderUserId": {"type": "string", "format": "uuid"},
           "senderDeviceId": {"type": "string", "format": "uuid"},
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "VIDEO", "SYSTEM", "ENCRYPTED"]},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "STICKER_PACK", "FILE", "VOICE", "VIDEO", "SYSTEM", "ENCRYPTED"]},
           "content": {"oneOf": [{"$ref": "#/components/schemas/MessageContent"}, {"type": "null"}]},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"},
           "forwardedFromMessageId": {"type": ["string", "null"], "format": "uuid"},
@@ -3035,7 +3221,7 @@
         "type": "object", "additionalProperties": false, "required": ["clientMessageId", "type", "content"],
         "properties": {
           "clientMessageId": {"type": "string", "minLength": 8, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$"},
-          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "VIDEO"]},
+          "type": {"type": "string", "enum": ["TEXT", "IMAGE", "GIF", "STICKER", "STICKER_PACK", "FILE", "VOICE", "VIDEO"]},
           "content": {"$ref": "#/components/schemas/MessageContent"},
           "replyToMessageId": {"type": ["string", "null"], "format": "uuid"}
         }
@@ -3144,6 +3330,19 @@
       "MessageSearchListResponse": {
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/MessageSearchListData"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "LinkPreview": {
+        "type": "object", "additionalProperties": false, "required": ["url", "siteName", "title"],
+        "properties": {
+          "url": {"type": "string", "format": "uri"},
+          "siteName": {"type": "string", "maxLength": 80},
+          "title": {"type": "string", "maxLength": 161},
+          "description": {"type": "string", "maxLength": 321}
+        }
+      },
+      "LinkPreviewResponse": {
+        "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
+        "properties": {"data": {"$ref": "#/components/schemas/LinkPreview"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
       },
       "SyncEvent": {
         "type": "object", "additionalProperties": false,

@@ -161,3 +161,8 @@ final class StickerAssetPanelResult extends StickerPanelResult {
   const StickerAssetPanelResult(this.asset);
   final StickerAsset asset;
 }
+
+final class StickerPackSharePanelResult extends StickerPanelResult {
+  const StickerPackSharePanelResult(this.pack);
+  final StickerPackItemGroup pack;
+}

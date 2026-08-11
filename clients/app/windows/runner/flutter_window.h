@@ -21,9 +21,19 @@ class FlutterWindow : public Win32Window {
                          LPARAM lparam) noexcept override;
 
  private:
+  bool AddTrayIcon(HWND window);
+  void RemoveTrayIcon(HWND window);
+  void HideToTray(HWND window);
+  void RestoreFromTray(HWND window);
+  void ShowTrayMenu(HWND window);
+
   flutter::DartProject project_;
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> window_channel_;
+  UINT taskbar_created_message_ = 0;
+  bool tray_icon_added_ = false;
+  bool exit_requested_ = false;
+  int tray_restore_command_ = SW_SHOWNORMAL;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

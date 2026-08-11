@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,13 +13,16 @@ import 'package:im_client/features/calls/domain/group_call_models.dart';
 import 'package:im_client/features/contacts/domain/contact_models.dart';
 import 'package:im_client/features/groups/data/groups_api_client.dart';
 import 'package:im_client/features/groups/domain/group_models.dart';
+import 'package:im_client/features/messaging/application/media_transfer_controller.dart';
 import 'package:im_client/features/messaging/application/messaging_coordinator.dart';
 import 'package:im_client/features/messaging/data/media_auto_download_store.dart';
 import 'package:im_client/features/messaging/data/messaging_api_client.dart';
 import 'package:im_client/features/messaging/data/messaging_local_store.dart';
 import 'package:im_client/features/messaging/data/sticker_api_client.dart';
+import 'package:im_client/features/messaging/domain/media_transfer_state.dart';
 import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:im_client/features/messaging/domain/sticker_models.dart';
+import 'package:im_client/features/messaging/presentation/desktop_inspector.dart';
 import 'package:im_client/features/messaging/presentation/text_chat_page.dart';
 import 'package:im_client/theme/app_theme.dart';
 import 'package:realtime_poc/realtime_poc.dart';
@@ -62,35 +68,36 @@ void main() {
     expect(find.descendant(of: sheet, matching: find.text('表情')), findsNothing);
   });
 
-  testWidgets('capture action uses platform camera adapter and cancel is silent', (
-    tester,
-  ) async {
-    final camera = _FakeCameraCapture();
-    final harness = _Harness(_ChatGateway());
-    addTearDown(harness.dispose);
+  testWidgets(
+    'capture action uses platform camera adapter and cancel is silent',
+    (tester) async {
+      final camera = _FakeCameraCapture();
+      final harness = _Harness(_ChatGateway());
+      addTearDown(harness.dispose);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.light(),
-        home: TextChatPage(
-          coordinator: harness.coordinator,
-          conversation: _conversation(),
-          currentUserId: 'user-a',
-          cameraCapture: camera,
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+            cameraCapture: camera,
+          ),
         ),
-      ),
-    );
-    await tester.pump(const Duration(milliseconds: 120));
+      );
+      await tester.pump(const Duration(milliseconds: 120));
 
-    await tester.tap(find.byKey(const Key('chat-more')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('拍摄'));
-    await tester.pump(const Duration(milliseconds: 120));
+      await tester.tap(find.byKey(const Key('chat-more')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('拍摄'));
+      await tester.pump(const Duration(milliseconds: 120));
 
-    expect(camera.captureCalls, 1);
-    expect(find.textContaining('拍摄失败'), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+      expect(camera.captureCalls, 1);
+      expect(find.textContaining('拍摄失败'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('friend acceptance system message is centered and readable', (
     tester,
@@ -176,6 +183,73 @@ void main() {
       find.byKey(const Key('message-bubble-surface-message-image-visual')),
     );
     expect(bubble.decoration, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sticker thumbnail is visibly smaller than image thumbnail', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'visual-image',
+          conversationId: 'conversation-1',
+          sequence: 7,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'client-visual-image',
+          type: 'IMAGE',
+          content: const TextMessageContent(
+            mediaId: '00000000-0000-0000-0000-000000000121',
+            width: 512,
+            height: 512,
+            mimeType: 'image/jpeg',
+          ),
+          createdAt: DateTime.utc(2026, 8, 10, 0, 12),
+        ),
+        ChatMessage(
+          id: 'visual-sticker',
+          conversationId: 'conversation-1',
+          sequence: 8,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'client-visual-sticker',
+          type: 'STICKER',
+          content: const TextMessageContent(
+            mediaId: '00000000-0000-0000-0000-000000000122',
+            width: 512,
+            height: 512,
+            mimeType: 'image/webp',
+          ),
+          createdAt: DateTime.utc(2026, 8, 10, 0, 13),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(lastReadSequence: 8),
+          currentUserId: 'user-a',
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+
+    final imageSize = tester.getSize(
+      find.byKey(const Key('chat-visual-frame-visual-image')),
+    );
+    final stickerSize = tester.getSize(
+      find.byKey(const Key('chat-visual-frame-visual-sticker')),
+    );
+    expect(stickerSize.width, lessThan(imageSize.width));
+    expect(stickerSize.height, lessThan(imageSize.height));
+    expect(stickerSize.width, closeTo(176, 1));
+    expect(stickerSize.height, closeTo(176, 1));
     expect(tester.takeException(), isNull);
   });
 
@@ -560,6 +634,47 @@ void main() {
     }
   });
 
+  testWidgets('Android voice input hides emoji button until keyboard mode', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final gateway = _ChatGateway();
+      final harness = _Harness(gateway);
+      addTearDown(harness.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 80));
+
+      expect(find.byKey(const Key('chat-emoji')), findsOneWidget);
+      expect(find.byKey(const Key('chat-hold-to-talk')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('chat-voice')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('chat-hold-to-talk')), findsOneWidget);
+      expect(find.byKey(const Key('chat-emoji')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('chat-voice')));
+      await tester.pump();
+
+      expect(find.byKey(const Key('chat-emoji')), findsOneWidget);
+      expect(find.byKey(const Key('chat-hold-to-talk')), findsNothing);
+      expect(tester.takeException(), isNull);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('more button opens real chat details and scopes message search', (
     tester,
   ) async {
@@ -796,6 +911,67 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets(
+    'received sticker can be added to my custom stickers by long press',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        final gateway = _ChatGateway(
+          history: [
+            ChatMessage(
+              id: 'received-sticker-add',
+              conversationId: 'conversation-1',
+              sequence: 9,
+              senderUserId: 'user-b',
+              senderDeviceId: 'device-b',
+              clientMessageId: 'client-received-sticker-add',
+              type: 'STICKER',
+              content: const TextMessageContent(
+                mediaId: '00000000-0000-0000-0000-000000000204',
+                width: 512,
+                height: 384,
+                mimeType: 'image/webp',
+              ),
+              createdAt: DateTime.utc(2026, 8, 8, 8),
+            ),
+          ],
+        );
+        final stickerGateway = _ChatStickerGateway();
+        final harness = _Harness(gateway);
+        addTearDown(harness.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(),
+            home: TextChatPage(
+              coordinator: harness.coordinator,
+              conversation: _conversation(lastReadSequence: 9),
+              currentUserId: 'user-a',
+              stickerGateway: stickerGateway,
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 150));
+
+        await tester.longPress(
+          find.byKey(const Key('message-received-sticker-add')),
+        );
+        await tester.pump(const Duration(milliseconds: 420));
+
+        expect(find.text('添加到我的表情'), findsOneWidget);
+        await tester.tap(find.text('添加到我的表情'));
+        await tester.pump(const Duration(milliseconds: 320));
+
+        expect(stickerGateway.createdRequests, [
+          ('00000000-0000-0000-0000-000000000204', 512, 384),
+        ]);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
 
   testWidgets('reply reference jumps to loaded source and highlights it', (
     tester,
@@ -1065,6 +1241,178 @@ void main() {
     expect(find.text('系统分享'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('paused file transfer banner exposes both resume and cancel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final harness = _Harness(_ChatGateway());
+    addTearDown(harness.dispose);
+    final blocker = Completer<void>();
+    const taskId = 'download-file-message-file-cancel';
+    expect(
+      harness.coordinator.mediaTransfers.enqueue(
+        id: taskId,
+        kind: MediaTransferKind.file,
+        direction: MediaTransferDirection.download,
+        label: 'wd001.apk',
+        conversationId: 'conversation-1',
+        operation: (task) async {
+          task.update(
+            const MediaTransferState(
+              phase: MediaTransferPhase.uploading,
+              transferredBytes: 55 * 1024 * 1024,
+              totalBytes: 170 * 1024 * 1024,
+            ),
+          );
+          task.setAbortHandler(() {
+            if (!blocker.isCompleted) blocker.complete();
+          });
+          await blocker.future;
+          task.throwIfCancelled();
+        },
+      ),
+      isTrue,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(),
+          currentUserId: 'user-a',
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(harness.coordinator.mediaTransfers.pause(taskId), isTrue);
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(
+      find.byKey(const Key('resume-upload-download-file-message-file-cancel')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('cancel-upload-download-file-message-file-cancel')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(const Key('cancel-upload-download-file-message-file-cancel')),
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(
+      harness.coordinator.mediaTransfers.task(taskId)?.state.phase,
+      MediaTransferPhase.canceled,
+    );
+    expect(
+      find.byKey(const Key('dismiss-upload-download-file-message-file-cancel')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'image upload stays in an outgoing thumbnail with circular progress',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final harness = _Harness(_ChatGateway());
+      addTearDown(harness.dispose);
+      final blocker = Completer<void>();
+      const taskId = 'upload-visual-image';
+      final previewBytes = Uint8List.fromList(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        ),
+      );
+      expect(
+        harness.coordinator.mediaTransfers.enqueue(
+          id: taskId,
+          kind: MediaTransferKind.image,
+          label: 'photo.jpg',
+          conversationId: 'conversation-1',
+          operation: (task) async {
+            task.setVisualPreview(
+              MediaTransferVisualPreview(
+                posterBytes: previewBytes,
+                width: 640,
+                height: 480,
+              ),
+            );
+            task.update(
+              const MediaTransferState(
+                phase: MediaTransferPhase.uploading,
+                transferredBytes: 25,
+                totalBytes: 100,
+              ),
+            );
+            task.setAbortHandler(() {
+              if (!blocker.isCompleted) blocker.complete();
+            });
+            await blocker.future;
+            task.throwIfCancelled();
+          },
+        ),
+        isTrue,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+
+      expect(
+        find.byKey(const Key('pending-media-transfer-upload-visual-image')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('upload-transfer-upload-visual-image')),
+        findsNothing,
+      );
+      final ring = tester.widget<CircularProgressIndicator>(
+        find.byKey(const Key('pending-media-progress-upload-visual-image')),
+      );
+      expect(ring.value, closeTo(0.25, 0.0001));
+      expect(
+        find.byKey(const Key('pending-media-cancel-upload-visual-image')),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const Key('pending-media-cancel-upload-visual-image')),
+      );
+      await tester.pump(const Duration(milliseconds: 160));
+
+      expect(
+        harness.coordinator.mediaTransfers.task(taskId)?.state.phase,
+        MediaTransferPhase.canceled,
+      );
+      expect(
+        find.byKey(const Key('pending-media-transfer-upload-visual-image')),
+        findsNothing,
+      );
+      await tester.pump(const Duration(milliseconds: 240));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('pinned message bar is visible and jumps to pinned message', (
     tester,
@@ -1461,9 +1809,116 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Telegram sticker pack can be shared as a DD import card', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = _ChatGateway();
+    final harness = _Harness(gateway);
+    final stickerGateway = _ChatStickerGateway(
+      packs: [_chatStickerPack('pack-share', withPreview: true)],
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(),
+          currentUserId: 'user-a',
+          stickerGateway: stickerGateway,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.byKey(const Key('chat-emoji')));
+    await tester.pump(const Duration(milliseconds: 420));
+    await tester.pump();
+    tester
+        .widget<InkWell>(find.byKey(const Key('sticker-tab-pack-pack-share')))
+        .onTap!();
+    await tester.pump(const Duration(milliseconds: 240));
+    await tester.tap(find.byKey(const Key('sticker-share-pack')));
+    await tester.pump(const Duration(milliseconds: 420));
+
+    expect(gateway.sentTexts, isEmpty);
+    expect(gateway.sentMedia, hasLength(1));
+    final (type, mediaId, width, height) = gateway.sentMedia.single;
+    expect(type, 'STICKER_PACK');
+    expect(mediaId, 'media-pack-share-preview');
+    expect(width, 512);
+    expect(height, 512);
+    expect(find.textContaining('已分享表情包'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('shared sticker pack card renders its first sticker preview', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'pack-share-message',
+          conversationId: 'conversation-1',
+          sequence: 1,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'pack-share-client-0001',
+          type: 'STICKER_PACK',
+          content: const TextMessageContent(
+            text: 'dd://stickers/telegram/Animals_by_TestBot?title=Animals',
+            mediaId: 'media-pack-share-preview',
+            width: 512,
+            height: 512,
+            mimeType: 'image/webp',
+            sizeBytes: 2048,
+          ),
+          createdAt: DateTime.utc(2026, 8, 12, 4, 10),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(),
+          currentUserId: 'user-a',
+          stickerGateway: _ChatStickerGateway(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 420));
+
+    expect(
+      find.byKey(const Key('telegram-sticker-pack-card-Animals_by_TestBot')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('telegram-sticker-pack-preview-pack-share-message')),
+      findsOneWidget,
+    );
+    expect(find.text('Animals'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('custom sticker selection sends stable DD media id as STICKER', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(800, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     final gateway = _ChatGateway();
     final harness = _Harness(gateway);
     final stickerGateway = _ChatStickerGateway(
@@ -1485,10 +1940,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     await tester.tap(find.byKey(const Key('chat-emoji')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('sticker-tab-custom')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('custom-sticker-custom-send')));
+    await tester.pump(const Duration(milliseconds: 420));
+    tester
+        .widget<InkWell>(find.byKey(const Key('sticker-tab-custom')))
+        .onTap!();
+    await tester.pump(const Duration(milliseconds: 240));
+    tester
+        .widget<InkWell>(find.byKey(const Key('custom-sticker-custom-send')))
+        .onTap!();
     await tester.pump(const Duration(milliseconds: 180));
 
     expect(gateway.sentMedia, [('STICKER', 'media-custom-send', 512, 512)]);
@@ -1549,9 +2008,7 @@ void main() {
       userId: 'user-a',
       storage: _SecureMemoryStore(),
     );
-    await mediaStore.save(
-      const MediaAutoDownloadPreferences(images: false),
-    );
+    await mediaStore.save(const MediaAutoDownloadPreferences(images: false));
     final gateway = _ChatGateway(
       history: [
         ChatMessage(
@@ -1596,58 +2053,214 @@ void main() {
     );
   });
 
-  testWidgets('group chat shows group title, sender nickname and hides 1v1 call actions', (
-    tester,
-  ) async {
-    final gateway = _ChatGateway(
-      history: [
-        ChatMessage(
-          id: 'group-message-1',
-          conversationId: 'group-1',
-          sequence: 1,
-          senderUserId: 'user-c',
-          senderDeviceId: 'device-c',
-          clientMessageId: 'group-client-0001',
-          type: 'TEXT',
-          content: const TextMessageContent(text: '大家好'),
-          createdAt: DateTime.utc(2026, 8, 10, 12),
-        ),
-      ],
-    );
-    final harness = _Harness(gateway);
-    addTearDown(harness.dispose);
+  testWidgets(
+    'Windows mention tap opens a floating profile instead of the right inspector',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        final gateway = _ChatGateway(
+          history: [
+            ChatMessage(
+              id: 'mention-message-1',
+              conversationId: 'conversation-1',
+              sequence: 8,
+              senderUserId: 'user-b',
+              senderDeviceId: 'device-b',
+              clientMessageId: 'mention-client-1',
+              type: 'TEXT',
+              content: const TextMessageContent(
+                text: '@bob',
+                entities: [
+                  MessageEntity(
+                    type: 'MENTION',
+                    offset: 0,
+                    length: 4,
+                    userId: 'user-b',
+                    handle: 'bob',
+                  ),
+                ],
+              ),
+              createdAt: DateTime.utc(2026, 8, 12),
+            ),
+          ],
+        );
+        final harness = _Harness(gateway);
+        final inspector = DesktopInspectorController();
+        addTearDown(harness.dispose);
+        addTearDown(inspector.dispose);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: AppTheme.light(),
-        home: TextChatPage(
-          coordinator: harness.coordinator,
-          conversation: _groupConversation(),
-          currentUserId: 'user-a',
-          groupsGateway: _ChatGroupsGateway(),
-          groupCallGateway: _EmptyGroupCallGateway(),
-          onStartCall: (_, _, _) async {},
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(),
+            home: TextChatPage(
+              coordinator: harness.coordinator,
+              conversation: _conversation(lastReadSequence: 8),
+              currentUserId: 'user-a',
+              inspectorController: inspector,
+              onOpenDirectChat: (_) async {},
+              onStartCall: (_, _, _) async {},
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 120));
 
-    expect(find.text('研发群'), findsOneWidget);
-    expect(find.text('3 位成员'), findsOneWidget);
-    expect(find.text('小陈'), findsOneWidget);
-    expect(find.text('大家好'), findsOneWidget);
-    expect(find.byKey(const Key('chat-audio-call-mobile')), findsNothing);
-    expect(find.byKey(const Key('chat-video-call-mobile')), findsNothing);
-    expect(find.byKey(const Key('group-call-start-audio')), findsOneWidget);
-    expect(find.byKey(const Key('group-call-start-video')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const Key('message-mention-message-1')),
+            matching: find.text('@bob'),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 220));
+
+        expect(
+          find.byKey(const Key('desktop-mention-profile-dialog')),
+          findsOneWidget,
+        );
+        expect(inspector.isOpen, isFalse);
+        expect(find.byKey(const Key('desktop-right-inspector')), findsNothing);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
+
+  testWidgets(
+    'Android group chat moves group call actions into the plus sheet',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        final gateway = _ChatGateway(
+          history: [
+            ChatMessage(
+              id: 'group-message-1',
+              conversationId: 'group-1',
+              sequence: 1,
+              senderUserId: 'user-c',
+              senderDeviceId: 'device-c',
+              clientMessageId: 'group-client-0001',
+              type: 'TEXT',
+              content: const TextMessageContent(text: '大家好'),
+              createdAt: DateTime.utc(2026, 8, 10, 12),
+            ),
+          ],
+        );
+        final harness = _Harness(gateway);
+        addTearDown(harness.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(),
+            home: TextChatPage(
+              coordinator: harness.coordinator,
+              conversation: _groupConversation(),
+              currentUserId: 'user-a',
+              groupsGateway: _ChatGroupsGateway(),
+              groupCallGateway: _EmptyGroupCallGateway(),
+              onStartCall: (_, _, _) async {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('研发群'), findsOneWidget);
+        expect(find.text('3 位成员'), findsOneWidget);
+        expect(find.text('小陈'), findsOneWidget);
+        expect(find.text('大家好'), findsOneWidget);
+        expect(find.byKey(const Key('chat-audio-call-mobile')), findsNothing);
+        expect(find.byKey(const Key('chat-video-call-mobile')), findsNothing);
+        expect(find.byKey(const Key('group-call-banner')), findsNothing);
+        expect(find.byKey(const Key('group-call-start-audio')), findsNothing);
+        expect(find.byKey(const Key('group-call-start-video')), findsNothing);
+
+        await tester.tap(find.byKey(const Key('chat-more')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('group-call-menu-audio')), findsOneWidget);
+        expect(find.byKey(const Key('group-call-menu-video')), findsOneWidget);
+        expect(find.text('语音通话'), findsOneWidget);
+        expect(find.text('视频通话'), findsOneWidget);
+
+        await tester.tap(find.byKey(const Key('group-call-menu-audio')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('发起群语音通话？'), findsOneWidget);
+        expect(
+          find.byKey(const Key('confirm-start-group-call')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
+
+  testWidgets(
+    'Windows group chat keeps idle group call actions in the plus sheet',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      try {
+        final gateway = _ChatGateway(
+          history: [
+            ChatMessage(
+              id: 'group-message-win-1',
+              conversationId: 'group-1',
+              sequence: 1,
+              senderUserId: 'user-c',
+              senderDeviceId: 'device-c',
+              clientMessageId: 'group-client-win-0001',
+              type: 'TEXT',
+              content: const TextMessageContent(text: 'Windows 群聊'),
+              createdAt: DateTime.utc(2026, 8, 12, 4),
+            ),
+          ],
+        );
+        final harness = _Harness(gateway);
+        addTearDown(harness.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(),
+            home: TextChatPage(
+              coordinator: harness.coordinator,
+              conversation: _groupConversation(),
+              currentUserId: 'user-a',
+              groupsGateway: _ChatGroupsGateway(),
+              groupCallGateway: _EmptyGroupCallGateway(),
+              onStartCall: (_, _, _) async {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('group-call-banner')), findsNothing);
+        expect(find.byKey(const Key('group-call-start-audio')), findsNothing);
+        expect(find.byKey(const Key('group-call-start-video')), findsNothing);
+
+        await tester.tap(find.byKey(const Key('chat-more')));
+        await tester.pumpAndSettle();
+
+        expect(find.byKey(const Key('group-call-menu-audio')), findsOneWidget);
+        expect(find.byKey(const Key('group-call-menu-video')), findsOneWidget);
+        expect(find.text('语音通话'), findsOneWidget);
+        expect(find.text('视频通话'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
 }
 
 ConversationItem _groupConversation() => ConversationItem(
   id: 'group-1',
   type: 'GROUP',
-  group: const MessagingGroupPreview(id: 'group-1', name: '研发群', memberCount: 3),
+  group: const MessagingGroupPreview(
+    id: 'group-1',
+    name: '研发群',
+    memberCount: 3,
+  ),
   lastSequence: 1,
   lastReadSequence: 0,
   unreadCount: 1,
@@ -1737,19 +2350,31 @@ final class _ChatGroupsGateway implements GroupsGateway {
     required String groupId,
   }) async => [
     GroupMemberItem(
-      user: const GroupUserPreview(id: 'user-a', handle: 'alice', displayName: 'Alice'),
+      user: const GroupUserPreview(
+        id: 'user-a',
+        handle: 'alice',
+        displayName: 'Alice',
+      ),
       role: 'OWNER',
       nickname: '',
       joinedAt: DateTime.utc(2026, 8, 10),
     ),
     GroupMemberItem(
-      user: const GroupUserPreview(id: 'user-b', handle: 'bob', displayName: 'Bob'),
+      user: const GroupUserPreview(
+        id: 'user-b',
+        handle: 'bob',
+        displayName: 'Bob',
+      ),
       role: 'MEMBER',
       nickname: '',
       joinedAt: DateTime.utc(2026, 8, 10),
     ),
     GroupMemberItem(
-      user: const GroupUserPreview(id: 'user-c', handle: 'chen', displayName: 'Chen'),
+      user: const GroupUserPreview(
+        id: 'user-c',
+        handle: 'chen',
+        displayName: 'Chen',
+      ),
       role: 'MEMBER',
       nickname: '小陈',
       joinedAt: DateTime.utc(2026, 8, 10),
@@ -2189,17 +2814,31 @@ CustomStickerItem _chatCustomSticker(String id) => CustomStickerItem(
   createdAt: DateTime.utc(2026, 8, 10, 7, 30),
 );
 
-StickerPackItemGroup _chatStickerPack(String id) => StickerPackItemGroup(
-  id: id,
-  setName: 'Animals_by_TestBot',
-  title: 'Animals',
-  coverMediaId: '',
-  supportedStickerCount: 0,
-  unsupportedStickerCount: 0,
-  sortOrder: 0,
-  items: const [],
-  updatedAt: DateTime.utc(2026, 8, 10, 7, 30),
-);
+StickerPackItemGroup _chatStickerPack(String id, {bool withPreview = false}) =>
+    StickerPackItemGroup(
+      id: id,
+      setName: 'Animals_by_TestBot',
+      title: 'Animals',
+      coverMediaId: withPreview ? 'media-$id-preview' : '',
+      supportedStickerCount: withPreview ? 1 : 0,
+      unsupportedStickerCount: 0,
+      sortOrder: 0,
+      items: withPreview
+          ? [
+              StickerPackItem(
+                id: '$id-preview',
+                mediaId: 'media-$id-preview',
+                emoji: '🐱',
+                mimeType: 'image/webp',
+                width: 512,
+                height: 512,
+                sizeBytes: 2048,
+                sortOrder: 0,
+              ),
+            ]
+          : const [],
+      updatedAt: DateTime.utc(2026, 8, 10, 7, 30),
+    );
 
 final class _ChatStickerGateway implements StickerGateway {
   _ChatStickerGateway({
@@ -2210,6 +2849,7 @@ final class _ChatStickerGateway implements StickerGateway {
 
   final List<CustomStickerItem> _custom;
   final List<StickerPackItemGroup> _packs;
+  final List<(String, int, int)> createdRequests = [];
 
   @override
   Future<List<CustomStickerItem>> listCustomStickers({
@@ -2225,6 +2865,7 @@ final class _ChatStickerGateway implements StickerGateway {
     required int width,
     required int height,
   }) async {
+    createdRequests.add((mediaId, width, height));
     final item = _chatCustomSticker('created-${_custom.length}');
     _custom.add(item);
     return item;

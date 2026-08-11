@@ -144,12 +144,52 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 	if err != nil || len(aliceView.Comments) != 2 {
 		t.Fatalf("author must see all comments count=%d err=%v", len(aliceView.Comments), err)
 	}
+	aliceActivity, err := service.GetActivitySummary(ctx, principals[alice])
+	if err != nil || aliceActivity.UnreadCount != 3 {
+		t.Fatalf("alice unread moment activity=%d err=%v want=3", aliceActivity.UnreadCount, err)
+	}
+	if len(aliceActivity.Items) != 3 {
+		t.Fatalf("alice recent activity count=%d want=3 items=%+v", len(aliceActivity.Items), aliceActivity.Items)
+	}
+	foundCarolReply := false
+	for _, item := range aliceActivity.Items {
+		if item.Kind == "COMMENT" && item.Actor.ID == carol.String() && item.CommentText == "Carol reply" {
+			foundCarolReply = true
+			break
+		}
+	}
+	if !foundCarolReply {
+		t.Fatalf("alice recent activity=%+v missing Carol reply", aliceActivity.Items)
+	}
+	bobActivity, err := service.GetActivitySummary(ctx, principals[bob])
+	if err != nil || bobActivity.UnreadCount != 1 {
+		t.Fatalf("bob reply activity=%d err=%v want=1", bobActivity.UnreadCount, err)
+	}
+	if len(bobActivity.Items) != 1 || bobActivity.Items[0].Actor.ID != carol.String() || bobActivity.Items[0].CommentText != "Carol reply" {
+		t.Fatalf("bob recent activity=%+v want Carol reply", bobActivity.Items)
+	}
+	aliceActivity, err = service.MarkActivityRead(ctx, principals[alice])
+	if err != nil || aliceActivity.UnreadCount != 0 {
+		t.Fatalf("mark alice activity read=%d err=%v want=0", aliceActivity.UnreadCount, err)
+	}
+	if len(aliceActivity.Items) != 3 {
+		t.Fatalf("mark-read must retain recent history items=%+v", aliceActivity.Items)
+	}
+	for _, item := range aliceActivity.Items {
+		if !item.Read {
+			t.Fatalf("mark-read item still unread: %+v", item)
+		}
+	}
 	carolCommentID := uuid.MustParse(aliceView.Comments[1].ID)
 	if _, _, err := service.DeleteComment(ctx, principals[bob], allID, carolCommentID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("bob deleting Carol comment err=%v want forbidden", err)
 	}
 	if _, _, err := service.DeleteComment(ctx, principals[alice], allID, carolCommentID); err != nil {
 		t.Fatalf("moment author deleting Carol comment: %v", err)
+	}
+	bobActivity, err = service.GetActivitySummary(ctx, principals[bob])
+	if err != nil || bobActivity.UnreadCount != 0 {
+		t.Fatalf("deleted reply must clear bob activity=%d err=%v", bobActivity.UnreadCount, err)
 	}
 	if _, _, err := service.DeleteComment(ctx, principals[bob], allID, bobCommentID); err != nil {
 		t.Fatalf("comment author deleting own comment: %v", err)

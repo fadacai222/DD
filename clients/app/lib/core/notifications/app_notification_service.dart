@@ -1,9 +1,13 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
 import 'notification_avatar_file.dart';
+import 'notification_avatar_url_policy.dart';
 
 final class AppNotificationService {
   AppNotificationService({
@@ -26,11 +30,23 @@ final class AppNotificationService {
   final FlutterLocalNotificationsPlugin _plugin;
   final http.Client _httpClient;
   final Map<String, Uint8List?> _avatarMemoryCache = <String, Uint8List?>{};
+  final StreamController<Map<String, dynamic>> _notificationOpenController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  Map<String, dynamic>? _pendingLaunchData;
   bool _initialized = false;
   bool _initializing = false;
   int _nextId = 1000;
 
   bool get initialized => _initialized;
+
+  Stream<Map<String, dynamic>> get notificationOpens =>
+      _notificationOpenController.stream;
+
+  Map<String, dynamic>? takePendingLaunchData() {
+    final data = _pendingLaunchData;
+    _pendingLaunchData = null;
+    return data;
+  }
 
   Future<void> initialize({bool requestPermission = true}) async {
     if (_initialized || _initializing || kIsWeb) return;
@@ -49,9 +65,19 @@ final class AppNotificationService {
           guid: 'd4b226ae-97ab-4bb7-9b64-a816e8bb78ac',
         ),
       );
-      final initialized = await _plugin.initialize(settings: settings);
+      final initialized = await _plugin.initialize(
+        settings: settings,
+        onDidReceiveNotificationResponse: _handleNotificationResponse,
+      );
       _initialized = initialized ?? false;
       if (!_initialized) return;
+
+      final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+      if (launchDetails?.didNotificationLaunchApp == true) {
+        _pendingLaunchData = _decodeNotificationPayload(
+          launchDetails?.notificationResponse?.payload,
+        );
+      }
 
       if (defaultTargetPlatform == TargetPlatform.android) {
         final android = _plugin
@@ -89,6 +115,8 @@ final class AppNotificationService {
     Uri? origin,
     String? accessToken,
     String? senderUserId,
+    Uri? avatarUrl,
+    Map<String, dynamic>? notificationData,
   }) async {
     final windows = !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
     if (!_initialized && !windows) return;
@@ -96,7 +124,11 @@ final class AppNotificationService {
     final id = _nextId++ & 0x7FFFFFFF;
 
     Uint8List? avatarBytes;
-    if (origin != null &&
+    if (avatarUrl != null) {
+      avatarBytes = await _loadAvatarUrl(avatarUrl);
+    }
+    if (avatarBytes == null &&
+        origin != null &&
         accessToken != null &&
         accessToken.isNotEmpty &&
         senderUserId != null &&
@@ -187,7 +219,9 @@ final class AppNotificationService {
         id: id,
         title: senderName,
         body: body,
-        payload: conversationId,
+        payload: notificationData == null
+            ? conversationId
+            : jsonEncode(notificationData),
         notificationDetails: NotificationDetails(
           android: androidDetails,
           windows: windowsDetails,
@@ -195,6 +229,52 @@ final class AppNotificationService {
       );
     } catch (_) {
       // Notification failures must never break realtime message sync.
+    }
+  }
+
+  void _handleNotificationResponse(NotificationResponse response) {
+    final data = _decodeNotificationPayload(response.payload);
+    if (data == null) return;
+    _notificationOpenController.add(data);
+  }
+
+  Map<String, dynamic>? _decodeNotificationPayload(String? payload) {
+    final raw = payload?.trim() ?? '';
+    if (raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map<String, dynamic>(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+      }
+    } catch (_) {
+      // Legacy local notifications stored only the conversation id.
+    }
+    return <String, dynamic>{'conversationId': raw};
+  }
+
+  Future<Uint8List?> _loadAvatarUrl(Uri avatarUrl) async {
+    if (!isAllowedNotificationAvatarUrl(avatarUrl)) return null;
+    final key = 'push:${avatarUrl.toString()}';
+    if (_avatarMemoryCache.containsKey(key)) return _avatarMemoryCache[key];
+    try {
+      final response = await _httpClient
+          .get(avatarUrl, headers: const <String, String>{'Accept': 'image/*'})
+          .timeout(const Duration(seconds: 3));
+      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+      if (response.statusCode != 200 ||
+          response.bodyBytes.isEmpty ||
+          response.bodyBytes.length > 2 * 1024 * 1024 ||
+          !contentType.startsWith('image/')) {
+        _avatarMemoryCache[key] = null;
+        return null;
+      }
+      final bytes = Uint8List.fromList(response.bodyBytes);
+      _avatarMemoryCache[key] = bytes;
+      return bytes;
+    } catch (_) {
+      return null;
     }
   }
 

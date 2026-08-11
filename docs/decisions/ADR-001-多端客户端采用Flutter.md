@@ -55,7 +55,7 @@ clients/app/
 - Windows runner：无边框、resize、DWM、单实例、自定义通知。
 - Android manifest/resources：通知权限、小图标、平台能力。
 - Native media runtime：media_kit/libmpv 等。
-- P9 QR 使用 Flutter `qr_flutter` / `mobile_scanner`，但当前 QR 客户端门禁仍有 `KNOWN-FAILURE`。
+- P9 QR 使用 Flutter `qr_flutter` / `mobile_scanner`；当前客户端 analyzer/定向测试/Windows-Web-Android 构建已恢复，剩余风险是相机权限、真实扫码与跨设备登录的人机验收，而不是 Flutter 架构本身。
 - iOS/macOS 后续需要 Push/权限/签名/扫码等平台适配。
 
 原则：

@@ -20,9 +20,9 @@ var (
 )
 
 type Payload struct {
-	Type       string    `json:"type"`
-	Value      string    `json:"value"`
-	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Type      string     `json:"type"`
+	Value     string     `json:"value"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 type GroupInvite struct {
@@ -46,13 +46,13 @@ type GroupRedeemResult struct {
 }
 
 type LoginSession struct {
-	Status      string     `json:"status"`
-	Nonce       string     `json:"nonce,omitempty"`
-	Payload     string     `json:"payload,omitempty"`
+	Status      string      `json:"status"`
+	Nonce       string      `json:"nonce,omitempty"`
+	Payload     string      `json:"payload,omitempty"`
 	Device      DeviceInput `json:"device"`
-	ExpiresAt   time.Time  `json:"expiresAt"`
-	ScannedAt   *time.Time `json:"scannedAt,omitempty"`
-	ConfirmedAt *time.Time `json:"confirmedAt,omitempty"`
+	ExpiresAt   time.Time   `json:"expiresAt"`
+	ScannedAt   *time.Time  `json:"scannedAt,omitempty"`
+	ConfirmedAt *time.Time  `json:"confirmedAt,omitempty"`
 }
 
 type CreateLoginInput struct {

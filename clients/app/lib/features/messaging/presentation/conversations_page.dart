@@ -233,7 +233,8 @@ class _ConversationsPageState extends State<ConversationsPage> {
                       conversation: selected,
                       currentUserId: widget.currentUserId,
                       currentUserDisplayName: widget.currentUserDisplayName,
-                      currentUserAvatarRevision: widget.currentUserAvatarRevision,
+                      currentUserAvatarRevision:
+                          widget.currentUserAvatarRevision,
                       onStartCall: widget.onStartCall,
                       onOpenDirectChat: _openDirectChatByUserId,
                       hostVisible: widget.hostVisible,
@@ -495,9 +496,9 @@ class _ConversationsPageState extends State<ConversationsPage> {
     if (!mounted) return;
     final conversation = _coordinator.conversationFor(group.id);
     if (conversation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('群聊已创建，但会话尚未同步完成，请稍后刷新。')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('群聊已创建，但会话尚未同步完成，请稍后刷新。')));
       return;
     }
     final desktop = MediaQuery.sizeOf(context).width >= 680;
@@ -654,47 +655,47 @@ class _ConversationsPageState extends State<ConversationsPage> {
                     color: Colors.white,
                   ),
                 ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            '我的收藏',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              '我的收藏',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                        if (saved != null && saved.updatedAt.year > 1970)
-                          Text(
-                            _conversationTime(saved.updatedAt.toLocal()),
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: DdColors.textTertiary,
+                          if (saved != null && saved.updatedAt.year > 1970)
+                            Text(
+                              _conversationTime(saved.updatedAt.toLocal()),
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: DdColors.textTertiary,
+                              ),
                             ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      preview,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: DdColors.textSecondary,
+                        ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 5),
+                      Text(
+                        preview,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: DdColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 5),
+                const SizedBox(width: 5),
                 Icon(
                   Icons.push_pin_rounded,
                   key: const Key('saved-messages-pin'),
@@ -736,10 +737,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
                 const Expanded(
                   child: Text(
                     '已归档',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                   ),
                 ),
                 Text(
@@ -813,15 +811,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
             child: Row(
               children: [
                 conversation.type == 'GROUP'
-                    ? GroupAvatar(
-                        origin: widget.origin,
-                        accessToken: widget.accessToken,
-                        groupId: conversation.group?.id ?? conversation.id,
-                        groupName: title,
-                        avatarMediaId: conversation.group?.avatarMediaId ?? '',
-                        avatarRevision: conversation.group?.avatarRevision ?? 0,
-                        members: conversation.group?.avatarMembers ?? const [],
-                      )
+                    ? _groupAvatar(conversation, title)
                     : _avatar(peer?.id ?? '', title),
                 const SizedBox(width: 10),
                 Expanded(
@@ -959,6 +949,51 @@ class _ConversationsPageState extends State<ConversationsPage> {
     }
     if (conversation.type == 'SELF') return '我的收藏';
     return conversation.peer?.displayName ?? '会话';
+  }
+
+  Widget _groupAvatar(ConversationItem conversation, String title) {
+    return SizedBox.square(
+      dimension: 46,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned.fill(
+            child: GroupAvatar(
+              origin: widget.origin,
+              accessToken: widget.accessToken,
+              groupId: conversation.group?.id ?? conversation.id,
+              groupName: title,
+              avatarMediaId: conversation.group?.avatarMediaId ?? '',
+              avatarRevision: conversation.group?.avatarRevision ?? 0,
+              members: conversation.group?.avatarMembers ?? const [],
+            ),
+          ),
+          Positioned(
+            right: -2,
+            bottom: -2,
+            child: Container(
+              key: Key('conversation-group-marker-${conversation.id}'),
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.surface,
+                  width: 1.5,
+                ),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.group_rounded,
+                size: 13,
+                color: DdColors.greenPressed,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _avatar(String userId, String title) {
@@ -1400,18 +1435,28 @@ class _ConversationsPageState extends State<ConversationsPage> {
     final message = conversation.lastMessage;
     if (message == null) return '还没有消息';
     if (message.isRecalled) return '';
-    if (const {'TEXT', 'SYSTEM'}.contains(message.type)) {
-      return message.content?.text ?? '';
-    }
-    return switch (message.type) {
-      'IMAGE' => '[图片]',
-      'GIF' => '[GIF]',
-      'STICKER' => '[表情]',
-      'VOICE' => '[语音]',
-      'VIDEO' => '[视频]',
-      'FILE' => '[文件]',
-      _ => '[${message.type}]',
-    };
+    final content = const {'TEXT', 'SYSTEM'}.contains(message.type)
+        ? (message.content?.text ?? '')
+        : switch (message.type) {
+            'IMAGE' => '[图片]',
+            'GIF' => '[GIF]',
+            'STICKER' => '[表情]',
+            'STICKER_PACK' => '[表情包]',
+            'VOICE' => '[语音]',
+            'VIDEO' => '[视频]',
+            'FILE' => '[文件]',
+            _ => '[${message.type}]',
+          };
+    if (conversation.type != 'GROUP') return content;
+    final sender = conversation.lastMessageSender;
+    if (sender == null) return content;
+    final senderName = sender.id == widget.currentUserId
+        ? '我'
+        : (sender.displayName.trim().isNotEmpty
+              ? sender.displayName.trim()
+              : sender.handle.trim());
+    if (senderName.isEmpty) return content;
+    return content.isEmpty ? senderName : '$senderName：$content';
   }
 
   String _conversationTime(DateTime time) {

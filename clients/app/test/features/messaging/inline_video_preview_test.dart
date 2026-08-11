@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/messaging/presentation/widgets/inline_video_preview.dart';
 
 void main() {
-  testWidgets('inline video stays poster-only until user starts playback', (
+  testWidgets('android-style inline video opens full viewer on one tap', (
     tester,
   ) async {
     var sourceCalls = 0;
@@ -25,6 +25,7 @@ void main() {
                 return Uri.parse('https://example.invalid/video.mp4');
               },
               onOpenFull: () => fullCalls++,
+              openFullOnTap: true,
             ),
           ),
         ),
@@ -47,6 +48,28 @@ void main() {
       findsOneWidget,
     );
     expect(fullCalls, 0);
+
+    await tester.tap(find.byKey(const Key('inline-video-toggle-video-1')));
+    await tester.pump();
+
+    expect(sourceCalls, 0);
+    expect(fullCalls, 1);
+  });
+
+  test('autoplay arbiter selects the most visible video', () {
+    final arbiter = InlineVideoPlaybackArbiter.shared;
+    arbiter.updateVisibility('video-a', 0.7);
+    expect(arbiter.activeId, 'video-a');
+
+    arbiter.updateVisibility('video-b', 0.95);
+    expect(arbiter.activeId, 'video-b');
+
+    arbiter.updateVisibility('video-b', 0.2);
+    expect(arbiter.activeId, 'video-a');
+
+    arbiter.removeCandidate('video-a');
+    arbiter.removeCandidate('video-b');
+    expect(arbiter.activeId, isNull);
   });
 }
 

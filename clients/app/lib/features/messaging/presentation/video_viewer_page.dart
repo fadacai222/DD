@@ -10,6 +10,7 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/media/media_cache_lease_registry.dart';
 import '../../../core/media/media_export_service.dart';
 import '../../../core/media/remote_media_action_service.dart';
+import '../../../core/performance/app_performance_store.dart';
 import '../../../core/window/picture_in_picture_service.dart';
 
 class VideoViewerPage extends StatefulWidget {
@@ -33,9 +34,12 @@ class VideoViewerPage extends StatefulWidget {
   final RemoteMediaActionService? remoteActions;
   final Future<Uri> Function()? remoteUrlResolver;
   final Future<Uri> Function()? retryUrlResolver;
-  final Future<void> Function(void Function(int received, int? total) onProgress)?
+  final Future<void> Function(
+    void Function(int received, int? total) onProgress,
+  )?
   cacheInBackground;
-  final Future<void> Function(Duration position, bool playing)? onPictureInPicture;
+  final Future<void> Function(Duration position, bool playing)?
+  onPictureInPicture;
   final Duration initialPosition;
   final bool autoPlay;
 
@@ -84,14 +88,18 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
           defaultTargetPlatform == TargetPlatform.macOS ||
           defaultTargetPlatform == TargetPlatform.linux);
 
+  bool get _android =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
   @override
   void initState() {
     super.initState();
     _player = Player();
     _controller = VideoController(
       _player,
-      configuration: const VideoControllerConfiguration(
-        enableHardwareAcceleration: true,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration:
+            AppPerformanceStore.shared.hardwareVideoDecoding,
       ),
     );
     _startupWatch.start();
@@ -112,7 +120,8 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
           ClientLog.info(
             'Video first frame: ${_startupWatch.elapsedMilliseconds}ms, '
             '${_player.state.width ?? 0}x${_player.state.height ?? 0}, '
-            'hardwareAcceleration=true, platform=$defaultTargetPlatform',
+            'hardwareAcceleration=${AppPerformanceStore.shared.hardwareVideoDecoding}, '
+            'platform=$defaultTargetPlatform',
           ),
         );
       }
@@ -198,6 +207,9 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
   @override
   void dispose() {
     _controlsTimer?.cancel();
+    if (_android && _fullscreen) {
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    }
     _playbackLease?.release();
     unawaited(_playingSubscription?.cancel());
     unawaited(_positionSubscription?.cancel());
@@ -212,49 +224,68 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      autofocus: true,
-      focusNode: _keyboardFocus,
-      onKeyEvent: _handleKey,
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          child: MouseRegion(
-            onHover: (_) => _showControls(),
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: _showControls,
-              onDoubleTap: _toggleFullscreen,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (_error == null)
-                    Video(
-                      key: _videoKey,
-                      controller: _controller,
-                      controls: NoVideoControls,
-                      fit: BoxFit.contain,
-                      fill: Colors.black,
-                    )
-                  else
-                    _errorView(),
-                  AnimatedOpacity(
-                    opacity: _controlsVisible ? 1 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    child: IgnorePointer(
-                      ignoring: !_controlsVisible,
-                      child: _controlsOverlay(),
-                    ),
-                  ),
-                  if (_caching && _cacheProgress > 0 && _cacheProgress < 1)
-                    Positioned(
-                      top: 58,
-                      right: 16,
-                      child: _statusChip(
-                        '缓存 ${(100 * _cacheProgress).round()}%',
+    return PopScope(
+      canPop: !_fullscreen,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _fullscreen) unawaited(_toggleFullscreen());
+      },
+      child: Focus(
+        autofocus: true,
+        focusNode: _keyboardFocus,
+        onKeyEvent: _handleKey,
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: MouseRegion(
+              onHover: (_) => _showControls(),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _showControls,
+                onDoubleTap: _toggleFullscreen,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (_error == null)
+                      Video(
+                        key: _videoKey,
+                        controller: _controller,
+                        controls: NoVideoControls,
+                        fit: BoxFit.contain,
+                        fill: Colors.black,
+                      )
+                    else
+                      _errorView(),
+                    AnimatedOpacity(
+                      opacity: _controlsVisible ? 1 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      child: IgnorePointer(
+                        ignoring: !_controlsVisible,
+                        child: _controlsOverlay(),
                       ),
                     ),
-                ],
+                    if (_android && _fullscreen && !_controlsVisible)
+                      Positioned(
+                        left: 10,
+                        top: 8,
+                        child: _roundButton(
+                          key: const Key(
+                            'video-viewer-fullscreen-exit-persistent',
+                          ),
+                          tooltip: '退出全屏',
+                          onPressed: _closeOrExitFullscreen,
+                          icon: Icons.fullscreen_exit_rounded,
+                        ),
+                      ),
+                    if (_caching && _cacheProgress > 0 && _cacheProgress < 1)
+                      Positioned(
+                        top: 58,
+                        right: 16,
+                        child: _statusChip(
+                          '缓存 ${(100 * _cacheProgress).round()}%',
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -317,7 +348,8 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (widget.onPictureInPicture != null || _systemPipSupported) ...[
+                if (widget.onPictureInPicture != null ||
+                    _systemPipSupported) ...[
                   _roundButton(
                     key: const Key('video-viewer-pip'),
                     tooltip: '悬浮小窗',
@@ -354,7 +386,9 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
                 SliderTheme(
                   data: SliderTheme.of(context).copyWith(
                     trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 6,
+                    ),
                     activeTrackColor: Colors.white,
                     inactiveTrackColor: Colors.white30,
                     thumbColor: Colors.white,
@@ -385,7 +419,9 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,
-                        fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+                        fontFeatures: <FontFeature>[
+                          FontFeature.tabularFigures(),
+                        ],
                       ),
                     ),
                     const Spacer(),
@@ -437,7 +473,10 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
                         padding: const EdgeInsets.symmetric(horizontal: 9),
                         child: Text(
                           '${_rate.toStringAsFixed(_rate == _rate.roundToDouble() ? 0 : 2)}×',
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ),
@@ -502,9 +541,7 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
   Future<void> _seekFraction(double fraction) async {
     if (_duration <= Duration.zero) return;
     await _player.seek(
-      Duration(
-        milliseconds: (_duration.inMilliseconds * fraction).round(),
-      ),
+      Duration(milliseconds: (_duration.inMilliseconds * fraction).round()),
     );
     _showControls();
   }
@@ -538,14 +575,22 @@ class _VideoViewerPageState extends State<VideoViewerPage> {
 
   Future<void> _toggleFullscreen() async {
     try {
-      final video = _videoKey.currentState;
-      if (video == null) throw StateError('video state unavailable');
-      if (_fullscreen) {
-        await video.exitFullscreen();
+      if (_android) {
+        final entering = !_fullscreen;
+        await SystemChrome.setEnabledSystemUIMode(
+          entering ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+        );
+        if (mounted) setState(() => _fullscreen = entering);
       } else {
-        await video.enterFullscreen();
+        final video = _videoKey.currentState;
+        if (video == null) throw StateError('video state unavailable');
+        if (_fullscreen) {
+          await video.exitFullscreen();
+        } else {
+          await video.enterFullscreen();
+        }
+        if (mounted) setState(() => _fullscreen = !_fullscreen);
       }
-      if (mounted) setState(() => _fullscreen = !_fullscreen);
     } catch (_) {
       if (mounted) _show('当前平台无法切换全屏。');
     }

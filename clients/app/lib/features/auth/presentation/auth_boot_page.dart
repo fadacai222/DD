@@ -218,6 +218,11 @@ class _AuthBootPageState extends State<AuthBootPage> {
             origin: stored.origin,
             refreshToken: session.tokens.refreshToken,
           );
+          await _vault.saveAccount(
+            origin: stored.origin,
+            userId: session.user.id,
+            refreshToken: session.tokens.refreshToken,
+          );
         } catch (_) {
           // A rotated server session remains valid in memory. A temporary
           // secure-storage write failure must not flash the login page.

@@ -29,6 +29,19 @@ func TestValidateUploadInputByPurpose(t *testing.T) {
 			input: CreateUploadInput{FileName: "large.gif", Size: maxStickerBytes, MIMEType: "image/gif", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
 		},
 		{
+			name:  "sticker accepts mp4 animation",
+			input: CreateUploadInput{FileName: "animated.mp4", Size: 16 * 1024 * 1024, MIMEType: "video/mp4", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
+		},
+		{
+			name:  "sticker accepts Telegram TGS animation",
+			input: CreateUploadInput{FileName: "animated.tgs", Size: 64 * 1024, MIMEType: "application/x-tgsticker", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
+		},
+		{
+			name:    "sticker rejects oversized Telegram TGS animation",
+			input:   CreateUploadInput{FileName: "animated.tgs", Size: 64*1024 + 1, MIMEType: "application/x-tgsticker", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
+			wantErr: ErrQuotaExceeded,
+		},
+		{
 			name:    "sticker rejects above 64 MiB ceiling",
 			input:   CreateUploadInput{FileName: "too-large.gif", Size: maxStickerBytes + 1, MIMEType: "image/gif", SHA256: strings.Repeat("d", 64), Purpose: PurposeSticker},
 			wantErr: ErrQuotaExceeded,

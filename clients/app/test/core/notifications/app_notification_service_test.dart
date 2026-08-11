@@ -12,6 +12,9 @@ void main() {
     expect(resource.existsSync(), isTrue);
     final xml = resource.readAsStringSync();
     expect(xml, contains('android:fillColor="#FFFFFFFF"'));
+    expect(xml, contains('android:fillType="evenOdd"'));
+    expect(xml, contains('M1.5,4'));
+    expect(xml, contains('M12.5,4'));
     expect(xml, contains('<vector'));
   });
 }

@@ -25,6 +25,8 @@ class PeerProfilePage extends StatefulWidget {
     this.contact,
     this.gateway,
     this.embedded = false,
+    this.desktopDialog = false,
+    this.onClose,
   });
 
   final Uri origin;
@@ -40,6 +42,8 @@ class PeerProfilePage extends StatefulWidget {
   final ContactItem? contact;
   final ContactsGateway? gateway;
   final bool embedded;
+  final bool desktopDialog;
+  final VoidCallback? onClose;
 
   @override
   State<PeerProfilePage> createState() => _PeerProfilePageState();
@@ -478,10 +482,16 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
     final handle = user?.handle ?? widget.handle;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final viewportWidth = MediaQuery.sizeOf(context).width;
-    final horizontalPadding = viewportWidth >= 720
+    final horizontalPadding = widget.desktopDialog
+        ? 24.0
+        : widget.embedded
+        ? 12.0
+        : viewportWidth >= 720
         ? (viewportWidth - 680) / 2
         : 12.0;
-    final pageBackground = dark
+    final pageBackground = widget.desktopDialog
+        ? Theme.of(context).colorScheme.surface
+        : dark
         ? const Color(0xFF151515)
         : const Color(0xFFF4F5F7);
     return Scaffold(
@@ -490,41 +500,23 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
         automaticallyImplyLeading: !widget.embedded,
         backgroundColor: pageBackground,
         surfaceTintColor: Colors.transparent,
-        title: const Text('详细资料'),
+        toolbarHeight: widget.desktopDialog ? 46 : null,
+        title: widget.desktopDialog ? null : const Text('详细资料'),
         actions: [
-          if (!_unavailable &&
-              _result?.relationship != null &&
-              _result?.relationship != 'SELF')
+          if (!widget.desktopDialog && _canShowManagementMenu)
             PopupMenuButton<String>(
               key: const Key('peer-profile-more'),
               enabled: !_managementBusy,
               tooltip: '联系人管理',
               onSelected: _handleManagementAction,
-              itemBuilder: (_) => [
-                if (_isContact)
-                  const PopupMenuItem<String>(
-                    value: 'edit',
-                    child: Text('备注与标签'),
-                  ),
-                if (_isContact)
-                  const PopupMenuItem<String>(
-                    value: 'delete',
-                    child: Text(
-                      '删除联系人',
-                      style: TextStyle(color: DdColors.danger),
-                    ),
-                  ),
-                if (!_blockedByMe && !_blockedByPeer)
-                  const PopupMenuItem<String>(
-                    value: 'block',
-                    child: Text('拉黑', style: TextStyle(color: DdColors.danger)),
-                  ),
-                if (_blockedByMe)
-                  const PopupMenuItem<String>(
-                    value: 'unblock',
-                    child: Text('解除拉黑'),
-                  ),
-              ],
+              itemBuilder: (_) => _managementMenuItems(),
+            ),
+          if (widget.desktopDialog && widget.onClose != null)
+            IconButton(
+              key: const Key('peer-profile-dialog-close'),
+              tooltip: '关闭',
+              onPressed: widget.onClose,
+              icon: const Icon(Icons.close_rounded, size: 24),
             ),
         ],
       ),
@@ -557,7 +549,11 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                         accessToken: widget.accessToken,
                         userId: widget.userId,
                         displayName: displayName,
-                        size: viewportWidth >= 720 ? 108 : 96,
+                        size: widget.desktopDialog
+                            ? 108
+                            : (!widget.embedded && viewportWidth >= 720
+                                  ? 108
+                                  : 96),
                       ),
                     ),
                   ),
@@ -628,6 +624,7 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                 ],
               ),
             ),
+            if (widget.desktopDialog) ..._quickActionSection(),
             const SizedBox(height: 8),
             Container(
               key: const Key('peer-profile-info-card'),
@@ -697,10 +694,7 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                           ),
                           SizedBox(width: 13),
                           Expanded(
-                            child: Text(
-                              '朋友圈',
-                              style: TextStyle(fontSize: 15),
-                            ),
+                            child: Text('朋友圈', style: TextStyle(fontSize: 15)),
                           ),
                           Icon(
                             Icons.chevron_right_rounded,
@@ -742,10 +736,7 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                               mainAxisAlignment: MainAxisAlignment.center,
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  '朋友圈权限',
-                                  style: TextStyle(fontSize: 15),
-                                ),
+                                Text('朋友圈权限', style: TextStyle(fontSize: 15)),
                                 SizedBox(height: 2),
                                 Text(
                                   '不看他的朋友圈 / 不让他看我的朋友圈',
@@ -769,67 +760,7 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
                 ),
               ),
             ],
-            if (_canCommunicate &&
-                (widget.onMessage != null ||
-                    widget.onAudioCall != null ||
-                    widget.onVideoCall != null)) ...[
-              const SizedBox(height: 8),
-              Material(
-                key: const Key('peer-profile-quick-actions'),
-                color: Theme.of(context).colorScheme.surface,
-                borderRadius: BorderRadius.circular(DdRadii.surface),
-                clipBehavior: Clip.antiAlias,
-                child: SizedBox(
-                  height: 88,
-                  child: Row(
-                    children: [
-                      if (widget.onMessage != null)
-                        Expanded(
-                          child: _ProfileAction(
-                            key: const Key('peer-profile-message'),
-                            icon: Icons.chat_bubble_outline_rounded,
-                            label: '发消息',
-                            onTap: widget.onMessage!,
-                          ),
-                        ),
-                      if (widget.onMessage != null &&
-                          (widget.onAudioCall != null ||
-                              widget.onVideoCall != null))
-                        const VerticalDivider(
-                          width: 1,
-                          indent: 14,
-                          endIndent: 14,
-                        ),
-                      if (widget.onAudioCall != null)
-                        Expanded(
-                          child: _ProfileAction(
-                            key: const Key('peer-profile-audio-call'),
-                            icon: Icons.call_outlined,
-                            label: '语音',
-                            onTap: widget.onAudioCall!,
-                          ),
-                        ),
-                      if (widget.onAudioCall != null &&
-                          widget.onVideoCall != null)
-                        const VerticalDivider(
-                          width: 1,
-                          indent: 14,
-                          endIndent: 14,
-                        ),
-                      if (widget.onVideoCall != null)
-                        Expanded(
-                          child: _ProfileAction(
-                            key: const Key('peer-profile-video-call'),
-                            icon: Icons.videocam_outlined,
-                            label: '视频',
-                            onTap: widget.onVideoCall!,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+            if (!widget.desktopDialog) ..._quickActionSection(),
             if (!_isContact &&
                 _canCommunicate &&
                 _result?.relationship == 'NONE') ...[
@@ -923,6 +854,144 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
     );
   }
 
+  bool get _canShowManagementMenu =>
+      !_unavailable &&
+      _result?.relationship != null &&
+      _result?.relationship != 'SELF';
+
+  List<PopupMenuEntry<String>> _managementMenuItems() => [
+    if (_isContact)
+      const PopupMenuItem<String>(value: 'edit', child: Text('备注与标签')),
+    if (_isContact)
+      const PopupMenuItem<String>(
+        value: 'delete',
+        child: Text('删除联系人', style: TextStyle(color: DdColors.danger)),
+      ),
+    if (!_blockedByMe && !_blockedByPeer)
+      const PopupMenuItem<String>(
+        value: 'block',
+        child: Text('拉黑', style: TextStyle(color: DdColors.danger)),
+      ),
+    if (_blockedByMe)
+      const PopupMenuItem<String>(value: 'unblock', child: Text('解除拉黑')),
+  ];
+
+  List<Widget> _quickActionSection() {
+    final actions = <Widget>[];
+    if (_canCommunicate && widget.onMessage != null) {
+      actions.add(
+        widget.desktopDialog
+            ? _DesktopProfileAction(
+                key: const Key('peer-profile-message'),
+                icon: Icons.chat_bubble_rounded,
+                label: '消息',
+                onTap: widget.onMessage!,
+              )
+            : _ProfileAction(
+                key: const Key('peer-profile-message'),
+                icon: Icons.chat_bubble_outline_rounded,
+                label: '发消息',
+                onTap: widget.onMessage!,
+              ),
+      );
+    }
+    if (_canCommunicate && widget.onAudioCall != null) {
+      actions.add(
+        widget.desktopDialog
+            ? _DesktopProfileAction(
+                key: const Key('peer-profile-audio-call'),
+                icon: Icons.call_rounded,
+                label: '语音',
+                onTap: widget.onAudioCall!,
+              )
+            : _ProfileAction(
+                key: const Key('peer-profile-audio-call'),
+                icon: Icons.call_outlined,
+                label: '语音',
+                onTap: widget.onAudioCall!,
+              ),
+      );
+    }
+    if (_canCommunicate && widget.onVideoCall != null) {
+      actions.add(
+        widget.desktopDialog
+            ? _DesktopProfileAction(
+                key: const Key('peer-profile-video-call'),
+                icon: Icons.videocam_rounded,
+                label: '视频',
+                onTap: widget.onVideoCall!,
+              )
+            : _ProfileAction(
+                key: const Key('peer-profile-video-call'),
+                icon: Icons.videocam_outlined,
+                label: '视频',
+                onTap: widget.onVideoCall!,
+              ),
+      );
+    }
+    if (widget.desktopDialog && _canShowManagementMenu) {
+      actions.add(
+        _DesktopProfileMoreAction(
+          key: const Key('peer-profile-desktop-more'),
+          enabled: !_managementBusy,
+          onSelected: _handleManagementAction,
+          itemBuilder: (_) => _managementMenuItems(),
+        ),
+      );
+    }
+    if (actions.isEmpty) return const <Widget>[];
+
+    if (widget.desktopDialog) {
+      return <Widget>[
+        const SizedBox(height: 14),
+        SizedBox(
+          key: const Key('peer-profile-quick-actions'),
+          height: 78,
+          child: Row(
+            children: [
+              for (var index = 0; index < actions.length; index++) ...[
+                if (index > 0) const SizedBox(width: 10),
+                Expanded(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                      borderRadius: BorderRadius.circular(DdRadii.control),
+                    ),
+                    child: actions[index],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ];
+    }
+
+    return <Widget>[
+      const SizedBox(height: 8),
+      Material(
+        key: const Key('peer-profile-quick-actions'),
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(DdRadii.surface),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          height: 88,
+          child: Row(
+            children: [
+              for (var index = 0; index < actions.length; index++) ...[
+                if (index > 0)
+                  const VerticalDivider(width: 1, indent: 14, endIndent: 14),
+                Expanded(child: actions[index]),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
   Widget _relationshipNotice(String title, String detail) {
     return Container(
       decoration: BoxDecoration(
@@ -987,6 +1056,96 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
     null => '正在确认…',
     _ => '可直接聊天',
   };
+}
+
+class _DesktopProfileMoreAction extends StatelessWidget {
+  const _DesktopProfileMoreAction({
+    super.key,
+    required this.enabled,
+    required this.onSelected,
+    required this.itemBuilder,
+  });
+
+  final bool enabled;
+  final ValueChanged<String> onSelected;
+  final PopupMenuItemBuilder<String> itemBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      tooltip: '更多',
+      position: PopupMenuPosition.under,
+      onSelected: onSelected,
+      itemBuilder: itemBuilder,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.more_horiz_rounded,
+            size: 26,
+            color: dark ? const Color(0xFFE8E8E8) : const Color(0xFF222222),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            '更多',
+            style: TextStyle(
+              color: dark ? const Color(0xFFF2F2F2) : DdColors.textPrimary,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopProfileAction extends StatelessWidget {
+  const _DesktopProfileAction({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final Future<void> Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(DdRadii.control),
+        onTap: () => onTap(),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 24,
+              color: dark ? const Color(0xFFE8E8E8) : const Color(0xFF222222),
+            ),
+            const SizedBox(height: 7),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: dark ? const Color(0xFFF2F2F2) : DdColors.textPrimary,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ProfileAction extends StatelessWidget {
@@ -1090,12 +1249,14 @@ class _ContactEditDialogState extends State<_ContactEditDialog> {
               controller: _remark,
               maxLength: 64,
               label: '备注',
+              underline: true,
             ),
             DdProfileEditField(
               fieldKey: const Key('peer-profile-edit-tags'),
               controller: _tags,
               label: '标签',
               hint: '多个标签用逗号分隔',
+              underline: true,
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

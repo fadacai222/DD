@@ -5,13 +5,8 @@ import 'package:flutter/services.dart';
 
 import '../../../core/logging/client_log.dart';
 import '../../../core/notifications/app_notification_service.dart';
-import '../../../core/theme/app_theme_mode_store.dart';
 import '../../../theme/app_theme.dart';
-import '../../messaging/application/messaging_coordinator.dart';
-import '../../messaging/data/chat_appearance_store.dart';
-import '../../messaging/presentation/chat_background_settings_page.dart';
-import '../../messaging/presentation/media_storage_settings_page.dart';
-import '../../messaging/presentation/transfer_center_page.dart';
+import '../../push/data/push_api_client.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
@@ -22,13 +17,11 @@ class AccountManagementPage extends StatefulWidget {
     required this.gateway,
     required this.origin,
     required this.session,
-    this.messagingCoordinator,
   });
 
   final AuthGateway gateway;
   final Uri origin;
   final AuthSession session;
-  final MessagingCoordinator? messagingCoordinator;
 
   @override
   State<AccountManagementPage> createState() => _AccountManagementPageState();
@@ -43,6 +36,10 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   bool _showOnlineStatus = true;
   bool _readReceipts = true;
   bool _notificationPreview = true;
+  bool _pushEnabled = true;
+  String _pushPreviewMode = 'SENDER_ONLY';
+  bool _pushSettingsAvailable = false;
+  late final PushApiClient _pushApiClient;
   String? _message;
   Timer? _autoSaveTimer;
   int _section = 0;
@@ -52,12 +49,14 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   @override
   void initState() {
     super.initState();
+    _pushApiClient = PushApiClient();
     _load();
   }
 
   @override
   void dispose() {
     _autoSaveTimer?.cancel();
+    _pushApiClient.close();
     super.dispose();
   }
 
@@ -69,7 +68,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         toolbarHeight: 46,
         titleSpacing: 18,
         title: const Text(
-          '设置',
+          '隐私与设备',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ),
@@ -102,40 +101,34 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
               children: [
                 const SizedBox(height: 8),
                 _SettingsNavItem(
-                  icon: Icons.person_outline_rounded,
-                  label: '账号与存储',
+                  icon: Icons.privacy_tip_outlined,
+                  label: '隐私与设备',
                   selected: _section == 0,
                   onTap: () => setState(() => _section = 0),
                 ),
                 _SettingsNavItem(
-                  icon: Icons.settings_outlined,
-                  label: '通用',
+                  icon: Icons.keyboard_alt_outlined,
+                  label: '快捷键',
                   selected: _section == 1,
                   onTap: () => setState(() => _section = 1),
                 ),
                 _SettingsNavItem(
-                  icon: Icons.keyboard_alt_outlined,
-                  label: '快捷键',
+                  icon: Icons.notifications_none_rounded,
+                  label: '通知',
                   selected: _section == 2,
                   onTap: () => setState(() => _section = 2),
                 ),
                 _SettingsNavItem(
-                  icon: Icons.notifications_none_rounded,
-                  label: '通知',
+                  icon: Icons.extension_outlined,
+                  label: '插件',
                   selected: _section == 3,
                   onTap: () => setState(() => _section = 3),
                 ),
                 _SettingsNavItem(
-                  icon: Icons.extension_outlined,
-                  label: '插件',
-                  selected: _section == 4,
-                  onTap: () => setState(() => _section = 4),
-                ),
-                _SettingsNavItem(
                   icon: Icons.info_outline_rounded,
                   label: '关于 DD',
-                  selected: _section == 5,
-                  onTap: () => setState(() => _section = 5),
+                  selected: _section == 4,
+                  onTap: () => setState(() => _section = 4),
                 ),
               ],
             ),
@@ -157,17 +150,6 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
       children: [
         if (_message != null) _messageBanner(),
-        _sectionTitle('通用'),
-        _themeModeRow(),
-        const Divider(height: 1),
-        _chatBackgroundRow(),
-        const Divider(height: 1),
-        _mediaStorageRow(),
-        if (widget.messagingCoordinator != null) ...[
-          const Divider(height: 1),
-          _transferCenterRow(),
-        ],
-        const SizedBox(height: 18),
         _sectionTitle('隐私'),
         _privacySettings(),
         const SizedBox(height: 18),
@@ -179,11 +161,10 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
 
   Widget _settingsContent() {
     final body = switch (_section) {
-      0 => _accountAndStorage(),
-      1 => _generalSettings(),
-      2 => _shortcutSettings(),
-      3 => _notificationSettings(),
-      4 => _pluginSettings(),
+      0 => _privacyAndDevices(),
+      1 => _shortcutSettings(),
+      2 => _notificationSettings(),
+      3 => _pluginSettings(),
       _ => _aboutSettings(),
     };
     return ListView(
@@ -195,200 +176,16 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     );
   }
 
-  Widget _accountAndStorage() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [_sectionTitle('登录设备'), _deviceSettings()],
-    );
-  }
-
-  Widget _generalSettings() {
+  Widget _privacyAndDevices() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sectionTitle('通用'),
-        _themeModeRow(),
-        const Divider(height: 1),
-        _chatBackgroundRow(),
-        const Divider(height: 1),
-        _mediaStorageRow(),
-        if (widget.messagingCoordinator != null) ...[
-          const Divider(height: 1),
-          _transferCenterRow(),
-        ],
-        const Divider(height: 1),
+        _sectionTitle('隐私'),
         _privacySettings(),
+        const SizedBox(height: 24),
+        _sectionTitle('登录设备'),
+        _deviceSettings(),
       ],
-    );
-  }
-
-  Widget _themeModeRow() => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      key: const Key('settings-theme-mode'),
-      borderRadius: BorderRadius.circular(DdRadii.surface),
-      onTap: _chooseThemeMode,
-      child: _SettingLine(
-        title: '外观',
-        subtitle: AppThemeModeStore.shared.label,
-        leading: const Icon(
-          Icons.brightness_6_outlined,
-          size: 20,
-          color: DdColors.textSecondary,
-        ),
-        trailing: const Icon(
-          Icons.chevron_right_rounded,
-          size: 19,
-          color: DdColors.textTertiary,
-        ),
-      ),
-    ),
-  );
-
-  Future<void> _chooseThemeMode() async {
-    final store = AppThemeModeStore.shared;
-    // Opening the appearance chooser must never wait on secure-storage I/O.
-    // The app shell loads this preference at startup; an isolated settings
-    // page can still show the safe system default immediately.
-    unawaited(store.load());
-    final selected = await showModalBottomSheet<ThemeMode>(
-      context: context,
-      useSafeArea: true,
-      showDragHandle: true,
-      builder: (sheetContext) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '外观',
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-              ),
-            ),
-          ),
-          for (final option in const <(ThemeMode, String, IconData)>[
-            (ThemeMode.system, '跟随系统', Icons.brightness_auto_outlined),
-            (ThemeMode.light, '浅色', Icons.light_mode_outlined),
-            (ThemeMode.dark, '深色', Icons.dark_mode_outlined),
-          ])
-            ListTile(
-              key: Key('theme-mode-${option.$1.name}'),
-              leading: Icon(option.$3),
-              title: Text(option.$2),
-              trailing: store.mode == option.$1
-                  ? const Icon(Icons.check_rounded, color: DdColors.green)
-                  : null,
-              onTap: () => Navigator.pop(sheetContext, option.$1),
-            ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-    if (selected == null || selected == store.mode) return;
-    try {
-      await store.setMode(selected);
-      if (mounted) setState(() => _message = null);
-    } catch (_) {
-      if (mounted) setState(() => _message = '外观设置保存失败，请重试。');
-    }
-  }
-
-  Widget _chatBackgroundRow() => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      key: const Key('settings-chat-background'),
-      borderRadius: BorderRadius.circular(DdRadii.surface),
-      onTap: _openChatBackground,
-      child: const _SettingLine(
-        title: '聊天背景',
-        subtitle: '设置所有聊天默认使用的背景',
-        leading: Icon(
-          Icons.wallpaper_rounded,
-          size: 20,
-          color: DdColors.textSecondary,
-        ),
-        trailing: Icon(
-          Icons.chevron_right_rounded,
-          size: 19,
-          color: DdColors.textTertiary,
-        ),
-      ),
-    ),
-  );
-
-  Future<void> _openChatBackground() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatBackgroundSettingsPage(
-          store: ChatAppearanceStore.shared(widget.session.user.id),
-        ),
-      ),
-    );
-  }
-
-  Widget _mediaStorageRow() => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      key: const Key('settings-media-storage'),
-      borderRadius: BorderRadius.circular(DdRadii.surface),
-      onTap: _openMediaStorage,
-      child: const _SettingLine(
-        title: '媒体与缓存',
-        subtitle: '自动下载、缓存大小与清理',
-        leading: Icon(
-          Icons.storage_rounded,
-          size: 20,
-          color: DdColors.textSecondary,
-        ),
-        trailing: Icon(
-          Icons.chevron_right_rounded,
-          size: 19,
-          color: DdColors.textTertiary,
-        ),
-      ),
-    ),
-  );
-
-  Future<void> _openMediaStorage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => MediaStorageSettingsPage(userId: widget.session.user.id),
-      ),
-    );
-  }
-
-  Widget _transferCenterRow() => Material(
-    color: Colors.transparent,
-    child: InkWell(
-      key: const Key('settings-transfer-center'),
-      borderRadius: BorderRadius.circular(DdRadii.surface),
-      onTap: _openTransferCenter,
-      child: const _SettingLine(
-        title: '传输中心',
-        subtitle: '上传、下载、暂停、重试与历史记录',
-        leading: Icon(
-          Icons.swap_vert_circle_outlined,
-          size: 20,
-          color: DdColors.textSecondary,
-        ),
-        trailing: Icon(
-          Icons.chevron_right_rounded,
-          size: 19,
-          color: DdColors.textTertiary,
-        ),
-      ),
-    ),
-  );
-
-  Future<void> _openTransferCenter() async {
-    final coordinator = widget.messagingCoordinator;
-    if (coordinator == null) return;
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => TransferCenterPage(controller: coordinator.mediaTransfers),
-      ),
     );
   }
 
@@ -427,8 +224,46 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
           child: Column(
             children: [
               _SwitchSettingLine(
-                title: '消息预览',
-                subtitle: '在通知里显示发送者和消息正文',
+                title: '后台推送',
+                subtitle: _pushSettingsAvailable
+                    ? 'DD 被切到后台或系统回收后，仍接收消息和来电提醒'
+                    : '当前服务端暂未提供 Push 设置接口',
+                value: _pushEnabled,
+                enabled: !_busy && _pushSettingsAvailable,
+                onChanged: (value) {
+                  setState(() => _pushEnabled = value);
+                  unawaited(_savePushSettings());
+                },
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingLine(
+                title: '后台通知预览',
+                subtitle: '控制 Push 通知向系统披露的消息内容',
+                trailing: PopupMenuButton<String>(
+                  enabled: !_busy && _pushSettingsAvailable,
+                  initialValue: _pushPreviewMode,
+                  onSelected: (value) {
+                    setState(() => _pushPreviewMode = value);
+                    unawaited(_savePushSettings());
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'FULL', child: Text('发送者 + 正文')),
+                    PopupMenuItem(value: 'SENDER_ONLY', child: Text('仅发送者')),
+                    PopupMenuItem(value: 'HIDDEN', child: Text('全部隐藏')),
+                  ],
+                  child: Text(
+                    _pushPreviewLabel(_pushPreviewMode),
+                    style: const TextStyle(
+                      color: DdColors.greenPressed,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SwitchSettingLine(
+                title: '前台消息预览',
+                subtitle: 'DD 正在前台运行时显示发送者和消息正文',
                 value: _notificationPreview,
                 enabled: !_busy,
                 onChanged: (value) {
@@ -486,10 +321,21 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
             children: [
               _SettingLine(
                 title: '测试桌面通知',
-                subtitle: '立即发送一条带头像的 DD 通知，用于检查弹窗样式',
+                subtitle: '立即发送一条带头像的 DD 本地通知，用于检查弹窗样式',
                 trailing: TextButton(
                   onPressed: _sendNotificationPreview,
                   child: const Text('测试'),
+                ),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingLine(
+                title: '测试后台 Push',
+                subtitle: '由服务器创建 Push Job，并通过当前设备已注册的 Provider 发送',
+                trailing: TextButton(
+                  onPressed: !_busy && _pushSettingsAvailable && _pushEnabled
+                      ? _sendPushPreview
+                      : null,
+                  child: const Text('发送'),
                 ),
               ),
               const Divider(height: 1, indent: 56),
@@ -510,6 +356,37 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       ],
     );
   }
+
+  String _pushPreviewLabel(String mode) => switch (mode) {
+    'FULL' => '发送者 + 正文',
+    'HIDDEN' => '全部隐藏',
+    _ => '仅发送者',
+  };
+
+  Future<void> _savePushSettings() => _run(() async {
+    final preferences = await _pushApiClient.updatePreferences(
+      origin: widget.origin,
+      accessToken: _accessToken,
+      pushEnabled: _pushEnabled,
+      previewMode: _pushPreviewMode,
+    );
+    if (!mounted) return;
+    setState(() {
+      _pushEnabled = preferences.pushEnabled;
+      _pushPreviewMode = preferences.previewMode;
+      _pushSettingsAvailable = true;
+      _message = '后台推送设置已保存';
+    });
+  });
+
+  Future<void> _sendPushPreview() => _run(() async {
+    await _pushApiClient.enqueueTest(
+      origin: widget.origin,
+      accessToken: _accessToken,
+    );
+    if (!mounted) return;
+    setState(() => _message = 'Push 测试任务已提交；若设备 token 已注册，通知会由后台 Worker 投递。');
+  });
 
   Future<void> _sendNotificationPreview() async {
     await AppNotificationService.shared.initialize(requestPermission: false);
@@ -717,7 +594,29 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       _readReceipts = me.privacy.readReceiptsEnabled;
       _notificationPreview = me.privacy.notificationPreviewEnabled;
     });
+    unawaited(_loadPushPreferences());
   });
+
+  Future<void> _loadPushPreferences() async {
+    try {
+      final pushPreferences = await _pushApiClient.getPreferences(
+        origin: widget.origin,
+        accessToken: _accessToken,
+      );
+      if (!mounted) return;
+      setState(() {
+        _pushEnabled = pushPreferences.pushEnabled;
+        _pushPreviewMode = pushPreferences.previewMode;
+        _pushSettingsAvailable = true;
+      });
+    } catch (error, stackTrace) {
+      await ClientLog.error(
+        'Push preferences unavailable; keeping legacy notification settings usable.',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
 
   void _scheduleAutoSave() {
     _autoSaveTimer?.cancel();
@@ -822,9 +721,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       _devices = _devices
           .where((device) => !device.revoked)
           .toList(growable: false);
-      _message = count == 0
-          ? '没有需要清理的已退出设备。'
-          : '已清理 $count 条已退出设备记录。';
+      _message = count == 0 ? '没有需要清理的已退出设备。' : '已清理 $count 条已退出设备记录。';
     });
   });
 

@@ -96,6 +96,7 @@ void main() {
   test('uploadStream retries storage failure with a fresh reservation', () async {
     var createCalls = 0;
     var completeCalls = 0;
+    var cancelCalls = 0;
     var storageCalls = 0;
     final apiClient = MockClient((request) async {
       if (request.url.path == '/api/v1/media/uploads') {
@@ -113,6 +114,11 @@ void main() {
           }),
           201,
         );
+      }
+      if (request.method == 'DELETE' &&
+          request.url.path.startsWith('/api/v1/media/uploads/')) {
+        cancelCalls++;
+        return http.Response('', 204);
       }
       if (request.url.path.endsWith('/complete')) {
         completeCalls++;
@@ -148,13 +154,15 @@ void main() {
 
     expect(createCalls, 2);
     expect(storageCalls, 2);
+    expect(cancelCalls, 1);
     expect(completeCalls, 1);
     expect(result.uploadUrl.path, '/object-2');
     api.close();
   });
 
-  test('upload cancellation closes the active storage transport', () async {
+  test('upload cancellation closes transport and releases reservation', () async {
     var completeCalls = 0;
+    var cancelCalls = 0;
     final apiClient = MockClient((request) async {
       if (request.url.path == '/api/v1/media/uploads') {
         return http.Response(
@@ -170,6 +178,11 @@ void main() {
           }),
           201,
         );
+      }
+      if (request.method == 'DELETE' &&
+          request.url.path.startsWith('/api/v1/media/uploads/')) {
+        cancelCalls++;
+        return http.Response('', 204);
       }
       if (request.url.path.endsWith('/complete')) {
         completeCalls++;
@@ -205,6 +218,7 @@ void main() {
     );
     expect(transport.closed, isTrue);
     expect(completeCalls, 0);
+    expect(cancelCalls, 1);
     api.close();
   });
 

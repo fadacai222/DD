@@ -158,6 +158,54 @@ void main() {
     expect(taps, 0);
   });
 
+  test('extracts HTTP links without swallowing sentence punctuation', () {
+    final links = extractHttpUrls(
+      '先看 https://example.com/a?q=1，然后看 http://example.org/test。',
+    );
+    expect(links.map((uri) => uri.toString()), <String>[
+      'https://example.com/a?q=1',
+      'http://example.org/test',
+    ]);
+  });
+
+  testWidgets('HTTP link is blue and independently clickable beside mention', (
+    tester,
+  ) async {
+    Uri? tappedLink;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MentionRichText(
+            text: '@Alice 看 https://example.com/docs。',
+            entities: const [
+              MessageEntity(
+                type: 'MENTION',
+                offset: 0,
+                length: 6,
+                userId: 'stable-user-a',
+                handle: 'alice',
+              ),
+            ],
+            style: const TextStyle(color: Colors.black),
+            mentionStyle: const TextStyle(color: Colors.purple),
+            onMentionTap: (_) {},
+            onLinkTap: (uri) => tappedLink = uri,
+          ),
+        ),
+      ),
+    );
+
+    final root = mentionRootSpan(tester);
+    final link = flattenTextSpans(
+      root,
+    ).firstWhere((span) => span.text == 'https://example.com/docs');
+    expect(link.style?.color, ddMentionLightColor);
+    expect(link.mouseCursor, SystemMouseCursors.click);
+    (link.recognizer! as TapGestureRecognizer).onTap!();
+    expect(tappedLink.toString(), 'https://example.com/docs');
+    expect(root.toPlainText(), '@Alice 看 https://example.com/docs。');
+  });
+
   testWidgets('unknown entity type does not affect message rendering', (
     tester,
   ) async {

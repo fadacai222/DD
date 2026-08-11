@@ -336,6 +336,9 @@ func (service *Service) ForwardMessage(ctx context.Context, principal account.Pr
 	if source.Type == "TEXT" && source.Content != nil {
 		inputMessage.trustedEntities = cloneMessageEntities(source.Content.Entities)
 	}
+	if source.Type == "STICKER_PACK" && source.Content != nil {
+		inputMessage.trustedStickerPackShareURI = source.Content.Text
+	}
 	return service.SendMessage(ctx, principal, targetConversationID, inputMessage)
 }
 
@@ -350,7 +353,7 @@ func forwardableContent(source Message) (*TextContent, error) {
 			Text:     content.Text,
 			Entities: cloneMessageEntities(content.Entities),
 		}, nil
-	case "IMAGE", "GIF", "STICKER":
+	case "IMAGE", "GIF", "STICKER", "STICKER_PACK":
 		if content.MediaID == "" || content.Width <= 0 || content.Height <= 0 {
 			return nil, ErrConflict
 		}

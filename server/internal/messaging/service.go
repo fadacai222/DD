@@ -335,6 +335,17 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 		}
 		if err == nil {
 			item.LastMessage = &last
+			if item.Type == "GROUP" {
+				senderID, parseErr := uuid.Parse(last.SenderUserID)
+				if parseErr != nil {
+					return nil, fmt.Errorf("parse last message sender: %w", parseErr)
+				}
+				sender, senderErr := service.loadUserPreview(ctx, senderID)
+				if senderErr != nil {
+					return nil, senderErr
+				}
+				item.LastMessageSender = &sender
+			}
 		}
 		result = append(result, item)
 	}
@@ -399,6 +410,17 @@ func (service *Service) GetConversation(ctx context.Context, principal account.P
 	}
 	if err == nil {
 		item.LastMessage = &last
+		if item.Type == "GROUP" {
+			senderID, parseErr := uuid.Parse(last.SenderUserID)
+			if parseErr != nil {
+				return Conversation{}, fmt.Errorf("parse last message sender: %w", parseErr)
+			}
+			sender, senderErr := service.loadUserPreview(ctx, senderID)
+			if senderErr != nil {
+				return Conversation{}, senderErr
+			}
+			item.LastMessageSender = &sender
+		}
 	}
 	return item, nil
 }
@@ -568,13 +590,17 @@ func (service *Service) MarkRead(ctx context.Context, principal account.Principa
 }
 
 func (service *Service) loadSelfPreview(ctx context.Context, userID uuid.UUID) (UserPreview, error) {
+	return service.loadUserPreview(ctx, userID)
+}
+
+func (service *Service) loadUserPreview(ctx context.Context, userID uuid.UUID) (UserPreview, error) {
 	var user UserPreview
 	if err := service.pool.QueryRow(ctx, `
 		SELECT id,handle_normalized,display_name FROM users WHERE id=$1 AND status='ACTIVE'
 	`, userID).Scan(&user.ID, &user.Handle, &user.DisplayName); errors.Is(err, pgx.ErrNoRows) {
 		return UserPreview{}, ErrNotFound
 	} else if err != nil {
-		return UserPreview{}, fmt.Errorf("load self preview: %w", err)
+		return UserPreview{}, fmt.Errorf("load user preview: %w", err)
 	}
 	return user, nil
 }

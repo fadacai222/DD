@@ -57,6 +57,11 @@ void main() {
     expect(find.byKey(const Key('moment-publish-add-media')), findsOneWidget);
     expect(find.byKey(const Key('moment-publish-add-video')), findsOneWidget);
     expect(find.byKey(const Key('moment-publish-visibility')), findsOneWidget);
+    final composer = tester.widget<TextField>(
+      find.byKey(const Key('moment-publish-text')),
+    );
+    expect(composer.decoration?.filled, isFalse);
+    expect(composer.decoration?.focusedBorder, InputBorder.none);
     expect(tester.takeException(), isNull);
   });
 }

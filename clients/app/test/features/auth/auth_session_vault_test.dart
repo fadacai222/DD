@@ -44,6 +44,39 @@ void main() {
     },
   );
 
+  test('multiple accounts keep independent refresh tokens', () async {
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    final origin = Uri.parse('http://127.0.0.1:18473');
+
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-1',
+      refreshToken: 'refresh-1',
+    );
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-2',
+      refreshToken: 'refresh-2',
+    );
+
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-1'))?.refreshToken,
+      'refresh-1',
+    );
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-2'))?.refreshToken,
+      'refresh-2',
+    );
+
+    await vault.removeAccount(origin: origin, userId: 'user-1');
+    expect(await vault.readAccount(origin: origin, userId: 'user-1'), isNull);
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-2'))?.refreshToken,
+      'refresh-2',
+    );
+  });
+
   test(
     'legacy two-key session migrates once into the bundled format',
     () async {

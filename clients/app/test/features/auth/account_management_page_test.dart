@@ -8,9 +8,7 @@ import 'package:im_client/features/auth/domain/auth_session.dart';
 import 'package:im_client/features/auth/presentation/account_management_page.dart';
 
 void main() {
-  testWidgets('desktop general settings exposes explicit appearance choices', (
-    tester,
-  ) async {
+  testWidgets('desktop page is scoped to privacy and devices', (tester) async {
     final gateway = _AccountGateway();
     await tester.pumpWidget(
       MaterialApp(
@@ -23,18 +21,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('通用').first);
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('settings-theme-mode')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('settings-theme-mode')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('theme-mode-system')), findsOneWidget);
-    expect(find.byKey(const Key('theme-mode-light')), findsOneWidget);
-    expect(find.byKey(const Key('theme-mode-dark')), findsOneWidget);
+    expect(find.text('隐私与设备'), findsWidgets);
+    expect(find.text('登录设备'), findsWidgets);
+    expect(find.text('外观'), findsNothing);
+    expect(find.text('聊天背景'), findsNothing);
+    expect(find.text('媒体与缓存'), findsNothing);
+    expect(find.text('性能'), findsNothing);
+    expect(find.text('传输中心'), findsNothing);
   });
 
-  testWidgets('mobile settings keeps appearance entry directly discoverable', (
+  testWidgets('mobile privacy page no longer duplicates outer Me settings', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 780);
@@ -53,79 +49,91 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('settings-theme-mode')), findsOneWidget);
-    expect(find.text('外观'), findsOneWidget);
+    expect(find.text('隐私'), findsOneWidget);
+    expect(find.text('设备'), findsOneWidget);
+    expect(find.text('外观'), findsNothing);
+    expect(find.text('聊天背景'), findsNothing);
+    expect(find.text('媒体与缓存'), findsNothing);
+    expect(find.text('性能'), findsNothing);
+    expect(find.text('传输中心'), findsNothing);
   });
 
-  testWidgets('revoked device history can be cleared without touching active devices', (
-    tester,
-  ) async {
-    final gateway = _AccountGateway()
-      ..devices = [
-        AccountDevice(
-          id: 'd1',
-          name: 'Windows',
-          platform: 'WINDOWS',
-          appVersion: 'dev',
-          createdAt: DateTime.utc(2026, 8, 9),
-          lastSeenAt: DateTime.utc(2026, 8, 11),
-          current: true,
-          revoked: false,
+  testWidgets(
+    'revoked device history can be cleared without touching active devices',
+    (tester) async {
+      final gateway = _AccountGateway()
+        ..devices = [
+          AccountDevice(
+            id: 'd1',
+            name: 'Windows',
+            platform: 'WINDOWS',
+            appVersion: 'dev',
+            createdAt: DateTime.utc(2026, 8, 9),
+            lastSeenAt: DateTime.utc(2026, 8, 11),
+            current: true,
+            revoked: false,
+          ),
+          AccountDevice(
+            id: 'd2',
+            name: 'Android',
+            platform: 'ANDROID',
+            appVersion: 'dev',
+            createdAt: DateTime.utc(2026, 8, 8),
+            lastSeenAt: DateTime.utc(2026, 8, 10),
+            current: false,
+            revoked: false,
+          ),
+          AccountDevice(
+            id: 'd3',
+            name: 'Old Web',
+            platform: 'WEB',
+            appVersion: 'dev',
+            createdAt: DateTime.utc(2026, 8, 1),
+            lastSeenAt: DateTime.utc(2026, 8, 2),
+            current: false,
+            revoked: true,
+          ),
+        ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AccountManagementPage(
+            gateway: gateway,
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            session: _session(),
+          ),
         ),
-        AccountDevice(
-          id: 'd2',
-          name: 'Android',
-          platform: 'ANDROID',
-          appVersion: 'dev',
-          createdAt: DateTime.utc(2026, 8, 8),
-          lastSeenAt: DateTime.utc(2026, 8, 10),
-          current: false,
-          revoked: false,
-        ),
-        AccountDevice(
-          id: 'd3',
-          name: 'Old Web',
-          platform: 'WEB',
-          appVersion: 'dev',
-          createdAt: DateTime.utc(2026, 8, 1),
-          lastSeenAt: DateTime.utc(2026, 8, 2),
-          current: false,
-          revoked: true,
-        ),
-      ];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AccountManagementPage(
-          gateway: gateway,
-          origin: Uri.parse('http://127.0.0.1:18473'),
-          session: _session(),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    final clear = find.byKey(const Key('account-clear-revoked-devices'));
-    expect(clear, findsOneWidget);
-    expect(find.text('Old Web'), findsOneWidget);
-    expect(find.text('Windows（当前设备）'), findsOneWidget);
-    expect(find.text('Android'), findsOneWidget);
+      final clear = find.byKey(const Key('account-clear-revoked-devices'));
+      expect(clear, findsOneWidget);
+      expect(find.text('Old Web'), findsOneWidget);
+      expect(find.text('Windows（当前设备）'), findsOneWidget);
+      expect(find.text('Android'), findsOneWidget);
 
-    await tester.tap(clear);
-    await tester.pumpAndSettle();
-    expect(find.text('清理已退出设备？'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('account-confirm-clear-revoked-devices')));
-    await tester.pumpAndSettle();
+      await tester.ensureVisible(clear);
+      await tester.pumpAndSettle();
+      await tester.tap(clear);
+      await tester.pumpAndSettle();
+      expect(find.text('清理已退出设备？'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('account-confirm-clear-revoked-devices')),
+      );
+      await tester.pumpAndSettle();
 
-    expect(gateway.clearRevokedCalls, 1);
-    expect(find.text('Old Web'), findsNothing);
-    expect(find.text('Windows（当前设备）'), findsOneWidget);
-    expect(find.text('Android'), findsOneWidget);
-    expect(find.text('已清理 1 条已退出设备记录。'), findsOneWidget);
-    expect(
-      find.byKey(const Key('account-clear-revoked-devices')),
-      findsNothing,
-    );
-  });
+      expect(gateway.clearRevokedCalls, 1);
+      expect(find.text('Old Web'), findsNothing);
+      expect(find.text('Windows（当前设备）'), findsOneWidget);
+      expect(find.text('Android'), findsOneWidget);
+      await tester.fling(find.byType(ListView), const Offset(0, 800), 1200);
+      await tester.pumpAndSettle();
+      expect(find.text('已清理 1 条已退出设备记录。'), findsOneWidget);
+      expect(
+        find.byKey(const Key('account-clear-revoked-devices')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('account settings no longer exposes profile editing fields', (
     tester,
@@ -295,9 +303,12 @@ final class _AccountGateway implements AuthGateway {
   }) async {
     clearRevokedCalls++;
     final count = devices.where((device) => device.revoked).length;
-    devices = devices.where((device) => !device.revoked).toList(growable: false);
+    devices = devices
+        .where((device) => !device.revoked)
+        .toList(growable: false);
     return count;
   }
+
   @override
   Future<void> logoutAll({
     required Uri origin,

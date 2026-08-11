@@ -24,6 +24,8 @@ type MomentsService interface {
 	ListPreferences(ctx context.Context, principal account.Principal) ([]moments.Preference, error)
 	GetProfile(ctx context.Context, principal account.Principal, targetID uuid.UUID) (moments.Profile, error)
 	UpdateProfile(ctx context.Context, principal account.Principal, input moments.UpdateProfileInput) (moments.Profile, []uuid.UUID, error)
+	GetActivitySummary(ctx context.Context, principal account.Principal) (moments.ActivitySummary, error)
+	MarkActivityRead(ctx context.Context, principal account.Principal) (moments.ActivitySummary, error)
 }
 
 func (s *server) handleMoments(response http.ResponseWriter, request *http.Request) {
@@ -91,6 +93,83 @@ func (s *server) handleMoments(response http.ResponseWriter, request *http.Reque
 	}
 }
 
+func (s *server) handleMomentActivity(response http.ResponseWriter, request *http.Request) {
+	principal, ok := s.requireMomentsPrincipal(response, request)
+	if !ok {
+		return
+	}
+	switch request.URL.Path {
+	case "/api/v1/moment-activity":
+		if request.Method != http.MethodGet {
+			methodNotAllowed(response, http.MethodGet)
+			return
+		}
+		summary, err := s.moments.GetActivitySummary(request.Context(), principal)
+		if err != nil {
+			s.writeMomentsError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, summary)
+	case "/api/v1/moment-activity/read":
+		if request.Method != http.MethodPost {
+			methodNotAllowed(response, http.MethodPost)
+			return
+		}
+		summary, err := s.moments.MarkActivityRead(request.Context(), principal)
+		if err != nil {
+			s.writeMomentsError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, summary)
+	default:
+		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
+	}
+}
+
+func (s *server) handleMomentProfile(response http.ResponseWriter, request *http.Request) {
+	principal, ok := s.requireMomentsPrincipal(response, request)
+	if !ok {
+		return
+	}
+	raw := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/v1/moment-profiles/"), "/")
+	targetID, err := uuid.Parse(raw)
+	if err != nil || targetID == uuid.Nil {
+		writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", "userId must be a UUID")
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		profile, err := s.moments.GetProfile(request.Context(), principal, targetID)
+		if err != nil {
+			s.writeMomentsError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, profile)
+	case http.MethodPatch:
+		if targetID != principal.UserID {
+			writeAPIError(response, http.StatusForbidden, "MOMENT_FORBIDDEN", "Only your own Moments profile can be updated")
+			return
+		}
+		if !requireJSON(response, request) {
+			return
+		}
+		var input moments.UpdateProfileInput
+		if err := decodeSingleJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", err.Error())
+			return
+		}
+		profile, recipients, err := s.moments.UpdateProfile(request.Context(), principal, input)
+		if err != nil {
+			s.writeMomentsError(response, request, err)
+			return
+		}
+		s.publishEventAvailable(recipients, "moment-profile-updated")
+		writeSuccess(response, http.StatusOK, profile)
+	default:
+		methodNotAllowed(response, http.MethodGet, http.MethodPatch)
+	}
+}
+
 func (s *server) handleMomentByID(response http.ResponseWriter, request *http.Request) {
 	principal, ok := s.requireMomentsPrincipal(response, request)
 	if !ok {
@@ -98,45 +177,6 @@ func (s *server) handleMomentByID(response http.ResponseWriter, request *http.Re
 	}
 	raw := strings.Trim(strings.TrimPrefix(request.URL.Path, "/api/v1/moments/"), "/")
 	parts := strings.Split(raw, "/")
-	if len(parts) == 2 && parts[0] == "profile" {
-		targetID, err := uuid.Parse(parts[1])
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", "userId must be a UUID")
-			return
-		}
-		switch request.Method {
-		case http.MethodGet:
-			profile, err := s.moments.GetProfile(request.Context(), principal, targetID)
-			if err != nil {
-				s.writeMomentsError(response, request, err)
-				return
-			}
-			writeSuccess(response, http.StatusOK, profile)
-		case http.MethodPatch:
-			if targetID != principal.UserID {
-				writeAPIError(response, http.StatusForbidden, "MOMENT_FORBIDDEN", "Only your own Moments profile can be updated")
-				return
-			}
-			if !requireJSON(response, request) {
-				return
-			}
-			var input moments.UpdateProfileInput
-			if err := decodeSingleJSON(response, request, &input); err != nil {
-				writeAPIError(response, http.StatusBadRequest, "INVALID_MOMENT_REQUEST", err.Error())
-				return
-			}
-			profile, recipients, err := s.moments.UpdateProfile(request.Context(), principal, input)
-			if err != nil {
-				s.writeMomentsError(response, request, err)
-				return
-			}
-			s.publishEventAvailable(recipients, "moment-profile-updated")
-			writeSuccess(response, http.StatusOK, profile)
-		default:
-			methodNotAllowed(response, http.MethodGet, http.MethodPatch)
-		}
-		return
-	}
 	if len(parts) < 1 || len(parts) > 3 || strings.TrimSpace(parts[0]) == "" {
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 		return

@@ -237,18 +237,33 @@ function Test-KnownAndroidKgpStack {
 }
 
 function Invoke-FlutterAndroidBuild {
-    Push-Location $AppPath
+    param([Parameter(Mandatory = $true)][string]$AndroidAppPath)
+
+    Push-Location $AndroidAppPath
     try {
         # Windows PowerShell 5.1 converts native stderr into ErrorRecord objects.
         # Temporarily use Continue so Flutter warnings can be captured and filtered;
         # the real success/failure decision still comes from the native exit code.
         $PreviousErrorActionPreference = $ErrorActionPreference
+        $PreviousGradleOpts = $env:GRADLE_OPTS
         $ErrorActionPreference = 'Continue'
+        # A stale Gradle 9 daemon can leave FlutterTask output metadata in a bad
+        # state on Windows and fail before Dart/Kotlin compilation with
+        # PreCreateOutputParentsStep / File.parent == null. Android builds are
+        # infrequent enough that process reuse is not worth that instability.
+        $NoDaemonOption = '-Dorg.gradle.daemon=false'
+        if ([string]::IsNullOrWhiteSpace($PreviousGradleOpts)) {
+            $env:GRADLE_OPTS = $NoDaemonOption
+        }
+        elseif ($PreviousGradleOpts -notmatch '(?i)-Dorg\.gradle\.daemon=') {
+            $env:GRADLE_OPTS = "$PreviousGradleOpts $NoDaemonOption"
+        }
         try {
             $Output = @(& $FlutterExe build apk --debug --no-pub 2>&1)
             $ExitCode = $LASTEXITCODE
         }
         finally {
+            $env:GRADLE_OPTS = $PreviousGradleOpts
             $ErrorActionPreference = $PreviousErrorActionPreference
         }
         if ($ExitCode -ne 0) {
@@ -349,22 +364,35 @@ function Publish-RootClientArtifacts {
 }
 
 function Build-Android {
-    Invoke-FlutterAndroidBuild
-
-    $StableApk = Join-Path $AppPath 'build\app\outputs\flutter-apk\app-debug.apk'
-    if (Test-Path -LiteralPath $StableApk) {
-        return
+    $Drive = Get-FreeSubstDrive
+    & subst.exe $Drive $Root
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to map $Drive to the project root for the Android build workaround."
     }
 
-    $GradleApk = Join-Path $AppPath 'build\app\outputs\apk\debug\app-debug.apk'
-    if (-not (Test-Path -LiteralPath $GradleApk)) {
-        throw 'Android build reported success, but app-debug.apk was not found in any known Flutter/Gradle output path.'
-    }
+    try {
+        $MappedApp = "$Drive\clients\app"
+        Invoke-FlutterAndroidBuild -AndroidAppPath $MappedApp
 
-    $StableDir = Split-Path -Parent $StableApk
-    New-Item -ItemType Directory -Path $StableDir -Force | Out-Null
-    Copy-Item -LiteralPath $GradleApk -Destination $StableApk -Force
-    Write-Host "Normalized Android APK path: $StableApk"
+        $StableApk = Join-Path $MappedApp 'build\app\outputs\flutter-apk\app-debug.apk'
+        if (Test-Path -LiteralPath $StableApk) {
+            return
+        }
+
+        $GradleApk = Join-Path $MappedApp 'build\app\outputs\apk\debug\app-debug.apk'
+        if (-not (Test-Path -LiteralPath $GradleApk)) {
+            throw 'Android build reported success, but app-debug.apk was not found in any known Flutter/Gradle output path.'
+        }
+
+        $StableDir = Split-Path -Parent $StableApk
+        New-Item -ItemType Directory -Path $StableDir -Force | Out-Null
+        Copy-Item -LiteralPath $GradleApk -Destination $StableApk -Force
+        Write-Host "Normalized Android APK path: $StableApk"
+    }
+    finally {
+        Set-Location 'C:\'
+        & subst.exe $Drive /D | Out-Null
+    }
 }
 
 if ($Clean) {

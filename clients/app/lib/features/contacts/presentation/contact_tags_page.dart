@@ -71,10 +71,7 @@ class _ContactTagsPageState extends State<ContactTagsPage> {
                   ),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(DdRadii.pill),
-                    borderSide: const BorderSide(
-                      color: DdColors.green,
-                      width: 1.2,
-                    ),
+                    borderSide: BorderSide.none,
                   ),
                   contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 ),

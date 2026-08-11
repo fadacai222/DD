@@ -208,8 +208,9 @@ final class MediaApiClient {
 
     for (var attempt = 0; attempt < _maximumUploadAttempts; attempt++) {
       _throwIfCancelled(cancellation);
+      MediaUploadGrant? grant;
       try {
-        final grant = await createUpload(
+        grant = await createUpload(
           origin: origin,
           accessToken: accessToken,
           fileName: fileName,
@@ -234,6 +235,13 @@ final class MediaApiClient {
         onProgress?.call(size, size);
         return grant;
       } catch (error, stackTrace) {
+        if (grant != null) {
+          await _bestEffortCancelUpload(
+            origin: origin,
+            accessToken: accessToken,
+            uploadId: grant.uploadId,
+          );
+        }
         if (cancellation?.isCancelled == true || error is MediaUploadCancelled) {
           throw const MediaUploadCancelled();
         }
@@ -404,6 +412,38 @@ final class MediaApiClient {
       headers: _authHeaders(accessToken),
     );
     _decodeData(response, const {200});
+  }
+
+  Future<void> cancelUpload({
+    required Uri origin,
+    required String accessToken,
+    required String uploadId,
+  }) async {
+    final response = await _client.delete(
+      normalizeAuthOrigin(
+        origin,
+      ).resolve('/api/v1/media/uploads/$uploadId/cancel'),
+      headers: _authHeaders(accessToken),
+    );
+    if (response.statusCode == 204 || response.statusCode == 404) return;
+    _decodeData(response, const {204});
+  }
+
+  Future<void> _bestEffortCancelUpload({
+    required Uri origin,
+    required String accessToken,
+    required String uploadId,
+  }) async {
+    try {
+      await cancelUpload(
+        origin: origin,
+        accessToken: accessToken,
+        uploadId: uploadId,
+      ).timeout(_apiTimeout);
+    } catch (_) {
+      // The server-side TTL cleanup remains the fallback if connectivity is
+      // already gone while the client is releasing a failed reservation.
+    }
   }
 
   Future<Uint8List> downloadMedia({

@@ -1,6 +1,6 @@
 # DD 文档中心｜开发唯一入口
 
-> 更新时间：2026-08-11 03:52（000022 Push migration 配对修复）
+> 更新时间：2026-08-12（需求0812 继续收口：新增真多账号管理、重排“我的/隐私与设备”设置层级、发现页表情管理入口、消息 HTTP/HTTPS 蓝色链接 + 安全预览 + 系统浏览器打开，并补齐 Windows 全局 Esc 返回上一层；同时保留 Telegram Sticker Pack 动态/视频格式、Android 大视频流式选择、Push/朋友圈等既有修复；真人待复测）
 >
 > 适用仓库：`C:\Users\admin\Desktop\复刻微信`
 >
@@ -40,17 +40,22 @@
 
 ---
 
-## 3. 2026-08-11 当前一句话状态
+## 3. 2026-08-12 当前一句话状态
 
-DD 已从基础 IM 进入大功能扩展后的收敛阶段：
+DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-12 本轮已重新通过 ASCII 短路径 `dart analyze --fatal-infos`（0 issue）、Flutter 全量测试 361 PASS / 5 SKIP（真实视频样本环境变量未提供）和服务端 `go test ./...`；此前 `MainShellPage` 缺少 `StickerPanelResult` 可见类型导致的 analyzer `KNOWN-FAILURE` 已修复。Android Debug APK 与 Windows Release 均已有本轮完整构建成功证据，根目录 `DD-Android.apk` / `DD-Windows.lnk` 已刷新到本轮产物。**这仍不等于产品 release-green**：多项真实设备/视觉交互与生产发布链仍处于 `FIXED-PENDING-RETEST` 或待验收状态。
+
+当前功能主体：
 
 - P0/P2/P3/P4/P5 主链已经形成账号、联系人、DIRECT/SELF 消息、媒体、Sticker、可靠同步和多端客户端；
 - **P6 Group** 已有正式 PostgreSQL domain、HTTP/OpenAPI、Flutter 创建/聊天/群详情和自动测试；
 - **P7 Calls** 已从实验内存 CallStore 正式化为 `server/internal/calls` + PostgreSQL 状态机 + `/api/v1/calls` + Bearer Principal + 多设备接听仲裁；
-- **P8 Moments** 已有朋友圈 Feed、最多 9 图/单视频、点赞评论、单条可见范围、长期隐私偏好和私有媒体授权；
-- **P9 QR** 服务端与 Flutter 主链已完成本轮收口：`dart analyze --fatal-infos` 0 issue，4 个 QR 定向测试文件 10/10 通过，Windows/Web/Android 当前源码均已重新构建成功；仍待真人扫码与多端设备验收；
-- **P10 Push** 已开始，`000022_push.up.sql` / `000022_push.down.sql` 已形成可加载的 migration 对；正式 Service/API/Worker/provider/client token registration 仍未实现；
-- P11 E2EE、P12 Admin/Data Rights、P13 Production Self-host、P14 iOS/macOS 正式交付仍未完成。
+- **P8 Moments** 已有朋友圈 Feed、最多 9 图/单视频、点赞评论/回复、单条可见范围、长期隐私偏好和私有媒体授权；2026-08-12 新增服务端持久互动未读与发现页 `1..99 / 99+` 红色数字角标，Push 不再是未读事实源；同日 `GET /api/v1/moment-activity` 扩展最近 30 条互动明细，自己的朋友圈封面下方新增“互动焦点”，点开可查看最近谁点赞/评论、评论正文与时间，已读后历史仍保留；
+- **P9 QR** 服务端与 Flutter 主链已完成主体收口；2026-08-11 的 QR 定向证据为 4 个测试文件 10/10、Windows/Web/Android 构建成功。本轮 Shell/Sticker 类型可见性 analyzer 回归已修复；真人扫码与多端设备验收仍未完成；
+- **P10 Push** 主体代码已形成正式闭环：`internal/push`、HTTP API、durable job、Worker、FCM/APNs/UnifiedPush provider、Flutter token 注册/偏好/UI 均已实现并自动验证；Android Firebase 项目已正式接入，真实 FCM 服务账号可被 Worker 成功加载；2026-08-12 又修复后台系统托盘绕过 DD 自定义通知链导致“只有首字母头像/小标错误”的问题：Android FCM 改为 data-only，后台 handler 统一用 MessagingStyle 渲染，服务端下发 24h HMAC 签名 sender-avatar capability（HIDDEN 预览不下发），本地通知点击可恢复会话；当前仍需最新 APK 真机复测前台/后台/杀进程三态；
+- **P5 Sticker/Media 本轮收口**：自定义 Sticker 支持 PNG/WebP/GIF/MP4/WebM（单项 ≤64 MiB），从 Telegram Pack/已收到消息加入个人库时同时允许 TGS；Telegram Pack Relay 现完整覆盖静态 WebP/PNG、动态 TGS 与视频 WebM，TGS 由 Flutter Lottie gzip decoder 循环渲染，WebM 复用静音循环视频 Sticker 播放链；失败/取消/重试上传会立即释放 reservation；2026-08-12 TG 表情包整包分享进一步改为正式 `STICKER_PACK` 消息：服务端强制取该包排序第一项作为 PRIMARY 预览媒体并生成 `dd://stickers/telegram/...` 导入元数据，接收方即使尚未添加该包也能看到真实首个表情缩略图，转发后仍保留缩略图与导入能力；同时保留面板 4 秒静默账号同步和真实 16 MiB GIF 流式回归，并修复“视频自定义表情刚上传可播、关闭再打开候选格永久转圈”的 BottomSheet 入场可见性回归。视频 Sticker 现不再只依赖临时签名 URL：首次加载会进入 DD 的 `VideoFileCache` 持久缓存，聊天气泡、候选格和分享预览跨面板复用本地文件；缓存受统一容量预算/LRU 和 30 天年龄约束。地址解析/播放器打开超过 15 秒则进入可重试失败态并记录客户端日志，不再无限转圈。
+- **需求0812 性能/稳定性收口**：性能页提供节能模式、减少动画、视频自动预览与硬件加速视频解码；本轮已把 `外观 / 聊天背景 / 媒体与缓存 / 性能 / 传输中心` 从内层设置迁移到“我的”外层，并把原“账号、隐私与设备”收敛为“隐私与设备”。2026-08-12 Android 真机再次复现大视频闪退后，ADB Logcat 已把根因定位到文件选择返回阶段 Java 堆 OOM：约 128 MiB / 503 MiB 样本分别触发同量级整块内存申请，而进程堆增长上限约 256 MiB。聊天相册、文件和自定义表情 Android 选择入口现改为 DD 原生 `ACTION_OPEN_DOCUMENT`，在后台以 64 KiB 缓冲流式复制到 App cache，仅向 Dart 返回路径/元数据；后续继续使用原生缩放 poster + `uploadStream`，不再在选择阶段把整文件 materialize 成 `byte[]`。新增大文件选择合同测试通过、相关 Dart analyzer 0 issue，仓库标准 Android Debug APK 已重新构建成功；状态为 `FIXED-PENDING-RETEST`，仍需真人用同一 100 MiB/500 MiB 级样本复测。Telegram 表情包分享计时器用例已改为有界 pump，`text_chat_page_test.dart` 当前 39/39 全绿。
+- **需求0812 账号/表情/链接新增**：删除独立“刷新登录会话 / 切换账号”入口，新增“账号管理”；Native 客户端按 `origin + userId` 在安全存储中保存最多 8 个独立 Refresh Token 槽位，已有有效会话可直接切换，失效槽位回落密码登录，“添加账号”进入登录页但不撤销原账号。发现页“更多能力”替换为“表情”，复用现有自定义 Sticker + Telegram Pack 管理链。文本消息中的 HTTP/HTTPS URL 现为蓝色可点击实体，每条消息首链接可加载服务端 `/api/v1/link-preview` 元数据卡，点击文字或卡片交给系统外部浏览器/处理器；服务端预览强制鉴权并拦截私网/回环/链路本地/危险端口/不安全重定向，限制 5 秒、512 KiB HTML。Windows 窗口层新增全局 `Esc` 返回上一层：局部 Escape 处理优先，未被消费时根 Navigator `maybePop`，主导航根层不退出/不缩托盘。Native 多账号、链接 UI/客户端和服务器均有自动回归；Web 不持久化多份 Refresh Token，因此直接切换会话仍按 Web 安全模型回落重新认证。
+- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Data Rights、P13 Production Self-host、P14 iOS/macOS 正式交付仍未完成。
 
 当前不能宣称 Stable 1.0，也不能把“今晚能运行开发环境”写成“商业上线完成”。
 
@@ -69,7 +74,13 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段：
 000019_moments
 000020_calls_conversation
 000021_qr
-000022_push           ← P10 开发中，up/down 已配对
+000022_push           ← Push 基础 schema
+...
+000026_push_product_chain ← Push 产品链补充约束/索引
+000027_custom_sticker_video ← Custom Sticker MP4/WebM MIME 前向扩展
+000028_moment_activity      ← Moments 点赞/评论/回复持久未读事实
+000029_telegram_sticker_dynamic_video ← Telegram TGS/WebM + Custom TGS MIME 前向扩展
+000030_sticker_pack_share ← STICKER_PACK 消息类型与首表情分享缩略图
 ```
 
 当前 Go 正式业务模块包括：
@@ -86,9 +97,10 @@ stickers
 qrcode
 realtimebus
 realtimev1
+push
 ```
 
-P10 Push 尚未形成对应正式 domain package。
+P10 Push 已形成正式 domain package、HTTP surface、Worker consumer 与客户端接入。
 
 ---
 
@@ -99,10 +111,13 @@ P10 Push 尚未形成对应正式 domain package。
 ```text
 Groups
 Moments
+Moment Activity (`GET /api/v1/moment-activity`, `POST /api/v1/moment-activity/read`)
 Moment Preferences
 Formal Calls
 Group QR Invite/Redeem
 QR Login create/status/scan/confirm/consume
+Push preferences/endpoints/test
+Media upload cancel (`DELETE /api/v1/media/uploads/{uploadId}/cancel`)
 ```
 
 Calls 正式入口已经是：
@@ -137,11 +152,13 @@ POST   /api/v1/qr-login/consume
 
 ### Server
 
-最近完整 `go test ./...` 已通过，Groups/Calls/Moments/QR 都存在真实 PostgreSQL integration coverage；P9 QR migration `000021` 已完成 `up → idempotent up → down → up` 验证。
+2026-08-12 当前 `go test ./...` 已全量通过；Groups/Calls/Moments/QR 都保留真实 PostgreSQL integration coverage，P9 QR migration `000021` 已完成 `up → idempotent up → down → up` 验证。朋友圈互动未读的 HTTP/service/migration 编译与单元门禁已通过；`TestMomentPrivacyLifecycleWithPostgres` 已扩展点赞/评论/回复未读、已读与删除清理断言，但本机未配置 `DD_MOMENTS_TEST_DATABASE_URL`，所以本轮真实 PostgreSQL 用例被明确 SKIP，不能冒充已跑过新 migration 的数据库实测。OpenAPI runtime 合同测试通过；媒体取消路由采用 `/api/v1/media/uploads/{uploadId}/cancel` 避开与 `/api/v1/media/{mediaId}/download-url` 的模板歧义，2026-08-12 Redocly CLI `2.45.0 --extends=recommended-strict` 已重新全绿。
 
 ### P6 Group
 
 `IMPLEMENTED + AUTO-VERIFIED / HUMAN-PENDING`。
+
+2026-08-12 修复“更换/移除群头像时请求只带 `avatarMediaId` 被误判为无更新”的服务端校验遗漏；新增 `TestUpdateGroupInputHasChanges`，Flutter `groups_api_client_test.dart` 的 avatar-only 请求回归也继续通过。真人更换/移除群头像仍为 `FIXED-PENDING-RETEST`。
 
 ### P7 Calls
 
@@ -153,7 +170,7 @@ POST   /api/v1/qr-login/consume
 
 `IMPLEMENTED + AUTO-VERIFIED / HUMAN-PENDING`。
 
-真实 PostgreSQL 已覆盖单条可见范围、长期隐私偏好、Block、删除好友后旧动态失权、互动身份可见性、媒体授权和 Outbox；Flutter Moments API/Feed/Publish 定向回归曾 9/9 通过。
+真实 PostgreSQL 历史覆盖单条可见范围、长期隐私偏好、Block、删除好友后旧动态失权、互动身份可见性、媒体授权和 Outbox；本轮新增 `000028_moment_activity`、未读读取/已读 API、Realtime `moment-*` 刷新与 Flutter 发现 Footer/桌面 Rail/朋友圈入口三处数字角标，并把 Activity API 扩展为“未读数 + 最近 30 条互动明细”。Flutter Feed 现已在封面下显示互动焦点，点击打开最近点赞/评论列表；已读只更新 `read_at`，不会删除历史。对应 API/Feed 定向测试已补，真实数据库新断言仍需在配置 `DD_MOMENTS_TEST_DATABASE_URL` 后复核，真人状态保持 `FIXED-PENDING-RETEST`。
 
 ### P9 QR
 
@@ -161,11 +178,11 @@ POST   /api/v1/qr-login/consume
 
 ```text
 SERVER: IMPLEMENTED + AUTO-VERIFIED
-FLUTTER: IMPLEMENTED + AUTO-VERIFIED
-OVERALL: AUTO-VERIFIED / HUMAN-PENDING
+FLUTTER: IMPLEMENTED + QR-DIRECTED-AUTO-EVIDENCE / GLOBAL-GATE-PASS
+OVERALL: AUTO-GATE-PASS / HUMAN-PENDING
 ```
 
-2026-08-11 04:42 本轮已重新验证：
+2026-08-11 04:42 历史定向验证：
 
 - `dart analyze --fatal-infos`：0 issue；
 - `dd_qr_payload_test.dart`、`qr_api_client_test.dart`、`qr_login_page_test.dart`、`qr_scanner_page_test.dart`：10/10 通过；
@@ -174,44 +191,37 @@ OVERALL: AUTO-VERIFIED / HUMAN-PENDING
 - Android Debug APK：构建成功并发布到根目录 `DD-Android.apk`；
 - Windows 单实例恢复逻辑修复：残留无窗口进程不再导致后续双击静默退出。
 
-当前只保留真人扫码、相机权限、跨设备登录确认等真实设备验收债务，不能因此直接标 `HUMAN-PASS`。
+QR 自身旧阻断已解除，2026-08-12 当前全 App analyzer/test 也已重新通过。下一步继续真人扫码、相机权限、跨设备登录确认等真实设备验收；不能因此直接标 `HUMAN-PASS`。
 
 ### P10 Push
 
-`IN-PROGRESS`。
-
-当前 `000022_push.up.sql` / `000022_push.down.sql` 已配对；up migration 包含：
+当前状态：
 
 ```text
-user_notification_preferences
-device_push_endpoints
-push_jobs
+SERVER: IMPLEMENTED + AUTO-VERIFIED
+ANDROID FIREBASE BUILD: HISTORICAL-AUTO-EVIDENCE
+FLUTTER APP GATE: AUTO-GATE-PASS
+REAL DEVICE DELIVERY: FIXED-PENDING-RETEST / HUMAN-PENDING
+OVERALL: AUTO-GATE-PASS / HUMAN-PENDING
 ```
 
-并预留：
+已完成：
 
-```text
-FCM
-APNS
-UNIFIEDPUSH
-FULL / SENDER_ONLY / HIDDEN preview mode
-endpoint hash 去重
-失败计数/状态
-push job dedupe/retry 时间
-```
+- `user_notification_preferences` / `device_push_endpoints` / `push_jobs`；
+- `server/internal/push` 正式 service；
+- `/api/v1/push/preferences`、`/api/v1/push/endpoints`、`/api/v1/push/test`；
+- Outbox → durable Push Job；
+- 普通消息、好友申请、1:1 来电、群通话、朋友圈互动 Push 生产；
+- Worker retry/backoff/dedupe、失效 token 自动 INVALID；
+- FCM HTTP v1、APNs、UnifiedPush provider；Android FCM user-visible 消息现使用 data-only + HIGH priority，由客户端自行渲染，iOS FCM 路径保留 APNS-specific alert；
+- Flutter token 注册、token refresh、Push 点击打开会话、通知偏好与测试入口；Android 后台 handler 统一进入 `AppNotificationService`，支持 sender avatar large icon、DD monochrome small icon 与冷启动/运行中本地通知点击导航；
+- sender avatar Push 采用短期 HMAC capability URL，不把 Access/Refresh Token 放入 FCM；`HIDDEN` 预览不携带 avatar URL；开发 runner 使用设备可达私网 origin，生产仍要求 HTTPS；
+- Android `google-services.json` + Google Services Gradle 插件正式接入；
+- 真 Firebase Admin service-account 可被本地 Worker 成功加载并启动；
+- Push PostgreSQL integration、provider mock、Flutter API 定向测试、Go 全量测试、OpenAPI strict 均有通过证据；2026-08-12 当前全 App Flutter analyzer 与全量测试已重新通过；
+- Android Firebase Debug APK 已构建并发布到根目录 `DD-Android.apk`。
 
-当前尚缺：
-
-- Push domain/service；
-- device endpoint API；
-- durable Job producer；
-- Worker consumer；
-- FCM/APNs/UnifiedPush provider adapter；
-- 失败退避与失效 token 清理；
-- Flutter/Android/iOS token 注册；
-- provider 真凭据 integration test。
-
-所以 P10 不能标 `IMPLEMENTED`。
+Push 的设备级退出项仍是：真实 Android 设备安装后取得 FCM token，并验证前台、后台、被系统杀进程三种状态下的通知到达、真实 sender avatar、DD 小标与点击恢复。2026-08-12 本轮重新执行 `go test ./...`、全 App `dart analyze --fatal-infos` 与 Flutter 全量测试均已通过；下一步直接继续 APK/真机 Push 最终验收。2026-08-11 23:35 ADB 安装曾被设备侧 `INSTALL_FAILED_ABORTED: User rejected permissions` 拒绝，属于真人设备权限门槛，不是服务端代码失败。
 
 ---
 
@@ -228,14 +238,15 @@ push job dedupe/retry 时间
 | `06-测试验收与发布标准.md` | 自动门禁、真人验收和发布阻断条件。 |
 | `07-P0实时通信PoC.md` | Realtime PoC 历史结论与正式主链关系。 |
 | `08-P0音视频通话PoC.md` | LiveKit/TURN PoC 与已正式化 P7 Calls 的演进。 |
-| `09-P0-E2EE候选库评估.md` | E2EE PoC 与 P11 正式实现边界。 |
+| `09-P0-E2EE候选库评估.md` | 历史 E2EE PoC 研究档案；V1 已明确不开发 E2EE。 |
 | `10-P2账号认证垂直切片.md` | Auth/User/Device 与 QR trusted-session 关系。 |
 | `11-P3好友关系链.md` | DDID、好友、Block 与 Group/Moments/QR 联动。 |
 | `12-产品体验与UI功能基线.md` | Windows/Android/Web、朋友圈、二维码等 UI/体验基线。 |
 | `13-2026-08-09-1(1)-体验与能力增量需求.md` | 历史体验增量吸收与回归索引。 |
 | `14-2026-08-09-登录联系人媒体缓存稳定性增量.md` | 登录、联系人、媒体缓存回归索引。 |
 | `15-当前实现状态与开发路线.md` | **每轮开发必读：真实状态、阻断、下一步。** |
-| `16-2026-08-11-全量文档同步记录.md` | 本次从 P5/R16 旧视角追平到 P6-P10 的事实变更记录。 |
+| `16-2026-08-11-全量文档同步记录.md` | 2026-08-11 从 P5/R16 旧视角追平到 P6-P10 的历史同步记录。 |
+| `17-2026-08-12-代码事实同步记录.md` | 2026-08-12 再次按当前 worktree 清理 P9/P10/Sticker/性能/CI 等文档漂移。 |
 | `decisions/*.md` | 已接受/废弃架构决策；P9/P10 新增 ADR-010/ADR-011。 |
 
 ---
@@ -247,7 +258,6 @@ push job dedupe/retry 时间
 ```text
 完成 P9 真人扫码/跨设备验收
 → 完成 P10 Push
-→ P11 Production E2EE
 → P12 Admin / Abuse / Data Rights
 → P13 Production Self-host / Backup / Upgrade / Observability
 → P14 iOS/macOS 产品交付

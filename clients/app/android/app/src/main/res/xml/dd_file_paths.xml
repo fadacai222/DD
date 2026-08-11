@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="dd_clipboard" path="dd_clipboard/" />
     <cache-path name="dd_camera" path="dd_camera/" />
+    <cache-path name="dd_shared_files" path="dd_shared_files/" />
+    <files-path name="dd_transfers" path="DD/transfers/" />
 </paths>

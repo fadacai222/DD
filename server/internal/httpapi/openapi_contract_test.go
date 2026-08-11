@@ -102,7 +102,9 @@ func TestOpenAPIIncludesMessageEditingAndVideoContracts(t *testing.T) {
 
 	send := mustMap(t, schemas["SendMessageRequest"], "SendMessageRequest")
 	sendProperties := mustMap(t, send["properties"], "SendMessageRequest.properties")
-	assertEnumContains(t, mustMap(t, sendProperties["type"], "SendMessageRequest.type"), "VIDEO")
+	sendType := mustMap(t, sendProperties["type"], "SendMessageRequest.type")
+	assertEnumContains(t, sendType, "VIDEO")
+	assertEnumContains(t, sendType, "STICKER_PACK")
 
 	edit := mustMap(t, schemas["EditMessageRequest"], "EditMessageRequest")
 	editProperties := mustMap(t, edit["properties"], "EditMessageRequest.properties")
@@ -206,7 +208,9 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/moments/{momentId}/like":                            {"put", "delete"},
 		"/api/v1/moments/{momentId}/comments":                        {"post"},
 		"/api/v1/moments/{momentId}/comments/{commentId}":            {"delete"},
-		"/api/v1/moments/profile/{userId}":                           {"get", "patch"},
+		"/api/v1/moment-activity":                                    {"get"},
+		"/api/v1/moment-activity/read":                               {"post"},
+		"/api/v1/moment-profiles/{userId}":                           {"get", "patch"},
 		"/api/v1/moment-preferences":                                 {"get"},
 		"/api/v1/moment-preferences/{userId}":                        {"patch"},
 		"/api/v1/qr/me":                                              {"get"},
@@ -218,6 +222,10 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/qr-login/scan":                                      {"post"},
 		"/api/v1/qr-login/confirm":                                   {"post"},
 		"/api/v1/qr-login/consume":                                   {"post"},
+		"/api/v1/push/preferences":                                   {"get", "put", "patch"},
+		"/api/v1/push/endpoints":                                     {"get", "post", "put"},
+		"/api/v1/push/endpoints/{provider}":                          {"delete"},
+		"/api/v1/push/test":                                          {"post"},
 		"/api/v1/calls":                                              {"post"},
 		"/api/v1/calls/active":                                       {"get"},
 		"/api/v1/calls/{callId}/actions":                             {"post"},
@@ -232,6 +240,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/saved-messages/conversation":                        {"put"},
 		"/api/v1/saved-messages":                                     {"get"},
 		"/api/v1/messages/search":                                    {"get"},
+		"/api/v1/link-preview":                                       {"get"},
 		"/api/v1/messages/{messageId}":                               {"get", "patch"},
 		"/api/v1/messages/{messageId}/recall":                        {"post"},
 		"/api/v1/messages/{messageId}/local":                         {"delete"},
@@ -240,6 +249,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/messages/{messageId}/forward":                       {"post"},
 		"/api/v1/sync":                                               {"get"},
 		"/api/v1/media/uploads":                                      {"post"},
+		"/api/v1/media/uploads/{uploadId}/cancel":                    {"delete"},
 		"/api/v1/media/uploads/{uploadId}/complete":                  {"post"},
 		"/api/v1/media/{mediaId}":                                    {"get"},
 		"/api/v1/media/{mediaId}/download-url":                       {"post"},

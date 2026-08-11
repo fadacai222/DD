@@ -270,7 +270,10 @@ try {
     $env:IM_ENV = 'development'
     $env:IM_PORT = '18473'
     $env:IM_INSTANCE_NAME = 'DD'
-    $env:IM_PUBLIC_BASE_URL = ''
+    # Android background push needs a device-reachable origin for signed avatar
+    # assets. Production still requires HTTPS; this development runner uses the
+    # detected private LAN address and the debug manifest permits cleartext LAN.
+    $env:IM_PUBLIC_BASE_URL = "http://$LanIP`:18473"
     $env:IM_REGISTRATION_MODE = 'open'
     $env:IM_ALLOWED_HTTP_ORIGINS = "http://localhost:*,http://127.0.0.1:*,http://$LanIP`:*"
     $env:IM_ALLOWED_ORIGINS = "localhost:*,127.0.0.1:*,10.0.2.2:*,$LanIP`:*"

@@ -81,7 +81,7 @@ Worker 独立不是微服务化，而是运行职责隔离：
 
 - Outbox dispatch。
 - media cleanup。
-- P10 Push/其它后台任务（当前 Push consumer 尚未实现）。
+- P10 Push/其它后台任务（当前 `push_jobs` Worker consumer 已实现并有 PostgreSQL lifecycle + worker integration 证据）。
 
 这样 API 请求不被长耗时后台任务阻塞，同时仍共享 Go domain package 和数据库合同。
 

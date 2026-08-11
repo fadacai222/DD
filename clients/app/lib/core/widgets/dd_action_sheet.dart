@@ -26,46 +26,61 @@ Future<T?> showDdActionSheet<T>(
 }) {
   return showModalBottomSheet<T>(
     context: context,
+    useRootNavigator: true,
     useSafeArea: true,
     isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.28),
     builder: (sheetContext) => LayoutBuilder(
-      builder: (context, constraints) => Align(
-        alignment: Alignment.bottomCenter,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 420,
-            maxHeight: constraints.maxHeight * 0.82,
-          ),
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              color: Theme.of(sheetContext).colorScheme.surface,
-              borderRadius: BorderRadius.circular(DdRadii.sheet),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.16),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
+      builder: (context, constraints) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              key: const Key('dd-action-sheet-dismiss-layer'),
+              behavior: HitTestBehavior.opaque,
+              excludeFromSemantics: true,
+              onTap: () => Navigator.of(sheetContext).pop(),
             ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (var index = 0; index < items.length; index++) ...[
-                    _ActionSheetRow<T>(item: items[index]),
-                    if (index != items.length - 1)
-                      const Divider(height: 1, indent: 52),
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 420,
+                maxHeight: constraints.maxHeight * 0.82,
+              ),
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: Theme.of(sheetContext).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(DdRadii.sheet),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.16),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
                   ],
-                ],
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var index = 0; index < items.length; index++) ...[
+                        _ActionSheetRow<T>(item: items[index]),
+                        if (index != items.length - 1)
+                          const Divider(height: 1, indent: 52),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     ),
   );

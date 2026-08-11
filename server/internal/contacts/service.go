@@ -443,6 +443,21 @@ func (service *Service) sendRequestOnce(ctx context.Context, principal account.P
 	if err != nil {
 		return ContactRequest{}, err
 	}
+	pushPayload, err := json.Marshal(map[string]any{
+		"requestId":    requestID.String(),
+		"senderUserId": principal.UserID.String(),
+		"senderName":   result.Sender.DisplayName,
+	})
+	if err != nil {
+		return ContactRequest{}, fmt.Errorf("marshal contact request push: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+		VALUES($1,'CONTACT_REQUEST_CREATED',$2,$3,$4,$5::jsonb,'PENDING',$6,$6)
+		ON CONFLICT(dedupe_key) DO NOTHING
+	`, targetID, requestID, principal.UserID, "contact-request:"+requestID.String()+":user:"+targetID.String(), string(pushPayload), now); err != nil {
+		return ContactRequest{}, fmt.Errorf("enqueue contact request push: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ContactRequest{}, fmt.Errorf("commit contact request: %w", err)
 	}

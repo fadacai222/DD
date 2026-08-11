@@ -112,6 +112,36 @@ void main() {
     expect(group.avatarRevision, 4);
   });
 
+  test('removes group avatar using an explicit empty media reference', () async {
+    late http.Request captured;
+    final client = GroupsApiClient(
+      httpClient: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'data': _groupJson(avatarRevision: 5),
+            'requestId': 'req-group-avatar-remove',
+          }),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+    addTearDown(client.close);
+
+    final group = await client.updateGroup(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      groupId: '018f0000-0000-7000-8000-000000000001',
+      avatarMediaId: '',
+    );
+
+    expect(captured.method, 'PATCH');
+    expect(jsonDecode(captured.body), {'avatarMediaId': ''});
+    expect(group.avatarMediaId, isEmpty);
+    expect(group.avatarRevision, 5);
+  });
+
   test('lists group members and preserves role and nickname', () async {
     final client = GroupsApiClient(
       httpClient: MockClient(

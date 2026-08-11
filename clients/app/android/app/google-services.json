@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "714754390247",
+    "project_id": "dd-chat-3701e",
+    "storage_bucket": "dd-chat-3701e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:714754390247:android:934955ddadd53d7e6cca42",
+        "android_client_info": {
+          "package_name": "org.openimx.client"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB7pojKBg8RR_sfAG1lprWVGMi-PsUuryo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

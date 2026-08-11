@@ -13,6 +13,7 @@ import (
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
+	"example.com/selfhosted-im/server/internal/push"
 	"example.com/selfhosted-im/server/internal/stickers"
 )
 
@@ -50,6 +51,25 @@ func main() {
 	stickerService, err := stickers.NewService(stickers.Config{Pool: pool})
 	if err != nil {
 		logger.Error("worker sticker initialization failed", "error", err)
+		os.Exit(2)
+	}
+	authTokenSecret, err := appconfig.ReadSecret("AUTH_TOKEN_SECRET")
+	if err != nil {
+		logger.Error("worker auth token secret configuration failed", "error", err)
+		os.Exit(2)
+	}
+	pushService, err := push.NewService(push.Config{
+		Pool:              pool,
+		PublicBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("IM_PUBLIC_BASE_URL")), "/"),
+		AvatarTokenSecret: authTokenSecret,
+	})
+	if err != nil {
+		logger.Error("worker push initialization failed", "error", err)
+		os.Exit(2)
+	}
+	pushProviders, err := loadPushProviders()
+	if err != nil {
+		logger.Error("worker push provider initialization failed", "error", err)
 		os.Exit(2)
 	}
 
@@ -97,9 +117,16 @@ func main() {
 		case <-outboxTicker.C:
 			batchContext, batchCancel := context.WithTimeout(ctx, 5*time.Second)
 			processed, dispatchErr := messagingService.DispatchOutbox(batchContext, 100)
+			if dispatchErr == nil {
+				var pushed int
+				pushed, dispatchErr = pushService.DispatchJobs(batchContext, pushProviders, 100)
+				if pushed > 0 {
+					logger.Info("push batch dispatched", "service", "dd-worker", "jobs", pushed)
+				}
+			}
 			batchCancel()
 			if dispatchErr != nil {
-				logger.Error("outbox dispatch failed", "service", "dd-worker", "error", dispatchErr)
+				logger.Error("outbox/push dispatch failed", "service", "dd-worker", "error", dispatchErr)
 				continue
 			}
 			if processed > 0 {
@@ -140,4 +167,37 @@ func main() {
 			}
 		}
 	}
+}
+
+func loadPushProviders() (push.Providers, error) {
+	providers := push.Providers{UnifiedPush: push.NewUnifiedPushProvider(push.UnifiedPushConfig{})}
+	fcmJSON, err := appconfig.ReadSecret("FCM_SERVICE_ACCOUNT_JSON")
+	if err != nil {
+		return push.Providers{}, err
+	}
+	if strings.TrimSpace(fcmJSON) != "" {
+		providers.FCM, err = push.NewFCMProvider(push.FCMConfig{ServiceAccountJSON: fcmJSON})
+		if err != nil {
+			return push.Providers{}, err
+		}
+	}
+	apnsPrivateKey, err := appconfig.ReadSecret("APNS_PRIVATE_KEY")
+	if err != nil {
+		return push.Providers{}, err
+	}
+	keyID := strings.TrimSpace(os.Getenv("APNS_KEY_ID"))
+	teamID := strings.TrimSpace(os.Getenv("APNS_TEAM_ID"))
+	bundleID := strings.TrimSpace(os.Getenv("APNS_BUNDLE_ID"))
+	if keyID != "" || teamID != "" || bundleID != "" || strings.TrimSpace(apnsPrivateKey) != "" {
+		providers.APNS, err = push.NewAPNSProvider(push.APNSConfig{
+			KeyID:         keyID,
+			TeamID:        teamID,
+			BundleID:      bundleID,
+			PrivateKeyPEM: apnsPrivateKey,
+		})
+		if err != nil {
+			return push.Providers{}, err
+		}
+	}
+	return providers, nil
 }

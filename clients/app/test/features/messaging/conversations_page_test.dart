@@ -10,6 +10,91 @@ import 'package:im_client/theme/app_theme.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
 void main() {
+  testWidgets(
+    'group conversation shows group marker and sender plus content preview',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final gateway = _ConversationGateway(
+        conversationOverride: ConversationItem(
+          id: 'group-1',
+          type: 'GROUP',
+          group: const MessagingGroupPreview(
+            id: 'group-1',
+            name: '开发群',
+            memberCount: 8,
+            avatarMembers: [],
+          ),
+          lastSequence: 9,
+          lastReadSequence: 9,
+          unreadCount: 0,
+          lastMessage: ChatMessage(
+            id: 'message-9',
+            conversationId: 'group-1',
+            sequence: 9,
+            senderUserId: 'user-b',
+            senderDeviceId: 'device-b',
+            clientMessageId: 'client-9',
+            type: 'TEXT',
+            content: const TextMessageContent(text: '今晚发版'),
+            createdAt: DateTime.utc(2026, 8, 12, 1),
+          ),
+          lastMessageSender: const MessagingUserPreview(
+            id: 'user-b',
+            handle: 'bob-ddid',
+            displayName: 'Bob',
+          ),
+          preferences: const ConversationPreferences(isPinned: false),
+          createdAt: DateTime.utc(2026, 8, 12),
+          updatedAt: DateTime.utc(2026, 8, 12, 1),
+        ),
+      );
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-a',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-a',
+        gateway: gateway,
+        localStore: _ConversationStore(),
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
+      await coordinator.refreshConversations();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: ConversationsPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'token',
+            currentUserId: 'user-a',
+            deviceId: 'device-a',
+            coordinator: coordinator,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('conversation-group-marker-group-1')),
+        findsOneWidget,
+      );
+      expect(find.text('Bob：今晚发版'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('external navigation selects a desktop conversation in-place', (
     tester,
   ) async {
@@ -57,7 +142,9 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(
-      tester.getSize(find.byKey(const Key('desktop-conversation-sidebar'))).width,
+      tester
+          .getSize(find.byKey(const Key('desktop-conversation-sidebar')))
+          .width,
       DdDesktopTokens.sidebarWidth,
     );
     expect(tester.takeException(), isNull);
@@ -303,16 +390,17 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final archiveEntry = find.byKey(
-      const Key('archived-conversations-entry'),
-    );
+    final archiveEntry = find.byKey(const Key('archived-conversations-entry'));
     final savedEntry = find.byKey(
       const Key('saved-messages-conversation-entry'),
     );
     expect(archiveEntry, findsOneWidget);
     expect(savedEntry, findsOneWidget);
     expect(tester.getSize(archiveEntry).height, lessThan(52));
-    expect(tester.getTopLeft(archiveEntry).dy, lessThan(tester.getTopLeft(savedEntry).dy));
+    expect(
+      tester.getTopLeft(archiveEntry).dy,
+      lessThan(tester.getTopLeft(savedEntry).dy),
+    );
     expect(find.byKey(const Key('conversation-conversation-1')), findsNothing);
 
     await tester.tap(archiveEntry);
@@ -572,45 +660,52 @@ void main() {
 }
 
 final class _ConversationGateway implements MessagingGateway {
-  _ConversationGateway({this.isPinned = false, this.archivedAt});
+  _ConversationGateway({
+    this.isPinned = false,
+    this.archivedAt,
+    this.conversationOverride,
+  });
 
   int unreadCount = 1;
   bool isPinned;
   DateTime? archivedAt;
+  final ConversationItem? conversationOverride;
   DateTime? mutedUntil;
   final List<(String, int)> markedReads = [];
   final List<String> hiddenConversationIds = [];
 
-  ConversationItem get conversation => ConversationItem(
-    id: 'conversation-1',
-    type: 'DIRECT',
-    peer: const MessagingUserPreview(
-      id: 'user-b',
-      handle: 'bob',
-      displayName: 'Bob',
-    ),
-    lastSequence: 7,
-    lastReadSequence: unreadCount == 0 ? 7 : 6,
-    unreadCount: unreadCount,
-    lastMessage: ChatMessage(
-      id: 'message-7',
-      conversationId: 'conversation-1',
-      sequence: 7,
-      senderUserId: 'user-b',
-      senderDeviceId: 'device-b',
-      clientMessageId: 'client-7',
-      type: 'TEXT',
-      content: const TextMessageContent(text: 'hello'),
-      createdAt: DateTime.utc(2026, 8, 8, 8),
-    ),
-    preferences: ConversationPreferences(
-      isPinned: isPinned,
-      mutedUntil: mutedUntil,
-      archivedAt: archivedAt,
-    ),
-    createdAt: DateTime.utc(2026, 8, 8),
-    updatedAt: DateTime.utc(2026, 8, 8, 8),
-  );
+  ConversationItem get conversation =>
+      conversationOverride ??
+      ConversationItem(
+        id: 'conversation-1',
+        type: 'DIRECT',
+        peer: const MessagingUserPreview(
+          id: 'user-b',
+          handle: 'bob',
+          displayName: 'Bob',
+        ),
+        lastSequence: 7,
+        lastReadSequence: unreadCount == 0 ? 7 : 6,
+        unreadCount: unreadCount,
+        lastMessage: ChatMessage(
+          id: 'message-7',
+          conversationId: 'conversation-1',
+          sequence: 7,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'client-7',
+          type: 'TEXT',
+          content: const TextMessageContent(text: 'hello'),
+          createdAt: DateTime.utc(2026, 8, 8, 8),
+        ),
+        preferences: ConversationPreferences(
+          isPinned: isPinned,
+          mutedUntil: mutedUntil,
+          archivedAt: archivedAt,
+        ),
+        createdAt: DateTime.utc(2026, 8, 8),
+        updatedAt: DateTime.utc(2026, 8, 8, 8),
+      );
 
   @override
   Future<List<ConversationItem>> listConversations({

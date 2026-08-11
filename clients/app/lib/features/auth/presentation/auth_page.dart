@@ -125,6 +125,7 @@ class _AuthPageState extends State<AuthPage>
         authGateway: _gateway,
         onRefreshSession: _refresh,
         onProfileChanged: _applyProfile,
+        onManageAccounts: _openAccountManager,
         onLogout: _clearSession,
       );
     }
@@ -694,6 +695,10 @@ class _AuthPageState extends State<AuthPage>
       if (error is AuthApiException && error.statusCode == 401) {
         _refreshTimer?.cancel();
         try {
+          await _vault.removeAccount(
+            origin: _validatedOrigin(),
+            userId: current.user.id,
+          );
           await _vault.clear();
         } catch (_) {
           // Server-side revocation is authoritative even if local secure
@@ -770,10 +775,18 @@ class _AuthPageState extends State<AuthPage>
     }
   }
 
-  Future<void> _persistSession(AuthSession session) => _vault.save(
-    origin: _validatedOrigin(),
-    refreshToken: session.tokens.refreshToken,
-  );
+  Future<void> _persistSession(AuthSession session) async {
+    final origin = _validatedOrigin();
+    await _vault.save(
+      origin: origin,
+      refreshToken: session.tokens.refreshToken,
+    );
+    await _vault.saveAccount(
+      origin: origin,
+      userId: session.user.id,
+      refreshToken: session.tokens.refreshToken,
+    );
+  }
 
   Future<bool> _persistSessionBestEffort(AuthSession session) async {
     try {
@@ -782,6 +795,173 @@ class _AuthPageState extends State<AuthPage>
     } catch (_) {
       return false;
     }
+  }
+
+  Future<void> _openAccountManager() async {
+    await _loadLoginHistory();
+    if (!mounted) return;
+    final current = _session;
+    if (current == null) return;
+    final action = await showModalBottomSheet<Object>(
+      context: context,
+      useSafeArea: true,
+      showDragHandle: true,
+      constraints: const BoxConstraints(maxWidth: 520),
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(8, 2, 8, 10),
+              child: Text(
+                '账号管理',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+            ),
+            for (final entry in _loginHistory)
+              ListTile(
+                key: Key('account-manager-${entry.userId}'),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: _historyAvatar(entry),
+                title: Text(
+                  entry.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  'DDID：${entry.ddid}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing:
+                    current.user.id == entry.userId &&
+                        _validatedOrigin().origin == entry.origin.origin
+                    ? const Icon(Icons.check_circle_rounded, color: DdColors.green)
+                    : const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.pop(sheetContext, entry),
+              ),
+            const Divider(height: 14),
+            ListTile(
+              key: const Key('account-manager-add'),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              leading: const CircleAvatar(
+                backgroundColor: Color(0xFFF0F0F0),
+                foregroundColor: DdColors.textSecondary,
+                child: Icon(Icons.add_rounded),
+              ),
+              title: const Text('添加账号'),
+              subtitle: const Text('进入登录页，当前账号不会被退出'),
+              onTap: () => Navigator.pop(sheetContext, 'add-account'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'add-account') {
+      _startAddingAccount();
+      return;
+    }
+    if (action is LoginHistoryEntry) {
+      await _switchToAccount(action);
+    }
+  }
+
+  void _startAddingAccount() {
+    _refreshTimer?.cancel();
+    _password.clear();
+    _email.clear();
+    setState(() {
+      _session = null;
+      _message = '登录新账号；原账号仍保留在账号管理中。';
+      _messageIsError = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _tabs.animateTo(1);
+    });
+  }
+
+  Future<void> _switchToAccount(LoginHistoryEntry entry) async {
+    final current = _session;
+    if (current == null) return;
+    if (current.user.id == entry.userId &&
+        _validatedOrigin().origin == entry.origin.origin) {
+      return;
+    }
+    final stored = await _vault.readAccount(
+      origin: entry.origin,
+      userId: entry.userId,
+    );
+    if (!mounted) return;
+    if (stored == null) {
+      _openLoginForHistory(entry, '该账号尚未保存可切换会话，请输入密码登录一次。');
+      return;
+    }
+
+    try {
+      final next = await _gateway.refresh(
+        origin: stored.origin,
+        refreshToken: stored.refreshToken,
+      );
+      if (!mounted) return;
+      _refreshTimer?.cancel();
+      _origin.text = stored.origin.toString();
+      setState(() {
+        _session = next;
+        _message = null;
+      });
+      final persisted = await _persistSessionBestEffort(next);
+      _scheduleSessionRefresh(next);
+      unawaited(_rememberLogin(next));
+      if (!persisted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('账号已切换，但安全存储暂时不可写。')),
+        );
+      }
+    } on AuthApiException catch (error) {
+      if (error.statusCode == 401) {
+        try {
+          await _vault.removeAccount(
+            origin: entry.origin,
+            userId: entry.userId,
+          );
+        } catch (_) {}
+        if (mounted) {
+          _openLoginForHistory(entry, '该账号登录状态已失效，请重新输入密码。');
+        }
+        return;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_friendlyError(error))),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_friendlyError(error))),
+        );
+      }
+    }
+  }
+
+  void _openLoginForHistory(LoginHistoryEntry entry, String message) {
+    _refreshTimer?.cancel();
+    _origin.text = entry.origin.toString();
+    _email.text = entry.email;
+    _password.clear();
+    setState(() {
+      _session = null;
+      _message = message;
+      _messageIsError = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _tabs.animateTo(1);
+      _passwordFocus.requestFocus();
+    });
   }
 
   Future<void> _clearSession() async {
@@ -799,6 +979,12 @@ class _AuthPageState extends State<AuthPage>
       }
     }
     try {
+      if (current != null) {
+        await _vault.removeAccount(
+          origin: _validatedOrigin(),
+          userId: current.user.id,
+        );
+      }
       await _vault.clear();
     } catch (_) {
       // Local logout should not be blocked by an unavailable secure-storage backend.

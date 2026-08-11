@@ -1,10 +1,13 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+
+import '../../../core/performance/app_performance_store.dart';
 
 final class VideoMediaMetadata {
   const VideoMediaMetadata({
@@ -23,12 +26,57 @@ final class VideoMediaMetadata {
 final class VideoMediaProbe {
   const VideoMediaProbe();
 
+  static const MethodChannel _androidProbeChannel = MethodChannel(
+    'dd/video_media_probe',
+  );
+
   Future<VideoMediaMetadata> probe(Uri url) => _probeSource(url.toString());
 
   Future<VideoMediaMetadata> probeFile(XFile file) async {
     final path = file.path.trim();
     if (path.isEmpty) {
       throw const FormatException('无法读取所选视频的本地路径。');
+    }
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        final raw = await _androidProbeChannel.invokeMapMethod<String, dynamic>(
+          'probeVideo',
+          <String, Object>{'path': path},
+        );
+        if (raw == null) throw const FormatException('Android 视频探测器没有返回结果。');
+        final width = raw['width'];
+        final height = raw['height'];
+        final durationMs = raw['durationMs'];
+        final posterJpeg = raw['posterJpeg'];
+        if (width is! int ||
+            height is! int ||
+            durationMs is! int ||
+            posterJpeg is! Uint8List ||
+            width < 1 ||
+            height < 1 ||
+            durationMs < 1 ||
+            posterJpeg.isEmpty) {
+          throw const FormatException('Android 视频探测器返回了无效数据。');
+        }
+        return VideoMediaMetadata(
+          width: width,
+          height: height,
+          durationMs: durationMs,
+          posterJpeg: posterJpeg,
+        );
+      } on MissingPluginException {
+        // Widget tests and non-standard Android embeddings do not install the
+        // native channel. Fall back to media_kit there; production Android
+        // uses MediaMetadataRetriever to avoid allocating a full-resolution
+        // screenshot in Dart for large videos.
+      } on PlatformException catch (error) {
+        final message = error.message?.trim();
+        throw FormatException(
+          message == null || message.isEmpty
+              ? 'Android 无法读取该视频，请确认文件可以正常播放。'
+              : message,
+        );
+      }
     }
     return _probeSource(path);
   }
@@ -37,7 +85,13 @@ final class VideoMediaProbe {
     Player? player;
     try {
       player = Player();
-      final videoController = VideoController(player);
+      final videoController = VideoController(
+        player,
+        configuration: VideoControllerConfiguration(
+          enableHardwareAcceleration:
+              AppPerformanceStore.shared.hardwareVideoDecoding,
+        ),
+      );
       // Subscribe before open. Very short clips can publish their duration and
       // geometry, finish playback, then clear parts of Player.state before a
       // polling loop observes a moment where every field is non-zero at once.
@@ -51,6 +105,7 @@ final class VideoMediaProbe {
             .then<void>((value) => observedDuration = value)
             .catchError((_) {}),
       );
+      await player.setVolume(0);
       await player.open(Media(source), play: true);
       final duration = await _waitForDuration(
         player,

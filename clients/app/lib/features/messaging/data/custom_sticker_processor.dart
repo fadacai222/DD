@@ -5,6 +5,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:image/image.dart' as img;
 
 import 'media_api_client.dart';
+import 'video_media_probe.dart';
 
 const int maxCustomStickerSourceBytes = 64 * 1024 * 1024;
 const int maxCustomStickerPixels = 64 * 1024 * 1024;
@@ -20,6 +21,7 @@ final class PreparedCustomSticker {
     required this.height,
     required this.streamFactory,
     required this.animated,
+    this.durationMs,
   });
 
   final String fileName;
@@ -29,12 +31,14 @@ final class PreparedCustomSticker {
   final int height;
   final Stream<List<int>> Function() streamFactory;
   final bool animated;
+  final int? durationMs;
 }
 
 Future<PreparedCustomSticker> prepareCustomSticker(
   XFile file, {
   MediaUploadCancellation? cancellation,
   void Function(int processedBytes, int totalBytes)? onProgress,
+  Future<VideoMediaMetadata> Function(XFile file)? videoProbe,
 }) async {
   final size = await file.length();
   if (size <= 0) throw const FormatException('表情文件为空。');
@@ -44,16 +48,54 @@ Future<PreparedCustomSticker> prepareCustomSticker(
   _throwIfCancelled(cancellation);
 
   final lower = file.name.toLowerCase();
+  final mimeType = (file.mimeType ?? '').toLowerCase().trim();
+  final isVideo =
+      lower.endsWith('.mp4') ||
+      lower.endsWith('.webm') ||
+      mimeType == 'video/mp4' ||
+      mimeType == 'video/webm';
+  if (isVideo) {
+    final resolvedMimeType =
+        lower.endsWith('.webm') || mimeType == 'video/webm'
+        ? 'video/webm'
+        : 'video/mp4';
+    final probe = videoProbe ?? const VideoMediaProbe().probeFile;
+    final metadata = await probe(file);
+    _throwIfCancelled(cancellation);
+    _validateDimensions(metadata.width, metadata.height);
+    final display = _fitStickerDisplaySize(metadata.width, metadata.height);
+    return PreparedCustomSticker(
+      fileName: file.name.isEmpty
+          ? (resolvedMimeType == 'video/webm'
+                ? 'custom-sticker.webm'
+                : 'custom-sticker.mp4')
+          : file.name,
+      mimeType: resolvedMimeType,
+      sizeBytes: size,
+      width: display.$1,
+      height: display.$2,
+      animated: true,
+      durationMs: metadata.durationMs,
+      streamFactory: () => _progressStream(
+        file.openRead(),
+        size,
+        cancellation,
+        onProgress,
+      ),
+    );
+  }
+
   final prefix = await _readPrefix(file, 16);
   if (lower.endsWith('.gif') || _looksLikeGif(prefix)) {
     final dimensions = _gifDimensions(prefix);
     _validateDimensions(dimensions.$1, dimensions.$2);
+    final display = _fitStickerDisplaySize(dimensions.$1, dimensions.$2);
     return PreparedCustomSticker(
       fileName: file.name.isEmpty ? 'custom-sticker.gif' : file.name,
       mimeType: 'image/gif',
       sizeBytes: size,
-      width: dimensions.$1,
-      height: dimensions.$2,
+      width: display.$1,
+      height: display.$2,
       animated: true,
       streamFactory: () => _progressStream(
         file.openRead(),
@@ -159,6 +201,16 @@ bool _looksLikeGif(Uint8List bytes) {
   final width = bytes[6] | (bytes[7] << 8);
   final height = bytes[8] | (bytes[9] << 8);
   return (width, height);
+}
+
+(int, int) _fitStickerDisplaySize(int width, int height) {
+  final longest = width > height ? width : height;
+  if (longest <= targetCustomStickerDimension) return (width, height);
+  final scale = targetCustomStickerDimension / longest;
+  return (
+    (width * scale).round().clamp(1, targetCustomStickerDimension),
+    (height * scale).round().clamp(1, targetCustomStickerDimension),
+  );
 }
 
 void _validateDimensions(int width, int height) {

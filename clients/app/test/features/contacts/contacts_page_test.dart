@@ -129,7 +129,7 @@ void main() {
     expect(find.text('群聊功能正在接入。'), findsNothing);
   });
 
-  testWidgets('desktop group directory is a first-class address-book entry', (
+  testWidgets('desktop group directory stays inside the address-book split view', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(881, 657);
@@ -138,6 +138,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     var openGroupsCount = 0;
+    var refreshGroupsCount = 0;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -148,6 +149,13 @@ void main() {
             gateway: _FakeContactsGateway(),
             embedded: true,
             onOpenGroups: () async => openGroupsCount++,
+            onRefreshGroups: () async => refreshGroupsCount++,
+            desktopGroupsContent: const Center(
+              child: Text(
+                '群聊右侧内容',
+                key: Key('desktop-groups-content'),
+              ),
+            ),
           ),
         ),
       ),
@@ -157,7 +165,12 @@ void main() {
     expect(find.byKey(const Key('desktop-groups-directory')), findsOneWidget);
     await tester.tap(find.byKey(const Key('desktop-groups-directory')));
     await tester.pumpAndSettle();
-    expect(openGroupsCount, 1);
+
+    expect(openGroupsCount, 0);
+    expect(refreshGroupsCount, 1);
+    expect(find.byKey(const Key('desktop-contacts-sidebar')), findsOneWidget);
+    expect(find.byKey(const Key('desktop-groups-content')), findsOneWidget);
+    expect(find.text('群聊'), findsWidgets);
   });
 
   testWidgets('desktop contact detail exposes a primary message action', (

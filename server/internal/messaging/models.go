@@ -85,12 +85,13 @@ type Message struct {
 }
 
 type SendMessageInput struct {
-	ClientMessageID  string       `json:"clientMessageId"`
-	Type             string       `json:"type"`
-	Content          *TextContent `json:"content"`
-	ReplyToMessageID *string      `json:"replyToMessageId"`
-	forwardSourceID  *uuid.UUID
-	trustedEntities  []MessageEntity
+	ClientMessageID            string       `json:"clientMessageId"`
+	Type                       string       `json:"type"`
+	Content                    *TextContent `json:"content"`
+	ReplyToMessageID           *string      `json:"replyToMessageId"`
+	forwardSourceID            *uuid.UUID
+	trustedEntities            []MessageEntity
+	trustedStickerPackShareURI string
 }
 
 type EditMessageInput struct {
@@ -150,6 +151,7 @@ type Conversation struct {
 	PeerLastReadSequence *int64                  `json:"peerLastReadSequence,omitempty"`
 	UnreadCount          int64                   `json:"unreadCount"`
 	LastMessage          *Message                `json:"lastMessage,omitempty"`
+	LastMessageSender    *UserPreview            `json:"lastMessageSender,omitempty"`
 	Preferences          ConversationPreferences `json:"preferences"`
 	CreatedAt            time.Time               `json:"createdAt"`
 	UpdatedAt            time.Time               `json:"updatedAt"`
@@ -217,7 +219,7 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		input.Type = "TEXT"
 	}
 	switch input.Type {
-	case "TEXT", "IMAGE", "GIF", "STICKER", "FILE", "VOICE", "VIDEO":
+	case "TEXT", "IMAGE", "GIF", "STICKER", "STICKER_PACK", "FILE", "VOICE", "VIDEO":
 	default:
 		return SendMessageInput{}, ErrUnsupportedType
 	}
@@ -238,7 +240,7 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		if strings.ContainsRune(input.Content.Text, '\x00') || hasMediaFields(input.Content) {
 			return SendMessageInput{}, ErrInvalidInput
 		}
-	case "IMAGE", "GIF", "STICKER":
+	case "IMAGE", "GIF", "STICKER", "STICKER_PACK":
 		mediaID, err := normalizeMediaID(input.Content.MediaID)
 		if err != nil {
 			return SendMessageInput{}, err
@@ -247,6 +249,9 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 			return SendMessageInput{}, ErrInvalidInput
 		}
 		if input.Content.Text != "" || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 {
+			return SendMessageInput{}, ErrInvalidInput
+		}
+		if input.Type == "STICKER_PACK" && input.Content.PosterMediaID != "" {
 			return SendMessageInput{}, ErrInvalidInput
 		}
 		input.Content.MediaID = mediaID

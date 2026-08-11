@@ -100,7 +100,7 @@ func (service *Service) Get(ctx context.Context, principal account.Principal, gr
 }
 
 func (service *Service) Update(ctx context.Context, principal account.Principal, groupID uuid.UUID, raw UpdateGroupInput) (Group, error) {
-	if raw.Name == nil && raw.Announcement == nil && raw.JoinMode == nil {
+	if !raw.hasChanges() {
 		return Group{}, ErrInvalidInput
 	}
 	now := service.now().UTC()

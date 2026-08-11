@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -91,6 +92,41 @@ func TestStickerSendAuthorizationWithPostgres(t *testing.T) {
 		t.Fatalf("subscribed user should send sticker: %v", err)
 	}
 
+	share, err := service.SendMessage(ctx, alice, conversationID, SendMessageInput{
+		ClientMessageID: "sticker-pack-00001",
+		Type:            "STICKER_PACK",
+		Content:         &TextContent{MediaID: mediaID.String(), Width: 512, Height: 512},
+	})
+	if err != nil {
+		t.Fatalf("subscribed user should share sticker pack: %v", err)
+	}
+	if share.Message.Type != "STICKER_PACK" || share.Message.Content == nil {
+		t.Fatalf("sticker pack share message=%#v", share.Message)
+	}
+	shareURI, err := url.Parse(share.Message.Content.Text)
+	if err != nil {
+		t.Fatalf("parse sticker pack share uri: %v", err)
+	}
+	if shareURI.Scheme != "dd" || shareURI.Host != "stickers" ||
+		shareURI.Path != "/telegram/"+setName || shareURI.Query().Get("title") != "Authorization Pack" {
+		t.Fatalf("sticker pack share uri=%q", share.Message.Content.Text)
+	}
+	var attached bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM message_media WHERE message_id=$1 AND media_id=$2 AND role='PRIMARY')`, share.Message.ID, mediaID).Scan(&attached); err != nil || !attached {
+		t.Fatalf("sticker pack preview attachment attached=%v err=%v", attached, err)
+	}
+
+	forwarded, err := service.ForwardMessage(ctx, bob, uuid.MustParse(share.Message.ID), ForwardMessageInput{
+		TargetConversationID: conversationID.String(),
+		ClientMessageID:      "sticker-pack-fwd01",
+	})
+	if err != nil {
+		t.Fatalf("recipient should forward shared sticker pack without subscribing: %v", err)
+	}
+	if forwarded.Message.Type != "STICKER_PACK" || forwarded.Message.Content == nil || forwarded.Message.Content.Text != share.Message.Content.Text {
+		t.Fatalf("forwarded sticker pack=%#v", forwarded.Message)
+	}
+
 	if _, err := service.SendMessage(ctx, bob, conversationID, SendMessageInput{
 		ClientMessageID: "sticker-seen-00001",
 		Type:            "STICKER",
@@ -108,5 +144,22 @@ func TestStickerSendAuthorizationWithPostgres(t *testing.T) {
 		Content:         &TextContent{MediaID: mediaID.String(), Width: 512, Height: 512},
 	}); err != nil {
 		t.Fatalf("subscribed bob should send sticker: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM user_sticker_packs WHERE pack_id=$1`, packID); err != nil {
+		t.Fatalf("remove sticker subscriptions before archived-share forward: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM telegram_sticker_packs WHERE id=$1`, packID); err != nil {
+		t.Fatalf("remove sticker pack cache before archived-share forward: %v", err)
+	}
+	archivedForward, err := service.ForwardMessage(ctx, bob, uuid.MustParse(share.Message.ID), ForwardMessageInput{
+		TargetConversationID: conversationID.String(),
+		ClientMessageID:      "sticker-pack-fwd02",
+	})
+	if err != nil {
+		t.Fatalf("shared sticker pack should remain forwardable after pack cache removal: %v", err)
+	}
+	if archivedForward.Message.Content == nil || archivedForward.Message.Content.Text != share.Message.Content.Text {
+		t.Fatalf("archived sticker pack forward=%#v", archivedForward.Message)
 	}
 }

@@ -111,6 +111,76 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 	return moment, recipients, nil
 }
 
+func (service *Service) GetActivitySummary(ctx context.Context, principal account.Principal) (ActivitySummary, error) {
+	summary := ActivitySummary{Items: []ActivityItem{}}
+	rows, err := service.pool.Query(ctx, `
+		WITH visible_activity AS (
+		  SELECT activity.id,activity.kind,
+		         actor.id AS actor_id,actor.handle_normalized,actor.display_name,
+		         activity.moment_id,activity.source_comment_id,
+		         COALESCE(mc.text,'') AS comment_text,activity.created_at,activity.read_at
+		  FROM moment_activity_notifications activity
+		  JOIN moments moment ON moment.id=activity.moment_id AND moment.status='ACTIVE'
+		  JOIN users actor ON actor.id=activity.actor_user_id AND actor.status='ACTIVE'
+		  LEFT JOIN moment_comments mc ON mc.id=activity.source_comment_id AND mc.deleted_at IS NULL
+		  WHERE activity.recipient_user_id=$1
+		    AND `+momentVisibilitySQL("moment", "$1")+`
+		    AND NOT EXISTS(
+		      SELECT 1 FROM blocks b
+		      WHERE (b.owner_user_id=$1 AND b.blocked_user_id=activity.actor_user_id)
+		         OR (b.owner_user_id=activity.actor_user_id AND b.blocked_user_id=$1)
+		    )
+		    AND (activity.kind <> 'COMMENT' OR mc.id IS NOT NULL)
+		)
+		SELECT count(*) FILTER (WHERE read_at IS NULL) OVER (),
+		       id::text,kind,actor_id::text,handle_normalized,display_name,
+		       moment_id::text,source_comment_id::text,comment_text,created_at,(read_at IS NOT NULL)
+		FROM visible_activity
+		ORDER BY created_at DESC,id DESC
+		LIMIT 30
+	`, principal.UserID)
+	if err != nil {
+		return ActivitySummary{}, fmt.Errorf("list recent moment activity: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item ActivityItem
+		if err := rows.Scan(
+			&summary.UnreadCount,
+			&item.ID,
+			&item.Kind,
+			&item.Actor.ID,
+			&item.Actor.Handle,
+			&item.Actor.DisplayName,
+			&item.MomentID,
+			&item.CommentID,
+			&item.CommentText,
+			&item.CreatedAt,
+			&item.Read,
+		); err != nil {
+			return ActivitySummary{}, fmt.Errorf("scan recent moment activity: %w", err)
+		}
+		item.CreatedAt = item.CreatedAt.UTC()
+		summary.Items = append(summary.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return ActivitySummary{}, fmt.Errorf("iterate recent moment activity: %w", err)
+	}
+	return summary, nil
+}
+
+func (service *Service) MarkActivityRead(ctx context.Context, principal account.Principal) (ActivitySummary, error) {
+	now := service.now().UTC()
+	if _, err := service.pool.Exec(ctx, `
+		UPDATE moment_activity_notifications
+		SET read_at=$2
+		WHERE recipient_user_id=$1 AND read_at IS NULL
+	`, principal.UserID, now); err != nil {
+		return ActivitySummary{}, fmt.Errorf("mark moment activity read: %w", err)
+	}
+	return service.GetActivitySummary(ctx, principal)
+}
+
 func (service *Service) ListFeed(ctx context.Context, principal account.Principal, before, authorID *uuid.UUID, limit int) ([]Moment, error) {
 	if limit <= 0 {
 		limit = defaultFeedLimit
@@ -332,6 +402,9 @@ func (service *Service) Delete(ctx context.Context, principal account.Principal,
 	if _, err := tx.Exec(ctx, `UPDATE moments SET status='DELETED',deleted_at=$2 WHERE id=$1`, momentID, now); err != nil {
 		return nil, fmt.Errorf("delete moment: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM moment_activity_notifications WHERE moment_id=$1`, momentID); err != nil {
+		return nil, fmt.Errorf("delete moment activity: %w", err)
+	}
 	if err := insertMomentOutboxTx(ctx, tx, momentID, "MOMENT_DELETED", recipients, now); err != nil {
 		return nil, err
 	}
@@ -359,8 +432,23 @@ func (service *Service) SetLike(ctx context.Context, principal account.Principal
 		`, momentID, principal.UserID, now); err != nil {
 			return Moment{}, nil, fmt.Errorf("like moment: %w", err)
 		}
-	} else if _, err := tx.Exec(ctx, `DELETE FROM moment_likes WHERE moment_id=$1 AND user_id=$2`, momentID, principal.UserID); err != nil {
-		return Moment{}, nil, fmt.Errorf("unlike moment: %w", err)
+		if authorID != principal.UserID {
+			if err := insertMomentActivityTx(ctx, tx, authorID, momentID, principal.UserID, "LIKE", nil, now); err != nil {
+				return Moment{}, nil, err
+			}
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `DELETE FROM moment_likes WHERE moment_id=$1 AND user_id=$2`, momentID, principal.UserID); err != nil {
+			return Moment{}, nil, fmt.Errorf("unlike moment: %w", err)
+		}
+		if authorID != principal.UserID {
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM moment_activity_notifications
+				WHERE recipient_user_id=$1 AND moment_id=$2 AND actor_user_id=$3 AND kind='LIKE'
+			`, authorID, momentID, principal.UserID); err != nil {
+				return Moment{}, nil, fmt.Errorf("remove moment like activity: %w", err)
+			}
+		}
 	}
 	recipients, err := audienceUserIDsTx(ctx, tx, momentID, authorID)
 	if err != nil {
@@ -370,6 +458,19 @@ func (service *Service) SetLike(ctx context.Context, principal account.Principal
 	recipients = appendUniqueUUID(recipients, principal.UserID)
 	if err := insertMomentOutboxTx(ctx, tx, momentID, "MOMENT_LIKE_CHANGED", recipients, now); err != nil {
 		return Moment{}, nil, err
+	}
+	if liked && authorID != principal.UserID {
+		payload, _ := json.Marshal(map[string]any{
+			"momentId":    momentID.String(),
+			"actorUserId": principal.UserID.String(),
+		})
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+			VALUES($1,'MOMENT_LIKE_CHANGED',$2,$3,$4,$5::jsonb,'PENDING',$6,$6)
+			ON CONFLICT(dedupe_key) DO NOTHING
+		`, authorID, momentID, principal.UserID, "moment-like:"+momentID.String()+":"+principal.UserID.String(), string(payload), now); err != nil {
+			return Moment{}, nil, fmt.Errorf("enqueue moment like push: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Moment{}, nil, fmt.Errorf("commit moment like: %w", err)
@@ -428,6 +529,38 @@ func (service *Service) AddComment(ctx context.Context, principal account.Princi
 	if err := insertMomentOutboxTx(ctx, tx, momentID, "MOMENT_COMMENT_CREATED", recipients, now); err != nil {
 		return Moment{}, nil, err
 	}
+	pushRecipients := []uuid.UUID{authorID}
+	if replyID != nil {
+		var replyAuthorID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT author_user_id FROM moment_comments WHERE id=$1`, *replyID).Scan(&replyAuthorID); err == nil {
+			pushRecipients = appendUniqueUUID(pushRecipients, replyAuthorID)
+		}
+	}
+	for _, recipientID := range pushRecipients {
+		if recipientID == principal.UserID {
+			continue
+		}
+		if err := insertMomentActivityTx(ctx, tx, recipientID, momentID, principal.UserID, "COMMENT", &commentID, now); err != nil {
+			return Moment{}, nil, err
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"momentId":    momentID.String(),
+		"commentId":   commentID.String(),
+		"actorUserId": principal.UserID.String(),
+	})
+	for _, recipientID := range pushRecipients {
+		if recipientID == principal.UserID {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+			VALUES($1,'MOMENT_COMMENT_CREATED',$2,$3,$4,$5::jsonb,'PENDING',$6,$6)
+			ON CONFLICT(dedupe_key) DO NOTHING
+		`, recipientID, momentID, principal.UserID, "moment-comment:"+commentID.String()+":user:"+recipientID.String(), string(payload), now); err != nil {
+			return Moment{}, nil, fmt.Errorf("enqueue moment comment push: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Moment{}, nil, fmt.Errorf("commit moment comment: %w", err)
 	}
@@ -460,6 +593,9 @@ func (service *Service) DeleteComment(ctx context.Context, principal account.Pri
 	}
 	if _, err := tx.Exec(ctx, `UPDATE moment_comments SET deleted_at=$2 WHERE id=$1`, commentID, now); err != nil {
 		return Moment{}, nil, fmt.Errorf("delete moment comment: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM moment_activity_notifications WHERE source_comment_id=$1`, commentID); err != nil {
+		return Moment{}, nil, fmt.Errorf("delete moment comment activity: %w", err)
 	}
 	recipients, err := audienceUserIDsTx(ctx, tx, momentID, authorID)
 	if err != nil {
@@ -837,6 +973,34 @@ func audienceUserIDsTx(ctx context.Context, tx pgx.Tx, momentID, authorID uuid.U
 		return nil, fmt.Errorf("iterate moment audience: %w", err)
 	}
 	return items, nil
+}
+
+func insertMomentActivityTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	recipientID, momentID, actorID uuid.UUID,
+	kind string,
+	commentID *uuid.UUID,
+	now time.Time,
+) error {
+	if recipientID == uuid.Nil || momentID == uuid.Nil || actorID == uuid.Nil || recipientID == actorID {
+		return nil
+	}
+	dedupeKey := "moment-like:" + momentID.String() + ":actor:" + actorID.String() + ":user:" + recipientID.String()
+	var sourceComment any
+	if commentID != nil && *commentID != uuid.Nil {
+		dedupeKey = "moment-comment:" + commentID.String() + ":user:" + recipientID.String()
+		sourceComment = *commentID
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO moment_activity_notifications(
+		  recipient_user_id,moment_id,actor_user_id,kind,source_comment_id,dedupe_key,created_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT(dedupe_key) DO NOTHING
+	`, recipientID, momentID, actorID, kind, sourceComment, dedupeKey, now); err != nil {
+		return fmt.Errorf("insert moment activity: %w", err)
+	}
+	return nil
 }
 
 func insertMomentOutboxTx(ctx context.Context, tx pgx.Tx, momentID uuid.UUID, eventType string, recipients []uuid.UUID, now time.Time) error {

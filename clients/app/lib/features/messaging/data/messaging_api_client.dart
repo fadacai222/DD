@@ -354,6 +354,7 @@ final class MessagingApiClient implements MessagingGateway {
     if (!const {
       'GIF',
       'STICKER',
+      'STICKER_PACK',
       'FILE',
       'VOICE',
       'VIDEO',

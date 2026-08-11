@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"example.com/selfhosted-im/server/internal/auth/account"
@@ -140,6 +141,18 @@ func (service *Service) dispatchOne(ctx context.Context) (bool, error) {
 			}
 			return true, nil
 		}
+		if err := enqueuePushJobForOutboxRecipient(ctx, tx, event, userID, now); err != nil {
+			if _, rollbackErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT outbox_delivery`); rollbackErr != nil {
+				return false, fmt.Errorf("rollback failed push enqueue: %w", rollbackErr)
+			}
+			if deferErr := service.deferOutbox(ctx, tx, event, err, now); deferErr != nil {
+				return false, fmt.Errorf("defer failed push enqueue: %w", deferErr)
+			}
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				return false, fmt.Errorf("commit failed push enqueue attempt: %w", commitErr)
+			}
+			return true, nil
+		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE outbox_events SET published_at=$2,attempts=attempts+1,last_error=NULL WHERE id=$1`, event.ID, now); err != nil {
 		return false, fmt.Errorf("mark outbox published: %w", err)
@@ -193,10 +206,62 @@ func (service *Service) deferOutbox(ctx context.Context, tx pgx.Tx, event outbox
 
 func nullableResourceID(event outboxEvent) *uuid.UUID {
 	switch event.AggregateType {
-	case "MESSAGE", "RELATIONSHIP", "GROUP":
+	case "MESSAGE", "RELATIONSHIP", "GROUP", "MOMENT", "CALL":
 		value := event.AggregateID
 		return &value
 	default:
 		return nil
 	}
+}
+
+func enqueuePushJobForOutboxRecipient(ctx context.Context, tx pgx.Tx, event outboxEvent, recipientUserID uuid.UUID, now time.Time) error {
+	if recipientUserID == uuid.Nil {
+		return nil
+	}
+	if event.EventType != "MESSAGE_CREATED" && event.EventType != "GROUP_CALL_STARTED" && event.EventType != "CALL_RINGING" {
+		return nil
+	}
+	var actorUserID *uuid.UUID
+	if event.EventType == "MESSAGE_CREATED" {
+		var sender uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT sender_user_id FROM messages WHERE id=$1`, event.AggregateID).Scan(&sender); errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("load push message sender: %w", err)
+		}
+		if sender == recipientUserID {
+			return nil
+		}
+		actorUserID = &sender
+	} else {
+		var payload struct {
+			StartedByUserID string `json:"startedByUserId"`
+			CallerUserID    string `json:"callerUserId"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			actorRaw := strings.TrimSpace(payload.StartedByUserID)
+			if actorRaw == "" {
+				actorRaw = strings.TrimSpace(payload.CallerUserID)
+			}
+			if parsed, err := uuid.Parse(actorRaw); err == nil && parsed != uuid.Nil {
+				if parsed == recipientUserID {
+					return nil
+				}
+				actorUserID = &parsed
+			}
+		}
+	}
+	resourceID := nullableResourceID(event)
+	dedupe := "outbox:" + event.ID.String() + ":user:" + recipientUserID.String()
+	_, err := tx.Exec(ctx, `
+		INSERT INTO push_jobs(
+		  recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,
+		  dedupe_key,payload_json,status,available_at,created_at
+		) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,'PENDING',$8,$8)
+		ON CONFLICT(dedupe_key) DO NOTHING
+	`, recipientUserID, event.EventType, resourceID, event.ConversationID, actorUserID, dedupe, string(event.Payload), now)
+	if err != nil {
+		return fmt.Errorf("enqueue push job: %w", err)
+	}
+	return nil
 }

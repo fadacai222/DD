@@ -10,6 +10,7 @@ import '../data/messaging_api_client.dart';
 import '../data/messaging_local_store.dart';
 import '../domain/messaging_models.dart';
 import 'media_transfer_controller.dart';
+import 'message_notification_preview.dart';
 
 final class MessagingCoordinator extends ChangeNotifier {
   MessagingCoordinator({
@@ -63,6 +64,8 @@ final class MessagingCoordinator extends ChangeNotifier {
       StreamController<IncomingMessageNotice>.broadcast();
   final StreamController<RelationshipNotice> _relationshipController =
       StreamController<RelationshipNotice>.broadcast();
+  final StreamController<String> _eventAvailableReasonController =
+      StreamController<String>.broadcast();
   final Map<String, List<ChatMessage>> _messages = {};
   final Map<String, int?> _nextBeforeSequence = {};
   final Map<String, bool> _hasMore = {};
@@ -92,6 +95,8 @@ final class MessagingCoordinator extends ChangeNotifier {
       _incomingMessageController.stream;
   Stream<RelationshipNotice> get relationshipNotices =>
       _relationshipController.stream;
+  Stream<String> get eventAvailableReasons =>
+      _eventAvailableReasonController.stream;
   int get totalUnreadCount => _conversations.fold<int>(
     0,
     (total, conversation) => total + conversation.unreadCount,
@@ -246,6 +251,10 @@ final class MessagingCoordinator extends ChangeNotifier {
       _heardVoiceMessageIds = List.unmodifiable(local.heardVoiceMessageIds);
       _eventSubscription = _realtime.events.listen((event) {
         if (event.type == 'event_available') {
+          final reason = event.payload['reason']?.toString().trim() ?? '';
+          if (reason.isNotEmpty && !_eventAvailableReasonController.isClosed) {
+            _eventAvailableReasonController.add(reason);
+          }
           unawaited(syncNow());
         }
       });
@@ -414,6 +423,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     if (!const {
           'GIF',
           'STICKER',
+          'STICKER_PACK',
           'FILE',
           'VOICE',
           'VIDEO',
@@ -421,7 +431,9 @@ final class MessagingCoordinator extends ChangeNotifier {
         mediaId.trim().isEmpty) {
       throw const FormatException('媒体消息参数无效。');
     }
-    if ((normalizedType == 'GIF' || normalizedType == 'STICKER') &&
+    if ((normalizedType == 'GIF' ||
+            normalizedType == 'STICKER' ||
+            normalizedType == 'STICKER_PACK') &&
         (width == null ||
             width < 1 ||
             width > 20000 ||
@@ -984,9 +996,10 @@ final class MessagingCoordinator extends ChangeNotifier {
       final senderName = after.type == 'GROUP'
           ? (after.group?.name ?? '群聊')
           : (peer?.displayName ?? '新消息');
-      final preview = const {'TEXT', 'SYSTEM'}.contains(message.type)
-          ? (message.content?.text ?? '')
-          : '[${message.type}]';
+      final preview = messageNotificationPreview(
+        messageType: message.type,
+        text: message.content?.text ?? '',
+      );
       if (!_incomingMessageController.isClosed) {
         _incomingMessageController.add(
           IncomingMessageNotice(
@@ -1103,6 +1116,7 @@ final class MessagingCoordinator extends ChangeNotifier {
     unawaited(_stateSubscription?.cancel());
     unawaited(_incomingMessageController.close());
     unawaited(_relationshipController.close());
+    unawaited(_eventAvailableReasonController.close());
     if (_ownsRealtime) unawaited(_realtime.dispose());
     if (_ownsMediaTransfers) _mediaTransfers.dispose();
     _transferMediaApi.close();

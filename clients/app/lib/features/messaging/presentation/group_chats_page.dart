@@ -13,12 +13,14 @@ class GroupChatsPage extends StatefulWidget {
     required this.accessToken,
     required this.conversations,
     required this.onOpenConversation,
+    this.embedded = false,
   });
 
   final Uri origin;
   final String accessToken;
   final List<ConversationItem> conversations;
   final Future<void> Function(ConversationItem conversation) onOpenConversation;
+  final bool embedded;
 
   @override
   State<GroupChatsPage> createState() => _GroupChatsPageState();
@@ -54,18 +56,8 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
             left.group!.name.toLowerCase().compareTo(right.group!.name.toLowerCase()),
       );
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          '群聊',
-          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-        ),
-        centerTitle: true,
-      ),
-      body: SafeArea(
-        top: false,
-        child: Column(
-          children: [
+    final content = Column(
+      children: [
             Material(
               color: Theme.of(context).colorScheme.surface,
               child: Padding(
@@ -175,9 +167,20 @@ class _GroupChatsPageState extends State<GroupChatsPage> {
                       },
                     ),
             ),
-          ],
+      ],
+    );
+
+    if (widget.embedded) return content;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          '群聊',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
         ),
+        centerTitle: true,
       ),
+      body: SafeArea(top: false, child: content),
     );
   }
 }
