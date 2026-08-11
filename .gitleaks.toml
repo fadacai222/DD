@@ -1,0 +1,27 @@
+title = "DD secret scanning policy"
+
+[extend]
+useDefault = true
+
+# Firebase Android client configuration is intentionally shipped in the APK.
+# Restrict this exception to the GCP API-key rule and this exact public client
+# config path; do not allow the whole file for unrelated secret rules.
+[[allowlists]]
+description = "Firebase Android public client API key"
+targetRules = ["gcp-api-key", "generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''"current_key"\s*:\s*"AIza[0-9A-Za-z_-]{35}"''']
+paths = ['''^clients/app/android/app/google-services\.json$''']
+
+# Deterministic placeholders used by CI and cryptographic unit tests. Keep this
+# value-based rather than path-based so a real credential added to the same
+# files still fails the scan.
+[[allowlists]]
+description = "DD deterministic test-only hex secrets"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^0123456789abcdef0123456789abcdef$''',
+  '''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''',
+]

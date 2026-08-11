@@ -148,10 +148,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\update-android-client.ps1
 - Flutter analyze/test/Web Release/Android Release
 - Windows Release + real-engine MP4 poster smoke
 - Web/Android/Windows artifact upload
+- 独立 Secret Scan：完整 Git 历史 Gitleaks + 受控 allowlist + detector self-test
+
+本地可直接运行同一套 Secret Scan：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-secret-scan.ps1
+```
 
 当前仍缺的重要 CI 门禁：
 
-- 独立 Secret Scan
 - Moments 指定 PostgreSQL integration step
 - QR 指定 PostgreSQL integration step
 - iOS/macOS runner
@@ -193,7 +199,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\update-android-client.ps1
 
 ```text
 修复当前真人回归暴露的问题
-→ CI Secret Scan + Moments/QR 指定 PG 门禁
+→ Moments/QR 指定 PG 门禁
 → P12 Admin / Abuse / Data Rights
 → P13 Production Self-host / Backup / Upgrade / Observability
 → P14 iOS / macOS
