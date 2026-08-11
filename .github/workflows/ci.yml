@@ -117,6 +117,30 @@ jobs:
           DD_MESSAGING_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
         run: go test ./internal/messaging -run TestMessagingLifecycleWithPostgres -count=1 -v
 
+      - name: Moments PostgreSQL lifecycle integration
+        working-directory: server
+        env:
+          DD_MOMENTS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/moments -run '^TestMomentPrivacyLifecycleWithPostgres$' -count=1 -v
+
+      - name: Moments migration 000028 PostgreSQL roundtrip
+        working-directory: server
+        env:
+          DD_MIGRATIONS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./migrations -run '^TestFeatureMigrationRoundTripsWithPostgres/MomentActivity000028$' -count=1 -v
+
+      - name: QR PostgreSQL lifecycle integration
+        working-directory: server
+        env:
+          DD_QR_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./internal/qrcode -run '^TestQRLoginAndGroupInviteWithPostgres$' -count=1 -v
+
+      - name: QR migration 000021 PostgreSQL roundtrip
+        working-directory: server
+        env:
+          DD_MIGRATIONS_TEST_DATABASE_URL: postgres://dd:ci-postgres-password@127.0.0.1:5432/dd?sslmode=disable
+        run: go test ./migrations -run '^TestFeatureMigrationRoundTripsWithPostgres/QR000021$' -count=1 -v
+
       - name: Push PostgreSQL lifecycle and worker integration
         working-directory: server
         env:

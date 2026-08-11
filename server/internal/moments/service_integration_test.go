@@ -133,6 +133,7 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 	if len(carolCommented.Comments) != 1 || carolCommented.Comments[0].Author.ID != carol.String() {
 		t.Fatalf("carol should only see her own non-mutual interaction, got %+v", carolCommented.Comments)
 	}
+	carolCommentID := uuid.MustParse(carolCommented.Comments[0].ID)
 	bobView, err := service.Get(ctx, principals[bob], allID)
 	if err != nil {
 		t.Fatalf("bob reload moment: %v", err)
@@ -180,7 +181,6 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 			t.Fatalf("mark-read item still unread: %+v", item)
 		}
 	}
-	carolCommentID := uuid.MustParse(aliceView.Comments[1].ID)
 	if _, _, err := service.DeleteComment(ctx, principals[bob], allID, carolCommentID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("bob deleting Carol comment err=%v want forbidden", err)
 	}
