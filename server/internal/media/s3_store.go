@@ -33,6 +33,7 @@ type S3Config struct {
 	SecretKey  string
 	HTTPClient *http.Client
 	Now        func() time.Time
+	Observer   ObjectStoreObserver
 }
 
 type S3Store struct {
@@ -43,6 +44,7 @@ type S3Store struct {
 	secretKey  string
 	httpClient *http.Client
 	now        func() time.Time
+	observer   ObjectStoreObserver
 }
 
 func NewS3Store(config S3Config) (*S3Store, error) {
@@ -77,6 +79,7 @@ func NewS3Store(config S3Config) (*S3Store, error) {
 		secretKey:  config.SecretKey,
 		httpClient: client,
 		now:        now,
+		observer:   config.Observer,
 	}, nil
 }
 
@@ -138,7 +141,13 @@ func (store *S3Store) Put(ctx context.Context, key, contentType string, data []b
 	return nil
 }
 
-func (store *S3Store) Stat(ctx context.Context, key string) (ObjectInfo, error) {
+func (store *S3Store) Stat(ctx context.Context, key string) (info ObjectInfo, err error) {
+	started := time.Now()
+	defer func() {
+		if store.observer != nil {
+			store.observer.ObserveObjectStorage("stat", time.Since(started), err)
+		}
+	}()
 	request, err := store.signedRequest(ctx, http.MethodHead, key)
 	if err != nil {
 		return ObjectInfo{}, err
@@ -185,7 +194,13 @@ func (store *S3Store) Stat(ctx context.Context, key string) (ObjectInfo, error) 
 	}, nil
 }
 
-func (store *S3Store) Delete(ctx context.Context, key string) error {
+func (store *S3Store) Delete(ctx context.Context, key string) (err error) {
+	started := time.Now()
+	defer func() {
+		if store.observer != nil {
+			store.observer.ObserveObjectStorage("delete", time.Since(started), err)
+		}
+	}()
 	request, err := store.signedRequest(ctx, http.MethodDelete, key)
 	if err != nil {
 		return err

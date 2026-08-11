@@ -25,6 +25,7 @@ import (
 	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/moments"
+	"example.com/selfhosted-im/server/internal/observability"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
 	"example.com/selfhosted-im/server/internal/platform/maildelivery"
@@ -46,6 +47,9 @@ func main() {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(2)
 	}
+	metrics := observability.New("api", version)
+	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	readinessChecks := make(map[string]httpapi.ReadinessCheck)
 	var authService httpapi.AuthService
@@ -63,7 +67,7 @@ func main() {
 	var realtimeEventBus httpapi.RealtimeEventBus
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pool, err := database.Open(startupContext, config.DatabaseURL)
+		pool, err := database.Open(startupContext, config.DatabaseURL, metrics)
 		cancel()
 		if err != nil {
 			logger.Error("database startup failed", "error", err)
@@ -91,6 +95,7 @@ func main() {
 			mailer, err = maildelivery.NewSMTPMailer(maildelivery.SMTPConfig{
 				Host: config.SMTPHost, Port: config.SMTPPort, From: config.SMTPFrom,
 				Username: config.SMTPUsername, Password: config.SMTPPassword, RequireTLS: config.SMTPRequireTLS,
+				Observer: metrics,
 			})
 			if err != nil {
 				logger.Error("SMTP initialization failed", "error", err)
@@ -143,6 +148,7 @@ func main() {
 				Region:    config.MediaS3Region,
 				AccessKey: config.MediaS3AccessKey,
 				SecretKey: config.MediaS3SecretKey,
+				Observer:  metrics,
 			})
 			if storeErr != nil {
 				logger.Error("media object storage initialization failed", "error", storeErr)
@@ -185,7 +191,7 @@ func main() {
 			logger.Error("qr service initialization failed", "error", err)
 			os.Exit(2)
 		}
-		pushService, err = push.NewService(push.Config{Pool: pool})
+		pushService, err = push.NewService(push.Config{Pool: pool, Observer: metrics})
 		if err != nil {
 			logger.Error("push service initialization failed", "error", err)
 			os.Exit(2)
@@ -195,6 +201,7 @@ func main() {
 			logger.Error("data rights service initialization failed", "error", err)
 			os.Exit(2)
 		}
+		go metrics.RunDatabaseSampler(shutdownContext, pool, 15*time.Second)
 	}
 
 	if config.RedisURL != "" {
@@ -204,7 +211,7 @@ func main() {
 		}
 		nodeID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 		startupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		redisBus, redisErr := realtimebus.NewRedisBus(startupContext, config.RedisURL, nodeID)
+		redisBus, redisErr := realtimebus.NewRedisBus(startupContext, config.RedisURL, nodeID, metrics)
 		cancel()
 		if redisErr != nil {
 			logger.Error("realtime redis startup failed", "error", redisErr)
@@ -214,6 +221,7 @@ func main() {
 		realtimeEventBus = redisBus
 		readinessChecks["redis"] = redisBus.Ping
 	}
+	go metrics.RunDependencySampler(shutdownContext, mapReadinessChecks(readinessChecks), 15*time.Second)
 
 	server := &http.Server{
 		Addr: ":" + strconv.Itoa(config.Port),
@@ -243,6 +251,7 @@ func main() {
 			DataRightsService:  dataRightsService,
 			PushAvatarSecret:   config.AuthTokenSecret,
 			RealtimeEventBus:   realtimeEventBus,
+			Metrics:            metrics,
 			Logger:             logger,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -250,8 +259,22 @@ func main() {
 		MaxHeaderBytes:    16 * 1024,
 	}
 
-	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	observabilityServer, err := observability.StartServer(
+		os.Getenv("DD_API_OBSERVABILITY_ADDR"),
+		observability.NewOperationalHandler(metrics.Handler(), mapReadinessChecks(readinessChecks)),
+	)
+	if err != nil {
+		logger.Error("observability listener startup failed", "error", err)
+		os.Exit(1)
+	}
+	if observabilityServer != nil {
+		logger.Info("observability listener started", "address", observabilityServer.Address())
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = observabilityServer.Shutdown(ctx)
+		}()
+	}
 
 	errorChannel := make(chan error, 1)
 	go func() {
@@ -277,4 +300,12 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+func mapReadinessChecks(checks map[string]httpapi.ReadinessCheck) map[string]observability.ReadinessCheck {
+	mapped := make(map[string]observability.ReadinessCheck, len(checks))
+	for name, check := range checks {
+		mapped[name] = observability.ReadinessCheck(check)
+	}
+	return mapped
 }

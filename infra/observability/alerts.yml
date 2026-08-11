@@ -1,0 +1,247 @@
+groups:
+  - name: dd-api
+    rules:
+      - alert: DDAPIUnavailable
+        expr: up{job="dd-api"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: DD API metrics endpoint is unavailable
+          description: Prometheus has been unable to scrape the DD API for at least 2 minutes.
+          runbook: docs/runbooks/observability.md#api-unavailable
+
+      - alert: DDAPIHigh5xxRate
+        expr: |
+          (
+            sum(rate(dd_http_requests_total{job="dd-api",status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(dd_http_requests_total{job="dd-api"}[5m])), 0.001)
+          ) > 0.02
+          and
+          sum(rate(dd_http_requests_total{job="dd-api"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: DD API 5xx rate is above 2%
+          description: User-visible server errors have remained elevated for at least 10 minutes.
+          runbook: docs/runbooks/observability.md#api-5xx
+
+      - alert: DDAPIHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(dd_http_request_duration_seconds_bucket{job="dd-api",route!~"/ws|/api/v1/realtime"}[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: DD API p95 latency is above 1 second
+          description: Aggregate API p95 latency has remained above 1 second for at least 10 minutes.
+          runbook: docs/runbooks/observability.md#api-latency
+
+      - alert: DDAPIHighP99Latency
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(dd_http_request_duration_seconds_bucket{job="dd-api",route!~"/ws|/api/v1/realtime"}[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: DD API p99 latency is above 2 seconds
+          description: Aggregate API p99 latency has remained above 2 seconds for at least 10 minutes.
+          runbook: docs/runbooks/observability.md#api-latency
+
+  - name: dd-dependencies
+    rules:
+      - alert: DDPostgresUnavailable
+        expr: min(dd_dependency_up{job=~"dd-api|dd-worker",dependency="postgres"}) == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: PostgreSQL is unavailable to DD
+          description: At least one DD process has failed PostgreSQL health checks for at least 2 minutes.
+          runbook: docs/runbooks/observability.md#postgres-unavailable
+
+      - alert: DDPostgresPoolSaturated
+        expr: |
+          max(dd_postgres_pool_connections{state="acquired"})
+          /
+          clamp_min(max(dd_postgres_pool_connections{state="max"}), 1)
+          > 0.90
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: PostgreSQL pool is over 90% utilized
+          description: DD has sustained PostgreSQL connection-pool saturation for at least 10 minutes.
+          runbook: docs/runbooks/observability.md#postgres-pool
+
+      - alert: DDRedisUnavailable
+        expr: dd_dependency_up{job="dd-api",dependency="redis"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: Redis realtime bus is unavailable
+          description: The API has failed Redis health checks for at least 2 minutes.
+          runbook: docs/runbooks/observability.md#redis-unavailable
+
+      - alert: DDObjectStorageFailureRate
+        expr: |
+          (
+            sum(rate(dd_object_storage_requests_total{result="error"}[10m]))
+            /
+            clamp_min(sum(rate(dd_object_storage_requests_total[10m])), 0.001)
+          ) > 0.05
+          and
+          sum(rate(dd_object_storage_requests_total[10m])) > 0.01
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: Object storage failures exceed 5%
+          description: S3/MinIO stat or delete operations have failed at a sustained elevated rate.
+          runbook: docs/runbooks/observability.md#object-storage
+
+      - alert: DDSMTPSendFailures
+        expr: increase(dd_smtp_send_total{job="dd-api",result="error"}[15m]) >= 3
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: SMTP delivery is repeatedly failing
+          description: At least three verification-mail sends failed in a 15-minute window and the condition persisted.
+          runbook: docs/runbooks/observability.md#smtp
+
+  - name: dd-queues-and-push
+    rules:
+      - alert: DDOutboxBacklog
+        expr: |
+          max(dd_outbox_oldest_pending_seconds{job="dd-worker"}) > 120
+          or
+          max(dd_outbox_backlog{job="dd-worker"}) > 1000
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: Durable outbox is not draining
+          description: Pending events are older than 2 minutes or the backlog is above 1000 for at least 10 minutes.
+          runbook: docs/runbooks/observability.md#outbox-backlog
+
+      - alert: DDPushBacklog
+        expr: |
+          max(dd_push_oldest_pending_seconds{job="dd-worker"}) > 300
+          or
+          sum(dd_push_jobs{job="dd-worker",state=~"queued|retry_waiting"}) > 500
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: Push queue is not draining
+          description: Push jobs are older than 5 minutes or more than 500 jobs are waiting for at least 10 minutes.
+          runbook: docs/runbooks/push-provider-operations.md#backlog
+
+      - alert: DDPushFailureRate
+        expr: |
+          (
+            sum(rate(dd_push_provider_requests_total{job="dd-worker",result=~"retryable|auth_failure|failure|unconfigured"}[10m]))
+            /
+            clamp_min(sum(rate(dd_push_provider_requests_total{job="dd-worker"}[10m])), 0.001)
+          ) > 0.10
+          and
+          sum(rate(dd_push_provider_requests_total{job="dd-worker"}[10m])) > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: Push provider failure rate exceeds 10%
+          description: Provider delivery attempts are failing at a sustained elevated rate.
+          runbook: docs/runbooks/push-provider-operations.md#provider-failures
+
+      - alert: DDPushProviderAuthenticationFailure
+        expr: increase(dd_push_provider_auth_failures_total{job="dd-worker"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Push provider credentials are being rejected
+          description: FCM or APNs authentication failures were observed and continued to be relevant for at least 5 minutes.
+          runbook: docs/runbooks/push-provider-operations.md#credential-failure
+
+      - alert: DDWorkerStopped
+        expr: |
+          up{job="dd-worker"} == 0
+          or
+          (time() - dd_worker_last_heartbeat_timestamp_seconds{job="dd-worker"}) > 60
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: DD worker is stopped or dispatch loop is stalled
+          description: The worker is not scrapeable or its dispatch heartbeat is older than 60 seconds for at least 2 minutes.
+          runbook: docs/runbooks/observability.md#worker-stopped
+
+  - name: dd-realtime-and-media
+    rules:
+      - alert: DDRealtimePublishFailures
+        expr: increase(dd_realtime_publish_failures_total{job="dd-api"}[10m]) >= 5
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: Cross-node realtime publishing is repeatedly failing
+          description: Realtime Redis publish/subscription failures are recurring; clients may rely on sync recovery.
+          runbook: docs/runbooks/observability.md#realtime
+
+      - alert: DDLiveKitUnavailable
+        expr: probe_success{job="livekit-blackbox"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: LiveKit health probe is failing
+          description: The configured LiveKit HTTP endpoint has failed blackbox probes for at least 2 minutes.
+          runbook: docs/runbooks/observability.md#livekit-turn
+
+      - alert: DDTurnTCPUnavailable
+        expr: probe_success{job="turn-tcp-blackbox"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: TURN TCP listener is unavailable
+          description: The configured TURN TCP endpoint has failed probes for at least 5 minutes.
+          runbook: docs/runbooks/observability.md#livekit-turn
+
+      - alert: DDTurnTLSUnavailable
+        expr: probe_success{job="turn-tls-blackbox"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: TURN TLS listener is unavailable
+          description: The configured TURN TLS endpoint has failed TLS probes for at least 5 minutes.
+          runbook: docs/runbooks/observability.md#livekit-turn
+
+  - name: dd-host
+    rules:
+      - alert: DDDiskCapacityLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{job="node",fstype!~"tmpfs|overlay|squashfs"}
+            /
+            node_filesystem_size_bytes{job="node",fstype!~"tmpfs|overlay|squashfs"}
+          ) < 0.10
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: Host filesystem has less than 10% free space
+          description: A monitored persistent filesystem has remained below 10% free capacity for 15 minutes.
+          runbook: docs/runbooks/observability.md#disk-capacity

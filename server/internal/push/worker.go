@@ -76,6 +76,10 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 	if err != nil {
 		return false, fmt.Errorf("claim push job: %w", err)
 	}
+	if service.observer != nil {
+		service.observer.PushJobStarted()
+		defer service.observer.PushJobFinished()
+	}
 
 	var pushEnabled bool
 	var previewMode string
@@ -132,12 +136,16 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 	}
 
 	providerMissing := false
+	providerAuthFailure := false
 	retryableFailure := false
 	successes := 0
 	for _, endpoint := range endpoints {
 		provider := providers.For(endpoint.Provider)
 		if provider == nil {
 			providerMissing = true
+			if service.observer != nil {
+				service.observer.ObservePushProvider(endpoint.Provider, "unconfigured", 0)
+			}
 			continue
 		}
 		delivery := baseDelivery
@@ -146,7 +154,11 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 		delivery.Endpoint = endpoint.Endpoint
 		delivery.AppID = endpoint.AppID
 		delivery.Environment = endpoint.Environment
+		providerStarted := time.Now()
 		result, sendErr := provider.Send(ctx, delivery)
+		if service.observer != nil {
+			service.observer.ObservePushProvider(endpoint.Provider, providerMetricResult(endpoint.Provider, result, sendErr), time.Since(providerStarted))
+		}
 		if sendErr == nil {
 			successes++
 			if _, err := tx.Exec(ctx, `
@@ -170,8 +182,21 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 			}
 			continue
 		}
+		if isProviderAuthFailure(endpoint.Provider, sendErr) {
+			providerAuthFailure = true
+			continue
+		}
 		if errors.Is(sendErr, ErrRetryable) {
 			retryableFailure = true
+			continue
+		}
+		// FCM/APNs adapters explicitly identify invalid device tokens. Other
+		// permanent provider errors are payload/app/provider configuration faults,
+		// so they must not poison otherwise valid device endpoints. UnifiedPush
+		// uses a per-device capability URL, where repeated permanent 4xx failures
+		// are endpoint-specific and may still disable that endpoint.
+		if endpoint.Provider != ProviderUnifiedPush {
+			continue
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE device_push_endpoints
@@ -192,7 +217,7 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 		}
 		return true, nil
 	}
-	if providerMissing || retryableFailure {
+	if providerMissing || providerAuthFailure || retryableFailure {
 		return service.deferJob(ctx, tx, job, ErrProviderUnavailable, now)
 	}
 	return service.dropJob(ctx, tx, job.ID, "ALL_ENDPOINTS_FAILED", now)
@@ -392,6 +417,9 @@ func (service *Service) deferJob(ctx context.Context, tx pgx.Tx, job pushJob, di
 		if err := tx.Commit(ctx); err != nil {
 			return false, fmt.Errorf("commit exhausted push job: %w", err)
 		}
+		if service.observer != nil {
+			service.observer.PushFailed()
+		}
 		return true, nil
 	}
 	backoff := time.Second * time.Duration(1<<min(attempt-1, 8))
@@ -407,6 +435,9 @@ func (service *Service) deferJob(ctx context.Context, tx pgx.Tx, job pushJob, di
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit deferred push job: %w", err)
 	}
+	if service.observer != nil {
+		service.observer.PushRetry()
+	}
 	return true, nil
 }
 
@@ -416,6 +447,9 @@ func (service *Service) dropJob(ctx context.Context, tx pgx.Tx, jobID uuid.UUID,
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit dropped push job: %w", err)
+	}
+	if reason == "ALL_ENDPOINTS_FAILED" && service.observer != nil {
+		service.observer.PushFailed()
 	}
 	return true, nil
 }

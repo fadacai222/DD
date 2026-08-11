@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+type Observer interface {
+	ObserveSMTP(duration time.Duration, err error)
+}
+
 type SMTPConfig struct {
 	Host       string
 	Port       int
@@ -23,12 +27,14 @@ type SMTPConfig struct {
 	Username   string
 	Password   string
 	RequireTLS bool
+	Observer   Observer
 }
 
 type SMTPMailer struct {
 	config       SMTPConfig
 	envelopeFrom string
 	fromHeader   string
+	observer     Observer
 }
 
 func NewSMTPMailer(config SMTPConfig) (*SMTPMailer, error) {
@@ -52,10 +58,17 @@ func NewSMTPMailer(config SMTPConfig) (*SMTPMailer, error) {
 		config:       config,
 		envelopeFrom: from.Address,
 		fromHeader:   (&netmail.Address{Name: "DD", Address: from.Address}).String(),
+		observer:     config.Observer,
 	}, nil
 }
 
-func (mailer *SMTPMailer) SendVerificationCode(ctx context.Context, to, purpose, code string) error {
+func (mailer *SMTPMailer) SendVerificationCode(ctx context.Context, to, purpose, code string) (err error) {
+	started := time.Now()
+	defer func() {
+		if mailer.observer != nil {
+			mailer.observer.ObserveSMTP(time.Since(started), err)
+		}
+	}()
 	message, err := mailer.buildVerificationMessage(to, purpose, code)
 	if err != nil {
 		return err

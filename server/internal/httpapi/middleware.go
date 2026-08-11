@@ -50,25 +50,41 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func accessLogMiddleware(logger *slog.Logger, version string, next http.Handler) http.Handler {
+func accessLogMiddleware(logger *slog.Logger, version string, metrics RuntimeMetrics, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		started := time.Now()
-		recorder := &statusRecorder{ResponseWriter: response}
-		next.ServeHTTP(recorder, request)
-		status := recorder.status
-		if status == 0 {
-			status = http.StatusOK
+		if metrics != nil {
+			metrics.HTTPRequestStarted()
 		}
-		logger.Info("http request",
-			"service", serviceName,
-			"version", version,
-			"requestId", requestIDFromContext(request.Context()),
-			"method", request.Method,
-			"path", request.URL.Path,
-			"status", status,
-			"bytes", recorder.bytes,
-			"durationMs", time.Since(started).Milliseconds(),
-		)
+		recorder := &statusRecorder{ResponseWriter: response}
+		defer func() {
+			panicValue := recover()
+			status := recorder.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			if panicValue != nil && status < http.StatusInternalServerError {
+				status = http.StatusInternalServerError
+			}
+			duration := time.Since(started)
+			if metrics != nil {
+				metrics.HTTPRequestFinished(request.Method, request.Pattern, status, duration)
+			}
+			logger.Info("http request",
+				"service", serviceName,
+				"version", version,
+				"requestId", requestIDFromContext(request.Context()),
+				"method", request.Method,
+				"path", request.URL.Path,
+				"status", status,
+				"bytes", recorder.bytes,
+				"durationMs", duration.Milliseconds(),
+			)
+			if panicValue != nil {
+				panic(panicValue)
+			}
+		}()
+		next.ServeHTTP(recorder, request)
 	})
 }
 

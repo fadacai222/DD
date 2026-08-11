@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -133,6 +134,90 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	}
 	if jobStatus != "SENT" {
 		t.Fatalf("job status=%s", jobStatus)
+	}
+
+	if err := service.DeleteEndpoint(ctx, recipientPrincipal, ProviderUnifiedPush); err != nil {
+		t.Fatalf("delete unified push endpoint: %v", err)
+	}
+	fcmEndpoint, err := service.RegisterEndpoint(ctx, recipientPrincipal, RegisterEndpointInput{
+		Provider: ProviderFCM, Endpoint: "fcm-registration-token-" + suffix,
+		AppID: "org.openimx.client", Environment: "PRODUCTION",
+	})
+	if err != nil {
+		t.Fatalf("register fcm endpoint: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
+	`, recipientID, messageID, conversationID, senderID, "push-auth:"+suffix, now); err != nil {
+		t.Fatalf("seed provider auth failure job: %v", err)
+	}
+	authProvider := &captureProvider{err: errors.New("FCM OAuth HTTP 403: invalid_grant")}
+	processed, err = service.DispatchJobs(ctx, Providers{FCM: authProvider}, 1)
+	if err != nil {
+		t.Fatalf("dispatch provider auth failure: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("provider auth processed=%d", processed)
+	}
+	var endpointStatus string
+	var failureCount int
+	if err := pool.QueryRow(ctx, `SELECT status,failure_count FROM device_push_endpoints WHERE id=$1`, fcmEndpoint.ID).Scan(&endpointStatus, &failureCount); err != nil {
+		t.Fatal(err)
+	}
+	if endpointStatus != "ACTIVE" || failureCount != 0 {
+		t.Fatalf("provider auth failure polluted endpoint status=%s failureCount=%d", endpointStatus, failureCount)
+	}
+	var authJobStatus string
+	var authAttempts int
+	if err := pool.QueryRow(ctx, `SELECT status,attempts FROM push_jobs WHERE dedupe_key=$1`, "push-auth:"+suffix).Scan(&authJobStatus, &authAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if authJobStatus != "PENDING" || authAttempts != 1 {
+		t.Fatalf("provider auth job status=%s attempts=%d", authJobStatus, authAttempts)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
+	`, recipientID, messageID, conversationID, senderID, "push-retry:"+suffix, now); err != nil {
+		t.Fatalf("seed retryable provider job: %v", err)
+	}
+	retryProvider := &captureProvider{err: fmt.Errorf("%w: FCM HTTP 503", ErrRetryable)}
+	processed, err = service.DispatchJobs(ctx, Providers{FCM: retryProvider}, 1)
+	if err != nil {
+		t.Fatalf("dispatch retryable provider failure: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("retryable provider processed=%d", processed)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status,failure_count FROM device_push_endpoints WHERE id=$1`, fcmEndpoint.ID).Scan(&endpointStatus, &failureCount); err != nil {
+		t.Fatal(err)
+	}
+	if endpointStatus != "ACTIVE" || failureCount != 0 {
+		t.Fatalf("retryable provider failure polluted endpoint status=%s failureCount=%d", endpointStatus, failureCount)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE device_push_endpoints
+		SET status='INVALID',updated_at=$2,last_failure_at=$2,last_failure_code='UNREGISTERED'
+		WHERE id=$1
+	`, fcmEndpoint.ID, now.Add(-31*24*time.Hour)); err != nil {
+		t.Fatalf("age invalid endpoint: %v", err)
+	}
+	removed, err := service.CleanupInvalidEndpoints(ctx, 10, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("cleanup invalid endpoint: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed invalid endpoints=%d", removed)
+	}
+	var endpointCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM device_push_endpoints WHERE id=$1`, fcmEndpoint.ID).Scan(&endpointCount); err != nil {
+		t.Fatal(err)
+	}
+	if endpointCount != 0 {
+		t.Fatalf("invalid endpoint still present after retention cleanup")
 	}
 }
 

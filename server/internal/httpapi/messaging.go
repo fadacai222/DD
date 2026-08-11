@@ -579,7 +579,10 @@ func (s *server) enqueueRealtimeBusHint(userID string, envelope protocol.Outboun
 	select {
 	case s.realtimePublishQueue <- realtimeBusDelivery{userID: userID, envelope: envelope}:
 	default:
-		s.logger.Warn("cross-node realtime hint queue full; client sync will recover", "userId", userID)
+		if s.metrics != nil {
+			s.metrics.RealtimeQueueDropped()
+		}
+		s.logger.Warn("cross-node realtime hint queue full; client sync will recover")
 	}
 }
 
@@ -589,7 +592,10 @@ func (s *server) publishRealtimeBusHints() {
 		err := s.realtimeEventBus.Publish(ctx, delivery.userID, delivery.envelope)
 		cancel()
 		if err != nil {
-			s.logger.Warn("cross-node realtime hint publish failed; client sync will recover", "userId", delivery.userID, "error", err)
+			if s.metrics != nil {
+				s.metrics.RealtimePublishFailure("publish")
+			}
+			s.logger.Warn("cross-node realtime hint publish failed; client sync will recover", "error", err)
 		}
 	}
 }
@@ -601,6 +607,10 @@ func (s *server) consumeRealtimeEventBus() {
 			s.hub.publish(userID, envelope)
 		})
 		if err != nil {
+			if s.metrics != nil {
+				s.metrics.RealtimePublishFailure("subscribe")
+				s.metrics.RedisReconnect()
+			}
 			s.logger.Warn("cross-node realtime subscription stopped; retrying", "error", err)
 		}
 		time.Sleep(time.Second)

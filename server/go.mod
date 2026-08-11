@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/livekit/protocol v1.50.4
+	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.20.0
 	golang.org/x/net v0.57.0
 )
@@ -56,7 +57,6 @@ require (
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.8 // indirect
 	github.com/pion/webrtc/v4 v4.2.11 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.68.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect

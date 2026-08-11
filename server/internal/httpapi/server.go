@@ -28,6 +28,17 @@ const (
 
 type ReadinessCheck func(context.Context) error
 
+type RuntimeMetrics interface {
+	HTTPRequestStarted()
+	HTTPRequestFinished(method, route string, status int, duration time.Duration)
+	SetDependencyHealth(name string, healthy bool)
+	WebSocketOpened(mode string)
+	WebSocketClosed(mode string)
+	RealtimePublishFailure(reason string)
+	RealtimeQueueDropped()
+	RedisReconnect()
+}
+
 type RealtimeEventBus interface {
 	Publish(ctx context.Context, userID string, envelope protocol.OutboundEnvelope) error
 	Subscribe(ctx context.Context, deliver func(userID string, envelope protocol.OutboundEnvelope)) error
@@ -61,6 +72,7 @@ type Config struct {
 	DataRightsService  DataRightsService
 	PushAvatarSecret   string
 	RealtimeEventBus   RealtimeEventBus
+	Metrics            RuntimeMetrics
 	Logger             *slog.Logger
 	Now                func() time.Time
 }
@@ -95,6 +107,7 @@ type server struct {
 	dataRights           DataRightsService
 	pushAvatarSecret     string
 	realtimeEventBus     RealtimeEventBus
+	metrics              RuntimeMetrics
 	realtimePublishQueue chan realtimeBusDelivery
 	eventSequence        atomic.Int64
 	legacyCalls          *callStore
@@ -167,6 +180,7 @@ func NewHandler(config Config) http.Handler {
 		dataRights:         config.DataRightsService,
 		pushAvatarSecret:   strings.TrimSpace(config.PushAvatarSecret),
 		realtimeEventBus:   config.RealtimeEventBus,
+		metrics:            config.Metrics,
 		legacyCalls:        newCallStore(),
 		hub:                newSocketHub(),
 	}
@@ -281,7 +295,7 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/realtime", s.handleAuthenticatedWebSocket)
 
 	handler := securityHeaders(corsMiddleware(s.allowedHTTPOrigins, mux))
-	handler = accessLogMiddleware(s.logger, s.version, handler)
+	handler = accessLogMiddleware(s.logger, s.version, s.metrics, handler)
 	return requestIDMiddleware(handler)
 }
 
@@ -323,10 +337,16 @@ func (s *server) handleReady(response http.ResponseWriter, request *http.Request
 		cancel()
 		if err != nil {
 			checks[name] = "failed"
+			if s.metrics != nil {
+				s.metrics.SetDependencyHealth(name, false)
+			}
 			ready = false
 			continue
 		}
 		checks[name] = "ok"
+		if s.metrics != nil {
+			s.metrics.SetDependencyHealth(name, true)
+		}
 	}
 
 	status := http.StatusOK
@@ -391,11 +411,21 @@ func (s *server) handleWebSocketMode(response http.ResponseWriter, request *http
 	if err != nil {
 		return
 	}
+	metricMode := "legacy"
+	if requireAuthentication {
+		metricMode = "authenticated"
+	}
+	if s.metrics != nil {
+		s.metrics.WebSocketOpened(metricMode)
+	}
 	registeredIdentity := ""
 	client := &socketClient{connection: connection}
 	defer func() {
 		if registeredIdentity != "" {
 			s.hub.unregister(registeredIdentity, client)
+		}
+		if s.metrics != nil {
+			s.metrics.WebSocketClosed(metricMode)
 		}
 		forgetSocketWriteLock(connection)
 		connection.CloseNow()

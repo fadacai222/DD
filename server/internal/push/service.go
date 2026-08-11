@@ -20,6 +20,7 @@ type Service struct {
 	now               func() time.Time
 	publicBaseURL     string
 	avatarTokenSecret string
+	observer          Observer
 }
 
 type Config struct {
@@ -27,6 +28,7 @@ type Config struct {
 	Now               func() time.Time
 	PublicBaseURL     string
 	AvatarTokenSecret string
+	Observer          Observer
 }
 
 func NewService(config Config) (*Service, error) {
@@ -42,6 +44,7 @@ func NewService(config Config) (*Service, error) {
 		now:               now,
 		publicBaseURL:     strings.TrimRight(strings.TrimSpace(config.PublicBaseURL), "/"),
 		avatarTokenSecret: strings.TrimSpace(config.AvatarTokenSecret),
+		observer:          config.Observer,
 	}, nil
 }
 

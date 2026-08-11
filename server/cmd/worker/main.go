@@ -13,6 +13,7 @@ import (
 	"example.com/selfhosted-im/server/internal/datarights"
 	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
+	"example.com/selfhosted-im/server/internal/observability"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
 	"example.com/selfhosted-im/server/internal/platform/database"
 	"example.com/selfhosted-im/server/internal/push"
@@ -23,6 +24,7 @@ var version = "dev"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	metrics := observability.New("worker", version)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -37,7 +39,7 @@ func main() {
 	}
 
 	startupContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	pool, err := database.Open(startupContext, databaseURL)
+	pool, err := database.Open(startupContext, databaseURL, metrics)
 	cancel()
 	if err != nil {
 		logger.Error("worker database startup failed", "error", err)
@@ -64,6 +66,7 @@ func main() {
 		Pool:              pool,
 		PublicBaseURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("IM_PUBLIC_BASE_URL")), "/"),
 		AvatarTokenSecret: authTokenSecret,
+		Observer:          metrics,
 	})
 	if err != nil {
 		logger.Error("worker push initialization failed", "error", err)
@@ -74,6 +77,9 @@ func main() {
 		logger.Error("worker push provider initialization failed", "error", err)
 		os.Exit(2)
 	}
+	metrics.SetPushProviderConfigured(push.ProviderFCM, pushProviders.FCM != nil)
+	metrics.SetPushProviderConfigured(push.ProviderAPNS, pushProviders.APNS != nil)
+	metrics.SetPushProviderConfigured(push.ProviderUnifiedPush, pushProviders.UnifiedPush != nil)
 
 	var mediaService *media.Service
 	var dataRightsStore datarights.ArtifactStore
@@ -94,6 +100,7 @@ func main() {
 			Region:    strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
 			AccessKey: accessKey,
 			SecretKey: secretKey,
+			Observer:  metrics,
 		})
 		if storeErr != nil {
 			logger.Error("worker media object storage initialization failed", "error", storeErr)
@@ -115,6 +122,29 @@ func main() {
 		os.Exit(2)
 	}
 
+	go metrics.RunDatabaseSampler(ctx, pool, 10*time.Second)
+	workerReadiness := map[string]observability.ReadinessCheck{
+		"postgres": func(checkCtx context.Context) error { return database.Ping(checkCtx, pool) },
+	}
+	go metrics.RunDependencySampler(ctx, workerReadiness, 15*time.Second)
+	observabilityServer, err := observability.StartServer(
+		os.Getenv("DD_WORKER_OBSERVABILITY_ADDR"),
+		observability.NewOperationalHandler(metrics.Handler(), workerReadiness),
+	)
+	if err != nil {
+		logger.Error("worker observability listener startup failed", "error", err)
+		os.Exit(1)
+	}
+	if observabilityServer != nil {
+		logger.Info("worker observability listener started", "address", observabilityServer.Address())
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = observabilityServer.Shutdown(shutdownCtx)
+		}()
+	}
+	metrics.SetWorkerReady(true)
+	defer metrics.SetWorkerReady(false)
 	logger.Info("worker started", "service", "dd-worker", "version", version)
 	outboxTicker := time.NewTicker(500 * time.Millisecond)
 	defer outboxTicker.Stop()
@@ -122,6 +152,8 @@ func main() {
 	defer mediaCleanupTicker.Stop()
 	dataRightsTicker := time.NewTicker(2 * time.Second)
 	defer dataRightsTicker.Stop()
+	pushCleanupTicker := time.NewTicker(time.Hour)
+	defer pushCleanupTicker.Stop()
 
 	for {
 		select {
@@ -139,6 +171,7 @@ func main() {
 				}
 			}
 			batchCancel()
+			metrics.WorkerHeartbeat(dispatchErr)
 			if dispatchErr != nil {
 				logger.Error("outbox/push dispatch failed", "service", "dd-worker", "error", dispatchErr)
 				continue
@@ -164,6 +197,17 @@ func main() {
 			}
 			if exported > 0 || deleted > 0 {
 				logger.Info("data rights jobs processed", "service", "dd-worker", "exports", exported, "deletions", deleted)
+			}
+		case <-pushCleanupTicker.C:
+			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 15*time.Second)
+			removed, cleanupErr := pushService.CleanupInvalidEndpoints(cleanupContext, 500, 30*24*time.Hour)
+			cleanupCancel()
+			if cleanupErr != nil {
+				logger.Error("invalid push endpoint cleanup failed", "service", "dd-worker", "error", cleanupErr)
+				continue
+			}
+			if removed > 0 {
+				logger.Info("invalid push endpoints cleaned", "service", "dd-worker", "endpoints", removed)
 			}
 		case <-mediaCleanupTicker.C:
 			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
