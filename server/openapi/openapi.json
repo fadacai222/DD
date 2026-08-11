@@ -74,6 +74,10 @@
     {
       "name": "Admin",
       "description": "Independent administrator authentication, MFA, sessions, RBAC and security audit."
+    },
+    {
+      "name": "Data Rights",
+      "description": "Authenticated user data export and account-deletion lifecycle. Export artifacts are private and downloads use short-lived authorization."
     }
   ],
   "paths": {
@@ -1350,6 +1354,107 @@
         }
       }
     },
+    "/api/v1/data-rights/exports": {
+      "post": {
+        "operationId": "requestDataExport",
+        "summary": "Request a private asynchronous export of the current user's data",
+        "description": "Requires a bearer token and Idempotency-Key. Requests inside the server cooldown are coalesced. The durable worker may retry QUEUED/FAILED jobs and reclaim expired PROCESSING leases. Export scope includes profile/privacy, contacts, active group/member relationships, authorized conversation messages, the user's Moments activity, sticker metadata, devices, notification preferences and push endpoint metadata. Raw push capability values and object-storage credentials are never exported.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {
+          "202": {"description": "Export request accepted or an existing recent request returned", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Idempotency key is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Data-rights or private object storage is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/data-rights/exports/{exportId}": {
+      "get": {
+        "operationId": "getDataExport",
+        "summary": "Get the current user's export status",
+        "description": "The request id is always scoped to the authenticated principal. Another user's id is returned as not found to prevent IDOR enumeration. States are QUEUED, PROCESSING, COMPLETED, FAILED and EXPIRED; retryable indicates whether a durable worker retry is expected.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/DataExportId"}],
+        "responses": {
+          "200": {"description": "Export state", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Export id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Export not found for the authenticated user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/data-rights/exports/{exportId}/download": {
+      "post": {
+        "operationId": "authorizeDataExportDownload",
+        "summary": "Authorize a short-lived private export download",
+        "description": "Returns a short-lived signed object URL only after principal ownership and COMPLETED/not-expired state are checked. The response is Cache-Control: no-store; no permanent public URL is stored or returned.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/DataExportId"}],
+        "responses": {
+          "200": {"description": "Short-lived download authorization", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Export id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Export not found for the authenticated user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Export is not ready", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "410": {"description": "Export artifact expired", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/data-rights/account-deletion": {
+      "post": {
+        "operationId": "requestAccountDeletion",
+        "summary": "Request deletion of the current user's account",
+        "description": "Requires bearer authentication, Idempotency-Key, and secondary authentication with currentPassword. The lifecycle starts REQUESTED and is durably transitioned to COOLING_OFF. The user may cancel during the cooling-off window. After it expires the worker enters EXECUTING, revokes devices/tokens/push endpoints, ends active call state, transfers or dissolves owned groups, deletes private business data/objects, anonymizes shared records, then completes as COMPLETED. Recoverable worker failures are recorded as FAILED and retried.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AccountDeletionRequest"}}}},
+        "responses": {
+          "202": {"description": "Deletion request is in cooling-off", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Request or idempotency key is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "403": {"description": "Current-password secondary authentication failed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Account is not active", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/data-rights/account-deletion/{deletionId}": {
+      "get": {
+        "operationId": "getAccountDeletion",
+        "summary": "Get the current user's account-deletion state",
+        "description": "Request ids are principal-scoped. States are REQUESTED, COOLING_OFF, EXECUTING, COMPLETED, CANCELLED and FAILED. Once execution revokes the current device/token, subsequent authenticated polling is intentionally unavailable from that revoked session.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/AccountDeletionId"}],
+        "responses": {
+          "200": {"description": "Deletion state", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Deletion request id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing, invalid, or revoked by deletion execution", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Deletion request not found for the authenticated user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/data-rights/account-deletion/{deletionId}/cancel": {
+      "post": {
+        "operationId": "cancelAccountDeletion",
+        "summary": "Cancel the current user's deletion during cooling-off",
+        "description": "Cancellation is allowed only while the request is REQUESTED/COOLING_OFF and coolingOffUntil has not passed. It is idempotent after a successful cancellation. EXECUTING/COMPLETED/FAILED requests cannot be cancelled.",
+        "tags": ["Data Rights"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/AccountDeletionId"}],
+        "responses": {
+          "200": {"description": "Deletion cancelled", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "400": {"description": "Deletion request id is invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Deletion request not found for the authenticated user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "409": {"description": "Cancellation window is closed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/calls": {
       "post": {
         "operationId": "createCall",
@@ -2135,7 +2240,10 @@
       "MediaId": {"name": "mediaId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "ReportId": {"name": "reportId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "AdminSessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
-      "AdminCSRF": {"name": "X-DD-Admin-CSRF", "in": "header", "required": true, "description": "CSRF token returned by the current administrator session response.", "schema": {"type": "string", "minLength": 32}}
+      "AdminCSRF": {"name": "X-DD-Admin-CSRF", "in": "header", "required": true, "description": "CSRF token returned by the current administrator session response.", "schema": {"type": "string", "minLength": 32}},
+      "DataExportId": {"name": "exportId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "AccountDeletionId": {"name": "deletionId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "description": "Caller-generated retry key. Repeating the same key for the same user returns the existing request instead of creating a second lifecycle.", "schema": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[!-~]+$"}}
     },
     "headers": {
       "RequestId": {
@@ -2204,6 +2312,14 @@
       "AdminReasonRequest": {
         "type":"object","additionalProperties":false,"required":["reason"],
         "properties":{"reason":{"type":"string","minLength":3,"maxLength":1000}}
+      },
+      "AccountDeletionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["currentPassword"],
+        "properties": {
+          "currentPassword": {"type": "string", "minLength": 1, "maxLength": 1024, "writeOnly": true, "description": "Current account password used only for secondary authentication of this high-risk operation."}
+        }
       },
       "CreateMediaUploadRequest": {
         "type": "object",

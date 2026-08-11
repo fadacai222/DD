@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"example.com/selfhosted-im/server/internal/auth/password"
+	"example.com/selfhosted-im/server/internal/datarights"
 	"example.com/selfhosted-im/server/internal/media"
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/platform/appconfig"
@@ -74,6 +76,7 @@ func main() {
 	}
 
 	var mediaService *media.Service
+	var dataRightsStore datarights.ArtifactStore
 	if endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("MEDIA_S3_ENDPOINT")), "/"); endpoint != "" {
 		accessKey, secretErr := appconfig.ReadSecret("MEDIA_S3_ACCESS_KEY")
 		if secretErr != nil {
@@ -96,6 +99,7 @@ func main() {
 			logger.Error("worker media object storage initialization failed", "error", storeErr)
 			os.Exit(2)
 		}
+		dataRightsStore = store
 		mediaService, err = media.NewService(media.Config{Pool: pool, Store: store})
 		if err != nil {
 			logger.Error("worker media service initialization failed", "error", err)
@@ -103,11 +107,21 @@ func main() {
 		}
 	}
 
+	dataRightsService, err := datarights.NewService(datarights.Config{
+		Pool: pool, Hasher: password.NewDefaultHasher(), Store: dataRightsStore,
+	})
+	if err != nil {
+		logger.Error("worker data rights initialization failed", "error", err)
+		os.Exit(2)
+	}
+
 	logger.Info("worker started", "service", "dd-worker", "version", version)
 	outboxTicker := time.NewTicker(500 * time.Millisecond)
 	defer outboxTicker.Stop()
 	mediaCleanupTicker := time.NewTicker(time.Minute)
 	defer mediaCleanupTicker.Stop()
+	dataRightsTicker := time.NewTicker(2 * time.Second)
+	defer dataRightsTicker.Stop()
 
 	for {
 		select {
@@ -132,6 +146,25 @@ func main() {
 			if processed > 0 {
 				logger.Info("outbox batch dispatched", "service", "dd-worker", "events", processed)
 			}
+		case <-dataRightsTicker.C:
+			jobContext, jobCancel := context.WithTimeout(ctx, 2*time.Minute)
+			exported := 0
+			var rightsErr error
+			if dataRightsStore != nil {
+				exported, rightsErr = dataRightsService.ProcessExportJobs(jobContext, 2)
+			}
+			deleted := 0
+			if rightsErr == nil {
+				deleted, rightsErr = dataRightsService.ProcessDeletionJobs(jobContext, 2)
+			}
+			jobCancel()
+			if rightsErr != nil {
+				logger.Error("data rights job dispatch failed", "service", "dd-worker", "error", rightsErr)
+				continue
+			}
+			if exported > 0 || deleted > 0 {
+				logger.Info("data rights jobs processed", "service", "dd-worker", "exports", exported, "deletions", deleted)
+			}
 		case <-mediaCleanupTicker.C:
 			cleanupContext, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
 			packRemoved, cleanupErr := stickerService.CleanupUnusedPacks(
@@ -140,6 +173,10 @@ func main() {
 				30*24*time.Hour,
 			)
 			mediaRemoved := 0
+			exportRemoved := 0
+			if cleanupErr == nil && dataRightsStore != nil {
+				exportRemoved, cleanupErr = dataRightsService.CleanupExpiredExports(cleanupContext, 50)
+			}
 			if cleanupErr == nil && mediaService != nil {
 				mediaRemoved, cleanupErr = mediaService.CleanupExpiredUploads(cleanupContext, 100)
 			}
@@ -157,12 +194,13 @@ func main() {
 				logger.Error("sticker/media cleanup failed", "service", "dd-worker", "error", cleanupErr)
 				continue
 			}
-			if packRemoved > 0 || mediaRemoved > 0 {
+			if packRemoved > 0 || mediaRemoved > 0 || exportRemoved > 0 {
 				logger.Info(
 					"sticker/media cleanup completed",
 					"service", "dd-worker",
 					"sticker_packs", packRemoved,
 					"media_objects", mediaRemoved,
+					"data_exports", exportRemoved,
 				)
 			}
 		}

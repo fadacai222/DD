@@ -19,6 +19,7 @@ import (
 	"example.com/selfhosted-im/server/internal/auth/session"
 	"example.com/selfhosted-im/server/internal/calls"
 	"example.com/selfhosted-im/server/internal/contacts"
+	"example.com/selfhosted-im/server/internal/datarights"
 	"example.com/selfhosted-im/server/internal/groups"
 	"example.com/selfhosted-im/server/internal/httpapi"
 	"example.com/selfhosted-im/server/internal/media"
@@ -58,6 +59,7 @@ func main() {
 	var momentsService httpapi.MomentsService
 	var qrService httpapi.QRService
 	var pushService httpapi.PushService
+	var dataRightsService httpapi.DataRightsService
 	var realtimeEventBus httpapi.RealtimeEventBus
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -133,6 +135,7 @@ func main() {
 			os.Exit(2)
 		}
 		var managedMedia *media.Service
+		var dataRightsStore datarights.ArtifactStore
 		if config.MediaS3Endpoint != "" {
 			mediaStore, storeErr := media.NewS3Store(media.S3Config{
 				Endpoint:  config.MediaS3Endpoint,
@@ -145,6 +148,7 @@ func main() {
 				logger.Error("media object storage initialization failed", "error", storeErr)
 				os.Exit(2)
 			}
+			dataRightsStore = mediaStore
 			managedMedia, err = media.NewService(media.Config{Pool: pool, Store: mediaStore})
 			if err != nil {
 				logger.Error("media service initialization failed", "error", err)
@@ -184,6 +188,11 @@ func main() {
 		pushService, err = push.NewService(push.Config{Pool: pool})
 		if err != nil {
 			logger.Error("push service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		dataRightsService, err = datarights.NewService(datarights.Config{Pool: pool, Hasher: hasher, Store: dataRightsStore})
+		if err != nil {
+			logger.Error("data rights service initialization failed", "error", err)
 			os.Exit(2)
 		}
 	}
@@ -231,6 +240,7 @@ func main() {
 			MomentsService:     momentsService,
 			QRService:          qrService,
 			PushService:        pushService,
+			DataRightsService:  dataRightsService,
 			PushAvatarSecret:   config.AuthTokenSecret,
 			RealtimeEventBus:   realtimeEventBus,
 			Logger:             logger,

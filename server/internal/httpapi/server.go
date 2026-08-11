@@ -58,6 +58,7 @@ type Config struct {
 	MomentsService     MomentsService
 	QRService          QRService
 	PushService        PushService
+	DataRightsService  DataRightsService
 	PushAvatarSecret   string
 	RealtimeEventBus   RealtimeEventBus
 	Logger             *slog.Logger
@@ -91,6 +92,7 @@ type server struct {
 	moments              MomentsService
 	qr                   QRService
 	push                 PushService
+	dataRights           DataRightsService
 	pushAvatarSecret     string
 	realtimeEventBus     RealtimeEventBus
 	realtimePublishQueue chan realtimeBusDelivery
@@ -162,6 +164,7 @@ func NewHandler(config Config) http.Handler {
 		moments:            config.MomentsService,
 		qr:                 config.QRService,
 		push:               config.PushService,
+		dataRights:         config.DataRightsService,
 		pushAvatarSecret:   strings.TrimSpace(config.PushAvatarSecret),
 		realtimeEventBus:   config.RealtimeEventBus,
 		legacyCalls:        newCallStore(),
@@ -265,6 +268,10 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/push/endpoints", s.handlePushEndpoints)
 	mux.HandleFunc("/api/v1/push/endpoints/", s.handlePushEndpointByProvider)
 	mux.HandleFunc("/api/v1/push/test", s.handlePushTest)
+	mux.HandleFunc("/api/v1/data-rights/exports", s.handleDataExportRequests)
+	mux.HandleFunc("/api/v1/data-rights/exports/", s.handleDataExportRequestByID)
+	mux.HandleFunc("/api/v1/data-rights/account-deletion", s.handleAccountDeletionRequests)
+	mux.HandleFunc("/api/v1/data-rights/account-deletion/", s.handleAccountDeletionRequestByID)
 	mux.HandleFunc("/api/v1/sync", s.handleSync)
 	mux.HandleFunc("/api/calls/token", s.handleCallToken)
 	mux.HandleFunc("/api/calls/active", s.handleActiveCall)

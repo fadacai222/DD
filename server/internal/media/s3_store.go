@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -108,6 +109,33 @@ func (store *S3Store) PresignGet(key string, ttl time.Duration) (string, time.Ti
 		return "", time.Time{}, errors.New("presigned download TTL must be between 1s and 15m")
 	}
 	return store.presign(http.MethodGet, key, ttl, nil)
+}
+
+// Put stores a server-generated private object without exposing a permanent public URL.
+// The upload uses the same signed checksum/content-type contract as client media uploads.
+func (store *S3Store) Put(ctx context.Context, key, contentType string, data []byte) error {
+	digest := sha256.Sum256(data)
+	signedURL, requiredHeaders, _, err := store.PresignPut(key, contentType, hex.EncodeToString(digest[:]), 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, signedURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	for name, value := range requiredHeaders {
+		request.Header.Set(name, value)
+	}
+	response, err := store.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("put generated object: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("put generated object: storage returned %d", response.StatusCode)
+	}
+	return nil
 }
 
 func (store *S3Store) Stat(ctx context.Context, key string) (ObjectInfo, error) {
