@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# shellcheck source=common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/common.sh"
+
+load_prod_env
+require_cmd docker
+
+public_check=false
+if [[ "${1:-}" == "--public" ]]; then
+  public_check=true
+elif [[ -n "${1:-}" ]]; then
+  fail "usage: deployment-check.sh [--public]"
+fi
+
+for service in postgres redis livekit api worker caddy tls-mux; do
+  service_is_running "$service" || fail "$service is not running"
+  wait_service_healthy "$service" 5
+  log "$service healthy/running"
+done
+if [[ "${DD_OBJECT_STORAGE_MODE:-minio}" == "minio" ]]; then
+  service_is_running minio || fail "minio is not running"
+  wait_service_healthy minio 5
+  log "minio healthy"
+fi
+compose exec -T api wget -q -O /dev/null http://127.0.0.1:18473/api/v1/system/live
+compose exec -T api wget -q -O /dev/null http://127.0.0.1:18473/api/v1/system/ready
+log "API live/readiness endpoints PASS"
+
+livekit_id="$(service_container_id livekit)"
+node_ip_line="$(docker logs "$livekit_id" 2>&1 | grep -E 'nodeIP|node_ip' | tail -1 || true)"
+if [[ -n "$node_ip_line" ]]; then
+  printf '%s' "$node_ip_line" | grep -Fq "$DD_PUBLIC_IP" || fail "LiveKit discovered/advertised a node IP different from DD_PUBLIC_IP=$DD_PUBLIC_IP: $node_ip_line"
+  log "LiveKit external/node IP log matches DD_PUBLIC_IP"
+else
+  log "HUMAN-PENDING: LiveKit log format did not expose nodeIP; verify advertised ICE candidates resolve to DD_PUBLIC_IP from a remote client"
+fi
+
+if [[ "$public_check" == "true" ]]; then
+  require_cmd curl
+  require_cmd openssl
+  log "checking public HTTPS API endpoint"
+  curl --fail --silent --show-error --max-time 15 "https://${DD_API_DOMAIN}/api/v1/system/live" >/dev/null
+  curl --fail --silent --show-error --max-time 15 "https://${DD_API_DOMAIN}/api/v1/system/ready" >/dev/null
+
+  log "checking public LiveKit TLS/WSS ingress host"
+  rtc_status="$(curl --silent --show-error --max-time 15 -o /dev/null -w '%{http_code}' "https://${DD_LIVEKIT_DOMAIN}/")"
+  [[ "$rtc_status" != "000" && "$rtc_status" -lt 500 ]] || fail "LiveKit public TLS endpoint returned HTTP $rtc_status"
+
+  log "checking TURN/TLS certificate and SNI route on TCP/443"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 15 openssl s_client -connect "${DD_TURN_DOMAIN}:443" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
+      || fail "TURN/TLS public handshake failed"
+  else
+    openssl s_client -connect "${DD_TURN_DOMAIN}:443" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
+      || fail "TURN/TLS public handshake failed"
+  fi
+  log "public HTTPS + RTC TLS + TURN/TLS handshake PASS"
+  log "HUMAN-PENDING: this does not prove UDP 443, ICE/TCP 7881, media UDP range, carrier NAT behavior, or Wi-Fi/mobile-network switching; verify with real remote clients"
+else
+  log "public route checks skipped; run deployment-check.sh --public after DNS/cert issuance"
+  log "HUMAN-PENDING: public TURN/UDP/TLS and cross-carrier RTC still require real external clients"
+fi

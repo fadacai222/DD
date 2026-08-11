@@ -1,0 +1,477 @@
+name: dd-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DD_LOG_MAX_SIZE:-20m}
+    max-file: ${DD_LOG_MAX_FILES:-5}
+
+x-service-hardening: &service-hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging: *default-logging
+
+services:
+  postgres:
+    <<: *service-hardening
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: ${DD_POSTGRES_DB:-dd}
+      POSTGRES_USER: ${DD_POSTGRES_USER:-dd}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: ${DD_POSTGRES_MEMORY_LIMIT:-2g}
+    cpus: ${DD_POSTGRES_CPU_LIMIT:-2.0}
+    pids_limit: 512
+    stop_grace_period: 60s
+    networks:
+      - internal
+
+  redis:
+    <<: *service-hardening
+    image: redis:8.8.1-alpine
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --save 900 1
+        --save 300 10
+        --requirepass "$$(cat /run/secrets/redis_password)"
+    secrets:
+      - redis_password
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    mem_limit: ${DD_REDIS_MEMORY_LIMIT:-768m}
+    cpus: ${DD_REDIS_CPU_LIMIT:-1.0}
+    pids_limit: 256
+    stop_grace_period: 30s
+    networks:
+      - internal
+
+  minio:
+    <<: *service-hardening
+    profiles: ["selfhost-storage"]
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        export MINIO_ROOT_PASSWORD="$$(cat /run/secrets/minio_root_password)";
+        exec /usr/bin/minio server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${DD_MINIO_ROOT_USER:-ddroot}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${DD_MINIO_CORS_ORIGIN:-https://invalid.local}
+    secrets:
+      - minio_root_password
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: ${DD_MINIO_MEMORY_LIMIT:-2g}
+    cpus: ${DD_MINIO_CPU_LIMIT:-2.0}
+    pids_limit: 512
+    stop_grace_period: 60s
+    networks:
+      - internal
+
+  minio-init:
+    profiles: ["selfhost-storage"]
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        ROOT_PASSWORD="$$(cat /run/secrets/minio_root_password)";
+        APP_ACCESS="$$(cat /run/secrets/media_s3_access_key)";
+        APP_SECRET="$$(cat /run/secrets/media_s3_secret_key)";
+        BACKUP_ACCESS="$$(cat /run/secrets/backup_s3_access_key)";
+        BACKUP_SECRET="$$(cat /run/secrets/backup_s3_secret_key)";
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${ROOT_PASSWORD}";
+        mc mb --ignore-existing local/$${MEDIA_BUCKET};
+        mc anonymous set none local/$${MEDIA_BUCKET};
+        mc version enable local/$${MEDIA_BUCKET};
+        mc admin user add local "$${APP_ACCESS}" "$${APP_SECRET}" || true;
+        mc admin policy create local dd-media-app /policies/media-app.json;
+        mc admin policy attach local dd-media-app --user "$${APP_ACCESS}";
+        mc admin user add local "$${BACKUP_ACCESS}" "$${BACKUP_SECRET}" || true;
+        mc admin policy create local dd-media-backup /policies/media-backup.json;
+        mc admin policy attach local dd-media-backup --user "$${BACKUP_ACCESS}";
+        mc stat local/$${MEDIA_BUCKET} >/dev/null;
+        echo "MinIO bucket, versioning, private ACL, and service policies are ready."
+    environment:
+      MINIO_ROOT_USER: ${DD_MINIO_ROOT_USER:-ddroot}
+      MEDIA_BUCKET: ${DD_MEDIA_S3_BUCKET:-dd-media}
+    secrets:
+      - minio_root_password
+      - media_s3_access_key
+      - media_s3_secret_key
+      - backup_s3_access_key
+      - backup_s3_secret_key
+    volumes:
+      - ./policies:/policies:ro
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - internal
+
+  livekit:
+    <<: *service-hardening
+    image: livekit/livekit-server:v1.13.4
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        export LIVEKIT_KEYS="$$(cat /run/secrets/livekit_api_key): $$(cat /run/secrets/livekit_api_secret)";
+        export REDIS_PASSWORD="$$(cat /run/secrets/redis_password)";
+        exec /livekit-server --bind 0.0.0.0
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: ${DD_RTC_UDP_PORT_START:-50000}
+          port_range_end: ${DD_RTC_UDP_PORT_END:-50100}
+          use_external_ip: true
+          skip_external_ip_validation: ${DD_LIVEKIT_SKIP_EXTERNAL_IP_VALIDATION:-false}
+          allow_tcp_fallback: true
+        redis:
+          address: redis:6379
+        turn:
+          enabled: true
+          udp_port: 443
+          tls_port: 443
+          domain: ${DD_TURN_DOMAIN:?DD_TURN_DOMAIN is required}
+          cert_file: /run/secrets/turn_cert
+          key_file: /run/secrets/turn_key
+          ttl_seconds: 300
+    secrets:
+      - livekit_api_key
+      - livekit_api_secret
+      - redis_password
+      - turn_cert
+      - turn_key
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "7881:7881/tcp"
+      - "443:443/udp"
+      - "${DD_RTC_UDP_PORT_START:-50000}-${DD_RTC_UDP_PORT_END:-50100}:${DD_RTC_UDP_PORT_START:-50000}-${DD_RTC_UDP_PORT_END:-50100}/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: ${DD_LIVEKIT_MEMORY_LIMIT:-4g}
+    cpus: ${DD_LIVEKIT_CPU_LIMIT:-4.0}
+    pids_limit: 1024
+    stop_grace_period: 60s
+    networks:
+      - internal
+
+  api:
+    <<: *service-hardening
+    image: ${DD_IMAGE_REPOSITORY:-local/dd-api}:${DD_IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+      target: api
+      args:
+        VERSION: ${DD_RELEASE_VERSION:-dev}
+    environment:
+      IM_ENV: production
+      IM_PORT: "18473"
+      IM_INSTANCE_NAME: ${DD_INSTANCE_NAME:-DD}
+      IM_PUBLIC_BASE_URL: https://${DD_API_DOMAIN:?DD_API_DOMAIN is required}
+      IM_ALLOWED_ORIGINS: ${DD_ALLOWED_ORIGINS:?DD_ALLOWED_ORIGINS is required}
+      IM_ALLOWED_HTTP_ORIGINS: ${DD_ALLOWED_HTTP_ORIGINS:?DD_ALLOWED_HTTP_ORIGINS is required}
+      IM_REGISTRATION_MODE: ${DD_REGISTRATION_MODE:-closed}
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+      AUTH_TOKEN_SECRET_FILE: /run/secrets/auth_token_secret
+      EMAIL_CODE_PEPPER_FILE: /run/secrets/email_code_pepper
+      LIVEKIT_URL: wss://${DD_LIVEKIT_DOMAIN:?DD_LIVEKIT_DOMAIN is required}
+      LIVEKIT_PUBLIC_PORT: "443"
+      LIVEKIT_API_KEY_FILE: /run/secrets/livekit_api_key
+      LIVEKIT_API_SECRET_FILE: /run/secrets/livekit_api_secret
+      MEDIA_S3_ENDPOINT: ${DD_MEDIA_S3_ENDPOINT:?DD_MEDIA_S3_ENDPOINT is required}
+      MEDIA_S3_BUCKET: ${DD_MEDIA_S3_BUCKET:-dd-media}
+      MEDIA_S3_REGION: ${DD_MEDIA_S3_REGION:-us-east-1}
+      MEDIA_S3_ACCESS_KEY_FILE: /run/secrets/media_s3_access_key
+      MEDIA_S3_SECRET_KEY_FILE: /run/secrets/media_s3_secret_key
+      SMTP_HOST: ${DD_SMTP_HOST:-}
+      SMTP_PORT: ${DD_SMTP_PORT:-587}
+      SMTP_FROM: ${DD_SMTP_FROM:-}
+      SMTP_USERNAME: ${DD_SMTP_USERNAME:-}
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      SMTP_REQUIRE_TLS: "true"
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+    secrets:
+      - database_url
+      - redis_url
+      - auth_token_secret
+      - email_code_pepper
+      - livekit_api_key
+      - livekit_api_secret
+      - media_s3_access_key
+      - media_s3_secret_key
+      - smtp_password
+      - telegram_bot_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:18473/api/v1/system/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    mem_limit: ${DD_API_MEMORY_LIMIT:-1g}
+    cpus: ${DD_API_CPU_LIMIT:-2.0}
+    pids_limit: 512
+    stop_grace_period: 30s
+    networks:
+      - internal
+
+  worker:
+    <<: *service-hardening
+    image: ${DD_WORKER_IMAGE_REPOSITORY:-local/dd-worker}:${DD_IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+      target: worker
+      args:
+        VERSION: ${DD_RELEASE_VERSION:-dev}
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      AUTH_TOKEN_SECRET_FILE: /run/secrets/auth_token_secret
+      IM_PUBLIC_BASE_URL: https://${DD_API_DOMAIN:?DD_API_DOMAIN is required}
+      MEDIA_S3_ENDPOINT: ${DD_MEDIA_S3_ENDPOINT:?DD_MEDIA_S3_ENDPOINT is required}
+      MEDIA_S3_BUCKET: ${DD_MEDIA_S3_BUCKET:-dd-media}
+      MEDIA_S3_REGION: ${DD_MEDIA_S3_REGION:-us-east-1}
+      MEDIA_S3_ACCESS_KEY_FILE: /run/secrets/media_s3_access_key
+      MEDIA_S3_SECRET_KEY_FILE: /run/secrets/media_s3_secret_key
+      FCM_SERVICE_ACCOUNT_JSON_FILE: /run/secrets/fcm_service_account_json
+      APNS_KEY_ID: ${DD_APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${DD_APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${DD_APNS_BUNDLE_ID:-}
+      APNS_PRIVATE_KEY_FILE: /run/secrets/apns_private_key
+    secrets:
+      - database_url
+      - auth_token_secret
+      - media_s3_access_key
+      - media_s3_secret_key
+      - fcm_service_account_json
+      - apns_private_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pidof im-worker >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    mem_limit: ${DD_WORKER_MEMORY_LIMIT:-1g}
+    cpus: ${DD_WORKER_CPU_LIMIT:-2.0}
+    pids_limit: 512
+    stop_grace_period: 45s
+    networks:
+      - internal
+
+  migrate:
+    image: ${DD_MIGRATE_IMAGE_REPOSITORY:-local/dd-migrate}:${DD_IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+      target: migrate
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets:
+      - database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - internal
+
+  caddy:
+    <<: *service-hardening
+    image: caddy:2.10.2-alpine
+    environment:
+      DD_ACME_EMAIL: ${DD_ACME_EMAIL:?DD_ACME_EMAIL is required}
+      DD_API_DOMAIN: ${DD_API_DOMAIN:?DD_API_DOMAIN is required}
+      DD_LIVEKIT_DOMAIN: ${DD_LIVEKIT_DOMAIN:?DD_LIVEKIT_DOMAIN is required}
+      DD_S3_DOMAIN: ${DD_S3_DOMAIN:-}
+    volumes:
+      - ${DD_CADDYFILE:-./Caddyfile.minio}:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80/tcp"
+    depends_on:
+      api:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null https://$${DD_API_DOMAIN}/api/v1/system/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: ${DD_CADDY_MEMORY_LIMIT:-512m}
+    cpus: ${DD_CADDY_CPU_LIMIT:-1.0}
+    pids_limit: 256
+    stop_grace_period: 30s
+    networks:
+      internal:
+        aliases:
+          - ${DD_API_DOMAIN:?DD_API_DOMAIN is required}
+          - ${DD_LIVEKIT_DOMAIN:?DD_LIVEKIT_DOMAIN is required}
+          - ${DD_S3_DOMAIN:-dd-s3-disabled.invalid}
+
+  tls-mux:
+    <<: *service-hardening
+    image: haproxy:3.2.4-alpine
+    environment:
+      DD_TURN_DOMAIN: ${DD_TURN_DOMAIN:?DD_TURN_DOMAIN is required}
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "443:443/tcp"
+    depends_on:
+      caddy:
+        condition: service_started
+      livekit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    mem_limit: ${DD_HAPROXY_MEMORY_LIMIT:-256m}
+    cpus: ${DD_HAPROXY_CPU_LIMIT:-0.5}
+    pids_limit: 256
+    stop_grace_period: 30s
+    networks:
+      - internal
+
+  object-backup-tool:
+    profiles: ["tools"]
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["echo object backup tool ready"]
+    environment:
+      BACKUP_S3_ENDPOINT: ${DD_BACKUP_S3_ENDPOINT:?DD_BACKUP_S3_ENDPOINT is required}
+      MEDIA_BUCKET: ${DD_MEDIA_S3_BUCKET:-dd-media}
+    secrets:
+      - backup_s3_access_key
+      - backup_s3_secret_key
+    volumes:
+      - ${DD_BACKUP_ROOT:-./backups}:/backups
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url
+  redis_password:
+    file: ./secrets/redis_password
+  redis_url:
+    file: ./secrets/redis_url
+  minio_root_password:
+    file: ./secrets/minio_root_password
+  media_s3_access_key:
+    file: ./secrets/media_s3_access_key
+  media_s3_secret_key:
+    file: ./secrets/media_s3_secret_key
+  backup_s3_access_key:
+    file: ./secrets/backup_s3_access_key
+  backup_s3_secret_key:
+    file: ./secrets/backup_s3_secret_key
+  livekit_api_key:
+    file: ./secrets/livekit_api_key
+  livekit_api_secret:
+    file: ./secrets/livekit_api_secret
+  auth_token_secret:
+    file: ./secrets/auth_token_secret
+  email_code_pepper:
+    file: ./secrets/email_code_pepper
+  smtp_password:
+    file: ./secrets/smtp_password
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+  fcm_service_account_json:
+    file: ./secrets/fcm_service_account_json
+  apns_private_key:
+    file: ./secrets/apns_private_key
+  turn_cert:
+    file: ./secrets/turn_cert.pem
+  turn_key:
+    file: ./secrets/turn_key.pem

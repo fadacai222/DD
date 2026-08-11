@@ -1,0 +1,36 @@
+{
+	email {$DD_ACME_EMAIL}
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$DD_API_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+	reverse_proxy api:18473
+}
+
+{$DD_LIVEKIT_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	reverse_proxy livekit:7880
+}
+
+{$DD_S3_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	reverse_proxy minio:9000
+}

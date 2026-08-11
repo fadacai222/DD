@@ -1,0 +1,25 @@
+# Default-deny Docker build context. The server image only needs the Go module
+# and realtime protocol fixtures used by server tests.
+**
+
+!server/
+!server/**
+!packages/
+!packages/realtime_protocol/
+!packages/realtime_protocol/fixtures/
+!packages/realtime_protocol/fixtures/**
+
+# Never send local credentials/configuration into BuildKit even if a future
+# include rule becomes broader.
+**/.env
+**/.env.*
+**/secrets/
+**/secrets/**
+**/*.pem
+**/*.key
+**/*firebase-adminsdk*.json
+
+# Local/generated Go output is not part of a reproducible server build.
+server/bin/
+server/bin/**
+server/coverage.out

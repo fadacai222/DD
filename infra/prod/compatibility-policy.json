@@ -1,0 +1,17 @@
+{
+  "formatVersion": 1,
+  "databaseMigrationStrategy": "forward-only",
+  "automaticDatabaseDownMigration": false,
+  "preUpgradeBackupRequired": true,
+  "previousApplicationRollbackGate": {
+    "method": "run previous release migrate status against the post-upgrade database",
+    "compatibleExitCode": 0,
+    "onCompatible": "previous application release may be restarted against the newer schema",
+    "onIncompatible": "previous application release must remain stopped until the verified pre-upgrade backup is restored"
+  },
+  "failedDeploymentPolicy": {
+    "databaseDown": "forbidden",
+    "preferredRollback": "restart previous application release only when previous migrate status accepts the newer schema",
+    "fallbackRollback": "restore the verified pre-upgrade database and object-storage recovery point, then restart the previous application release"
+  }
+}
