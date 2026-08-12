@@ -676,7 +676,7 @@ void main() {
     expect(find.byKey(const Key('auth-email')), findsOneWidget);
   });
 
-  testWidgets('logout ordinary access-token 401 never authoritatively abandons push lease', (
+  testWidgets('logout ordinary access-token 401 preserves auth and push cleanup ownership', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(881, 657);
@@ -684,6 +684,14 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
     final gateway = _SwitchAuthGateway()
       ..revokeDeviceError = const AuthApiException(
         statusCode: 401,
@@ -697,7 +705,7 @@ void main() {
       MaterialApp(
         home: AuthPage(
           gateway: gateway,
-          vault: AuthSessionVault(storage: _MemorySecureStore()),
+          vault: vault,
           initialSession: _sessionFor(
             userId: 'user-a',
             displayName: 'User A',
@@ -726,7 +734,313 @@ void main() {
     expect(push.releaseCalls, 1);
     expect(gateway.revokedDeviceIds, <String>['device-a']);
     expect(push.abandonCalls, 0);
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    expect(find.byKey(const Key('auth-email')), findsNothing);
+    expect(find.textContaining('无法确认本设备已安全退出'), findsOneWidget);
+    expect((await vault.read())?.refreshToken, 'refresh-a');
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-a'))?.refreshToken,
+      'refresh-a',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('logout network revoke failure preserves current session and vault when endpoint release failed', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    final gateway = _SwitchAuthGateway()
+      ..revokeDeviceError = StateError('network timeout');
+    final push = _FakePushAccountLeaseController()
+      ..releaseError = StateError('endpoint delete timeout');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('shell-rail-me')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final logout = find.byKey(const Key('shell-logout'));
+    await tester.ensureVisible(logout);
+    await tester.pump();
+    await tester.tap(logout);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(push.releaseCalls, 1);
+    expect(push.abandonCalls, 0);
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    expect((await vault.read())?.refreshToken, 'refresh-a');
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-a'))?.refreshToken,
+      'refresh-a',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('in-flight refresh 401 during failed logout cannot delete the current A credential', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    final refreshCompleter = Completer<AuthSession>();
+    final releaseCompleter = Completer<void>();
+    final gateway = _SwitchAuthGateway()
+      ..refreshHandler = (_) {
+        return refreshCompleter.future;
+      }
+      ..revokeDeviceError = const AuthApiException(
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Valid access token is required',
+      );
+    final push = _FakePushAccountLeaseController()
+      ..releaseCompleter = releaseCompleter;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+            accessExpiresAt: DateTime.now().toUtc().add(
+              const Duration(seconds: 1),
+            ),
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 6));
+    expect(gateway.refreshTokens, <String>['refresh-a']);
+
+    await tester.tap(find.byKey(const Key('shell-rail-me')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final logout = find.byKey(const Key('shell-logout'));
+    await tester.ensureVisible(logout);
+    await tester.pump();
+    await tester.tap(logout);
+    await tester.pump();
+    expect(push.releaseCalls, 1);
+
+    refreshCompleter.completeError(
+      const AuthApiException(
+        statusCode: 401,
+        code: 'SESSION_EXPIRED',
+        message: 'Session is no longer valid',
+      ),
+    );
+    await tester.pump();
+    push.releaseError = StateError('endpoint delete failed');
+    releaseCompleter.complete();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    expect((await vault.read())?.refreshToken, 'refresh-a');
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-a'))?.refreshToken,
+      'refresh-a',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('successful endpoint release permits local logout even when revoke API fails', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    final gateway = _SwitchAuthGateway()
+      ..revokeDeviceError = StateError('network timeout');
+    final push = _FakePushAccountLeaseController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('shell-rail-me')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final logout = find.byKey(const Key('shell-logout'));
+    await tester.ensureVisible(logout);
+    await tester.pump();
+    await tester.tap(logout);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(push.releaseCalls, 1);
+    expect(push.abandonCalls, 0);
     expect(find.byKey(const Key('auth-email')), findsOneWidget);
+    expect(await vault.read(), isNull);
+    expect(await vault.readAccount(origin: origin, userId: 'user-a'), isNull);
+  });
+
+  testWidgets('failed logout cannot be followed by a B switch while stale A lease remains', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(881, 657);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-b',
+      refreshToken: 'refresh-b-old',
+    );
+    final gateway = _SwitchAuthGateway()
+      ..revokeDeviceError = const AuthApiException(
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Valid access token is required',
+      )
+      ..refreshHandler = (refreshToken) async => _sessionFor(
+        userId: 'user-b',
+        displayName: 'User B',
+        deviceId: 'device-b',
+        accessToken: 'access-b-new',
+        refreshToken: 'refresh-b-new',
+      );
+    final push = _FakePushAccountLeaseController()
+      ..releaseError = StateError('stale A endpoint cannot be deleted');
+    final history = _MemoryLoginHistory([
+      LoginHistoryEntry(
+        origin: origin,
+        userId: 'user-b',
+        email: 'b@example.com',
+        ddid: 'user_b',
+        displayName: 'User B',
+        lastUsedAt: DateTime.utc(2026, 8, 13),
+      ),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          historyStore: history,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('shell-rail-me')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final logout = find.byKey(const Key('shell-logout'));
+    await tester.ensureVisible(logout);
+    await tester.pump();
+    await tester.tap(logout);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    await _openAccountManagerAndSelect(tester, 'user-b');
+
+    expect(push.releaseCalls, 2);
+    expect(gateway.refreshTokens, isEmpty);
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    expect(find.byKey(const ValueKey('user-b-device-b')), findsNothing);
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-b'))?.refreshToken,
+      'refresh-b-old',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('logout explicit DEVICE_SESSION_REVOKED may authoritatively abandon push lease', (
@@ -780,7 +1094,130 @@ void main() {
     expect(find.byKey(const Key('auth-email')), findsOneWidget);
   });
 
-  testWidgets('ordinary SESSION_EXPIRED refresh 401 never authoritatively abandons push lease', (
+  testWidgets('SESSION_EXPIRED can clear local auth after endpoint delete succeeds', (
+    tester,
+  ) async {
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    final gateway = _SwitchAuthGateway()
+      ..refreshHandler = (refreshToken) async {
+        throw const AuthApiException(
+          statusCode: 401,
+          code: 'SESSION_EXPIRED',
+          message: 'Session is no longer valid',
+        );
+      }
+      ..revokeDeviceError = StateError('revoke network unavailable');
+    final push = _FakePushAccountLeaseController();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+            accessExpiresAt: DateTime.now().toUtc().add(
+              const Duration(seconds: 1),
+            ),
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pump();
+
+    expect(gateway.refreshTokens, <String>['refresh-a']);
+    expect(push.releaseCalls, 1);
+    expect(push.abandonCalls, 0);
+    expect(find.byKey(const Key('auth-email')), findsOneWidget);
+    expect(await vault.read(), isNull);
+    expect(await vault.readAccount(origin: origin, userId: 'user-a'), isNull);
+  });
+
+  testWidgets('SESSION_EXPIRED preserves auth ownership when endpoint delete and revoke are unconfirmed', (
+    tester,
+  ) async {
+    final origin = Uri.parse('http://127.0.0.1:18473');
+    final storage = _MemorySecureStore();
+    final vault = AuthSessionVault(storage: storage);
+    await vault.save(origin: origin, refreshToken: 'refresh-a');
+    await vault.saveAccount(
+      origin: origin,
+      userId: 'user-a',
+      refreshToken: 'refresh-a',
+    );
+    final gateway = _SwitchAuthGateway()
+      ..refreshHandler = (refreshToken) async {
+        throw const AuthApiException(
+          statusCode: 401,
+          code: 'SESSION_EXPIRED',
+          message: 'Session is no longer valid',
+        );
+      }
+      ..revokeDeviceError = const AuthApiException(
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Valid access token is required',
+      );
+    final push = _FakePushAccountLeaseController()
+      ..releaseError = StateError('endpoint delete unauthorized');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialSession: _sessionFor(
+            userId: 'user-a',
+            displayName: 'User A',
+            deviceId: 'device-a',
+            accessToken: 'access-a',
+            refreshToken: 'refresh-a',
+            accessExpiresAt: DateTime.now().toUtc().add(
+              const Duration(seconds: 1),
+            ),
+          ),
+          initialOrigin: origin,
+          restoreSession: false,
+          pushAccountLeaseController: push,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pump();
+
+    expect(gateway.refreshTokens, <String>['refresh-a']);
+    expect(push.releaseCalls, 1);
+    expect(push.abandonCalls, 0);
+    expect(find.byKey(const ValueKey('user-a-device-a')), findsOneWidget);
+    expect(find.byKey(const Key('auth-email')), findsNothing);
+    expect(find.textContaining('Push 清理尚未完成'), findsOneWidget);
+    expect((await vault.read())?.refreshToken, 'refresh-a');
+    expect(
+      (await vault.readAccount(origin: origin, userId: 'user-a'))?.refreshToken,
+      'refresh-a',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('SESSION_EXPIRED may finish after failed endpoint delete when revoke succeeds', (
     tester,
   ) async {
     final origin = Uri.parse('http://127.0.0.1:18473');
@@ -790,7 +1227,8 @@ void main() {
         code: 'SESSION_EXPIRED',
         message: 'Session is no longer valid',
       );
-    final push = _FakePushAccountLeaseController();
+    final push = _FakePushAccountLeaseController()
+      ..releaseError = StateError('endpoint delete unauthorized');
 
     await tester.pumpWidget(
       MaterialApp(
@@ -818,7 +1256,9 @@ void main() {
     await tester.pump();
 
     expect(gateway.refreshTokens, <String>['refresh-a']);
-    expect(push.abandonCalls, 0);
+    expect(push.releaseCalls, 1);
+    expect(gateway.revokedDeviceIds, <String>['device-a']);
+    expect(push.abandonCalls, 1);
     expect(find.byKey(const Key('auth-email')), findsOneWidget);
   });
 
@@ -948,10 +1388,10 @@ final class _FakePushAccountLeaseController
   @override
   Future<void> releaseCurrentEndpoint() async {
     releaseCalls++;
-    final error = releaseError;
-    if (error != null) throw error;
     final completer = releaseCompleter;
     if (completer != null) await completer.future;
+    final error = releaseError;
+    if (error != null) throw error;
   }
 
   @override

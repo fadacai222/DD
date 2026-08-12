@@ -14,6 +14,8 @@ import '../domain/account_management.dart';
 import '../domain/auth_session.dart';
 import 'password_reset_page.dart';
 
+enum _PushCleanupOutcome { endpointReleased, deviceRevoked, unconfirmed }
+
 class AuthPage extends StatefulWidget {
   const AuthPage({
     super.key,
@@ -779,28 +781,37 @@ class _AuthPageState extends State<AuthPage>
       return next;
     } catch (error) {
       if (error is AuthApiException && error.statusCode == 401) {
-        if (!_isCurrentRefreshContext(current, origin: origin, epoch: epoch) ||
-            _sessionTransitionInProgress) {
+        final currentContext = _isCurrentRefreshContext(
+          current,
+          origin: origin,
+          epoch: epoch,
+        );
+        if (!currentContext) {
           await _removeStaleAccount(current, origin);
+          return null;
+        }
+        if (_sessionTransitionInProgress) {
+          // A refresh that finishes while the same active account is inside a
+          // logout/account transition is not stale yet. The transition may
+          // still fail and roll back, so deleting this account credential here
+          // would lose the only safe cleanup ownership we are required to keep.
           return null;
         }
 
         _sessionTransitionInProgress = true;
         _refreshTimer?.cancel();
-        _sessionEpoch++;
         try {
-          if (error.code == 'DEVICE_SESSION_REVOKED') {
-            await _pushAccountLeaseController
-                .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
-          } else {
-            // SESSION_EXPIRED covers invalid/expired/reused refresh tokens and
-            // does not prove the device is revoked. Attempt normal fail-closed
-            // endpoint cleanup with the current access token; never abandon on
-            // HTTP status alone.
-            try {
-              await _pushAccountLeaseController.releaseCurrentEndpoint();
-            } catch (_) {}
+          final cleanupOutcome = error.code == 'DEVICE_SESSION_REVOKED'
+              ? await _abandonAuthoritativelyRevokedPushLease()
+              : await _attemptSafePushCleanup(current, origin);
+          if (cleanupOutcome == _PushCleanupOutcome.unconfirmed) {
+            _showPushCleanupRequired(
+              '登录会话已失效，但 Push 清理尚未完成。无法确认本设备已安全退出，请重试。',
+            );
+            return null;
           }
+
+          _sessionEpoch++;
           try {
             await _vault.removeAccount(
               origin: origin,
@@ -808,7 +819,8 @@ class _AuthPageState extends State<AuthPage>
             );
             await _vault.clear();
           } catch (_) {
-            // Local secure-storage cleanup can be retried by the next login.
+            // Safe Push ownership cleanup is already complete; local secure
+            // storage cleanup can be retried by the next login.
           }
           if (mounted) {
             setState(() => _session = null);
@@ -1231,40 +1243,79 @@ class _AuthPageState extends State<AuthPage>
     });
   }
 
+  Future<_PushCleanupOutcome> _abandonAuthoritativelyRevokedPushLease() async {
+    await _pushAccountLeaseController
+        .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
+    return _PushCleanupOutcome.deviceRevoked;
+  }
+
+  Future<_PushCleanupOutcome> _attemptSafePushCleanup(
+    AuthSession current,
+    Uri origin,
+  ) async {
+    var endpointReleased = false;
+    try {
+      await _pushAccountLeaseController.releaseCurrentEndpoint();
+      endpointReleased = true;
+    } catch (_) {
+      // Fail-closed: local ownership remains until endpoint deletion or an
+      // authoritative device revocation is confirmed below.
+    }
+
+    var deviceRevoked = false;
+    try {
+      await _gateway.revokeDevice(
+        origin: origin,
+        accessToken: current.tokens.accessToken,
+        deviceId: current.device.id,
+      );
+      deviceRevoked = true;
+    } on AuthApiException catch (error) {
+      deviceRevoked = error.code == 'DEVICE_SESSION_REVOKED';
+    } catch (_) {
+      // Network/5xx/transport failures are not authoritative revocation facts.
+    }
+
+    if (deviceRevoked) {
+      if (!endpointReleased) {
+        await _pushAccountLeaseController
+            .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
+      }
+      return _PushCleanupOutcome.deviceRevoked;
+    }
+    if (endpointReleased) return _PushCleanupOutcome.endpointReleased;
+    return _PushCleanupOutcome.unconfirmed;
+  }
+
+  void _showPushCleanupRequired(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   Future<void> _clearSession() async {
     if (_sessionTransitionInProgress) return;
     _sessionTransitionInProgress = true;
     _refreshTimer?.cancel();
     final current = _session;
     final currentOrigin = current == null ? null : _validatedOrigin();
-    if (current != null) _sessionEpoch++;
-    var authoritativeRevocation = false;
     try {
+      var cleanupOutcome = _PushCleanupOutcome.endpointReleased;
       if (current != null && currentOrigin != null) {
-        var endpointReleased = false;
-        try {
-          await _pushAccountLeaseController.releaseCurrentEndpoint();
-          endpointReleased = true;
-        } catch (_) {
-          // Only an explicit server revocation fact below may permit abandon.
-        }
-        try {
-          await _gateway.revokeDevice(
-            origin: currentOrigin,
-            accessToken: current.tokens.accessToken,
-            deviceId: current.device.id,
+        cleanupOutcome = await _attemptSafePushCleanup(current, currentOrigin);
+        if (cleanupOutcome == _PushCleanupOutcome.unconfirmed) {
+          if (mounted && identical(_session, current)) {
+            _scheduleSessionRefresh(current);
+          }
+          _showPushCleanupRequired(
+            '无法确认本设备已安全退出，请重试。当前账号会保留以完成 Push 安全清理。',
           );
-          authoritativeRevocation = true;
-        } on AuthApiException catch (error) {
-          authoritativeRevocation = error.code == 'DEVICE_SESSION_REVOKED';
-        } catch (_) {
-          // Ordinary network/API failures do not authorize local abandonment.
+          return;
         }
-        if (!endpointReleased && authoritativeRevocation) {
-          await _pushAccountLeaseController
-              .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
-        }
+        _sessionEpoch++;
       }
+
       try {
         if (current != null && currentOrigin != null) {
           await _vault.removeAccount(
@@ -1274,14 +1325,15 @@ class _AuthPageState extends State<AuthPage>
         }
         await _vault.clear();
       } catch (_) {
-        // Local logout should not be blocked by unavailable secure storage.
+        // Push ownership is already safe, so local logout must not be blocked
+        // by a temporarily unavailable secure-storage backend.
       }
       if (!mounted) return;
       setState(() => _session = null);
       _setMessage(
-        authoritativeRevocation
+        cleanupOutcome == _PushCleanupOutcome.deviceRevoked
             ? '本机已退出，服务端设备会话也已撤销。'
-            : '本机已退出。服务端设备状态未能确认时不会伪造已撤销结论。',
+            : '本机已安全退出，Push endpoint 已解绑。',
       );
     } finally {
       _sessionTransitionInProgress = false;

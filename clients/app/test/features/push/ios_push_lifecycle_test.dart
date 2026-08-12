@@ -286,6 +286,64 @@ void main() {
       ]);
     });
 
+    test('stale A lease blocks B until authoritative cleanup then B can register', () async {
+      final generationA = await lifecycle.activateSession(
+        PushEndpointSession(
+          origin: origin,
+          accessToken: 'access-a',
+          userId: 'user-a',
+          deviceId: 'device-a',
+        ),
+      );
+      await lifecycle.registerEndpoint(
+        generation: generationA,
+        endpoint: const PushEndpointRegistration(
+          provider: 'FCM',
+          endpoint: 'shared-token',
+          appId: 'firebase-project',
+          environment: 'PRODUCTION',
+        ),
+      );
+      gateway.deleteError = StateError('A endpoint cleanup failed');
+
+      await expectLater(
+        lifecycle.activateSession(
+          PushEndpointSession(
+            origin: origin,
+            accessToken: 'access-b',
+            userId: 'user-b',
+            deviceId: 'device-b',
+          ),
+        ),
+        throwsStateError,
+      );
+      expect(lifecycle.session?.userId, 'user-a');
+      expect(lifecycle.generation, generationA);
+
+      await lifecycle.abandonSessionAfterAuthoritativeRevocation();
+      gateway.deleteError = null;
+      final generationB = await lifecycle.activateSession(
+        PushEndpointSession(
+          origin: origin,
+          accessToken: 'access-b',
+          userId: 'user-b',
+          deviceId: 'device-b',
+        ),
+      );
+      await lifecycle.registerEndpoint(
+        generation: generationB,
+        endpoint: const PushEndpointRegistration(
+          provider: 'FCM',
+          endpoint: 'shared-token',
+          appId: 'firebase-project',
+          environment: 'PRODUCTION',
+        ),
+      );
+
+      expect(lifecycle.session?.userId, 'user-b');
+      expect(gateway.operations.last, 'register:access-b:FCM:shared-token');
+    });
+
     test('authoritative abandon clears a failed stale lease without network retry', () async {
       final generationA = await lifecycle.activateSession(
         PushEndpointSession(
