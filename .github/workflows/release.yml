@@ -513,7 +513,14 @@ jobs:
             --version '${{ needs.verify-source-and-upstream-gates.outputs.ios_version }}' \
             --build-number '${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}'
 
-      - name: Scan and SBOM Codemagic-resolved iOS dependency evidence
+      - name: Verify Codemagic pre-publish iOS security evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.spdx.json" || { echo 'Codemagic pre-publish iOS SBOM is missing or empty' >&2; exit 1; }
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.trivy.json" || { echo 'Codemagic pre-publish iOS Trivy report is missing or empty' >&2; exit 1; }
+
+      - name: Independently rescan Codemagic-resolved iOS dependency evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -529,16 +536,16 @@ jobs:
             --exit-code 1 \
             --no-progress \
             --format json \
-            --output "/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios.trivy.json" \
+            --output "/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" \
             /src
           docker run --rm \
             --volume "$GITHUB_WORKSPACE/ios-sbom-input:/src:ro" \
             --volume "$GITHUB_WORKSPACE/release:/out" \
             "$SYFT_IMAGE" \
             scan dir:/src \
-            --output "spdx-json=/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios.spdx.json"
-          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios.trivy.json" || { echo 'iOS Trivy report was not generated' >&2; exit 1; }
-          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios.spdx.json" || { echo 'iOS SPDX SBOM was not generated' >&2; exit 1; }
+            --output "spdx-json=/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json"
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" || { echo 'GitHub-verified iOS Trivy report was not generated' >&2; exit 1; }
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json" || { echo 'GitHub-verified iOS SPDX SBOM was not generated' >&2; exit 1; }
 
       - name: Upload signed iOS artifact and SBOM evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

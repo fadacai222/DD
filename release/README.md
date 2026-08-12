@@ -17,11 +17,12 @@ The tag is the source of truth. The workflow rejects:
 
 - non-SemVer tags;
 - a tag that does not point at the checked-out commit;
+- any commit carrying more than one DD formal SemVer tag (unrelated non-SemVer tags such as `nightly-test` are ignored);
 - a tag whose commit is not the current `origin/master` HEAD;
 - a dirty source tree;
 - a version without a dated `CHANGELOG.md` entry.
 
-Flutter `build-number` is derived from the positive Git commit count, so native package metadata is reproducible for the same release commit. Android/Windows use the full SemVer as their release version. Apple requires `CFBundleShortVersionString` to be a numeric marketing version, so iOS deterministically maps both stable and prerelease tags to the SemVer core (`v1.2.3-rc.1` -> `1.2.3`) and uses the Git commit count as `CFBundleVersion`; the tuple `(CFBundleShortVersionString, CFBundleVersion, Git tag)` remains one-to-one with the formal U25 release. Server binaries receive the release version through linker flags; server images also carry OCI version/revision/created/source labels. The downloadable release metadata additionally records the full SHA, tag, version, commit date/count, workflow URL and artifact hashes.
+Flutter `build-number` is derived from the positive Git commit count, so native package metadata is reproducible for the same release commit. Android/Windows use the full SemVer as their release version. Apple requires `CFBundleShortVersionString` to be a numeric marketing version, so iOS deterministically maps both stable and prerelease tags to the SemVer core (`v1.2.3-rc.1` -> `1.2.3`) and uses the Git commit count as `CFBundleVersion`. Because the release contract now permits at most one DD formal SemVer tag per commit, `(CFBundleIdentifier, CFBundleShortVersionString, CFBundleVersion)` cannot collide between two formal DD releases. Server binaries receive the release version through linker flags; server images also carry OCI version/revision/created/source labels. The downloadable release metadata additionally records the full SHA, tag, version, commit date/count, workflow URL and artifact hashes.
 
 ## Fail-closed gate DAG
 
@@ -79,7 +80,7 @@ DD_CODEMAGIC_APP_ID
 
 The workflow writes decoded JKS/PFX material only to the hosted runner temporary directory. Nothing is written to the repository. Missing signing material, malformed fingerprints, or signer mismatch is a hard failure. Formal Android builds explicitly set `DD_ANDROID_REQUIRE_PROD_SIGNING=true`; therefore the debug signing fallback retained for ordinary CI smoke builds cannot be used by the formal release job.
 
-iOS uses Codemagic workflow `ios-signed-release`. Apple integration `DD_APP_STORE_CONNECT` holds the App Store Connect API key and obtains the App Store distribution certificate/provisioning profile; protected Codemagic variable group `dd_ios_release` must provide `DD_IOS_BUNDLE_ID` and `DD_IOS_TEAM_ID`. GitHub never receives `.p8`, `.p12`, `.mobileprovision`, Apple private keys, certificate passwords, or Apple ID passwords. Codemagic verifies `codesign`, embedded provisioning identity, Bundle ID, Team ID and Flutter version/build metadata before exposing the IPA. Missing Apple integration/signing identity fails closed.
+iOS uses Codemagic workflow `ios-signed-release`. Apple integration `DD_APP_STORE_CONNECT` holds the App Store Connect API key and obtains the App Store distribution certificate/provisioning profile; protected Codemagic variable group `dd_ios_release` must provide `DD_IOS_BUNDLE_ID` and `DD_IOS_TEAM_ID`. GitHub never receives `.p8`, `.p12`, `.mobileprovision`, Apple private keys, certificate passwords, or Apple ID passwords. Before Codemagic reaches `publishing.app_store_connect`, it captures the actually resolved Dart/SPM/CocoaPods dependency evidence, installs fixed-version Syft/Trivy release binaries only after verifying pinned SHA-256 checksum manifests, generates a non-empty SPDX SBOM, and runs Trivy with `HIGH,CRITICAL --exit-code 1`. Missing scanners/evidence/reports, checksum mismatch, download failure, or a HIGH/CRITICAL finding fails the build before Apple upload. Codemagic also verifies `codesign`, embedded provisioning identity, Bundle ID, Team ID and Flutter version/build metadata before exposing the IPA. GitHub independently repeats Syft/Trivy against the downloaded evidence as a second gate.
 
 ### `production-release`
 
@@ -101,7 +102,11 @@ For tag `vX.Y.Z`:
 ```text
 DD-vX.Y.Z-windows-x64.zip
 DD-vX.Y.Z-ios-arm64.ipa
-DD-vX.Y.Z-ios.spdx.json
+DD-vX.Y.Z-ios-codemagic-resolved.spdx.json
+DD-vX.Y.Z-ios-codemagic-resolved.trivy.json
+DD-vX.Y.Z-ios-github-verified.spdx.json
+DD-vX.Y.Z-ios-github-verified.trivy.json
+DD-vX.Y.Z-ios-native-deps.zip
 DD-vX.Y.Z-ios-native-deps.zip
 DD-vX.Y.Z-android-arm64-v8a.apk
 DD-vX.Y.Z-android-armeabi-v7a.apk

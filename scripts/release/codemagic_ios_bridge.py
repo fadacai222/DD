@@ -140,9 +140,13 @@ def main() -> int:
 
     expected_name = f"DD-{args.tag}-ios-arm64.ipa"
     evidence_name = f"DD-{args.tag}-ios-native-deps.zip"
+    sbom_name = f"DD-{args.tag}-ios-codemagic-resolved.spdx.json"
+    trivy_name = f"DD-{args.tag}-ios-codemagic-resolved.trivy.json"
     artifact_url = find_artifact_url(build, expected_name)
     evidence_url = find_artifact_url(build, evidence_name)
-    if not artifact_url or not evidence_url:
+    sbom_url = find_artifact_url(build, sbom_name)
+    trivy_url = find_artifact_url(build, trivy_name)
+    if not artifact_url or not evidence_url or not sbom_url or not trivy_url:
         # Artifact links can be populated shortly after the build reaches finished.
         # The legacy build-details endpoint remains the documented source for
         # authenticated artifact URLs, while v3 is authoritative for status.
@@ -152,21 +156,33 @@ def main() -> int:
             details = request_json(f"{API_START}/{build_id}", token)
             artifact_url = artifact_url or find_artifact_url(build, expected_name) or find_artifact_url(details, expected_name)
             evidence_url = evidence_url or find_artifact_url(build, evidence_name) or find_artifact_url(details, evidence_name)
-            if artifact_url and evidence_url:
+            sbom_url = sbom_url or find_artifact_url(build, sbom_name) or find_artifact_url(details, sbom_name)
+            trivy_url = trivy_url or find_artifact_url(build, trivy_name) or find_artifact_url(details, trivy_name)
+            if artifact_url and evidence_url and sbom_url and trivy_url:
                 break
     if not artifact_url:
         raise BridgeError(f"finished Codemagic build exposes no exact artifact {expected_name}")
     if not evidence_url:
         raise BridgeError(f"finished Codemagic build exposes no exact artifact {evidence_name}")
+    if not sbom_url:
+        raise BridgeError(f"finished Codemagic build exposes no exact artifact {sbom_name}")
+    if not trivy_url:
+        raise BridgeError(f"finished Codemagic build exposes no exact artifact {trivy_name}")
 
     output = Path(args.output)
     if output.name != expected_name:
         raise BridgeError(f"output filename must be exactly {expected_name}")
     evidence_output = output.with_name(evidence_name)
+    sbom_output = output.with_name(sbom_name)
+    trivy_output = output.with_name(trivy_name)
     download(artifact_url, token, output, min_bytes=1024)
     download(evidence_url, token, evidence_output)
+    download(sbom_url, token, sbom_output)
+    download(trivy_url, token, trivy_output)
     print(output)
     print(evidence_output)
+    print(sbom_output)
+    print(trivy_output)
     return 0
 
 

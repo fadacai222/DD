@@ -13,6 +13,18 @@ import verify_github_gates
 
 class ReleaseContractTests(unittest.TestCase):
     @staticmethod
+    def _git_repo(root: Path) -> Path:
+        repo = root / "repo"
+        repo.mkdir()
+        release_contract.run_git(repo, "init", "-b", "master")
+        release_contract.run_git(repo, "config", "user.email", "release-contract@example.invalid")
+        release_contract.run_git(repo, "config", "user.name", "DD Release Contract Test")
+        (repo / "payload.txt").write_text("one\n", encoding="utf-8")
+        release_contract.run_git(repo, "add", "payload.txt")
+        release_contract.run_git(repo, "commit", "-m", "test: first release commit")
+        return repo
+
+    @staticmethod
     def _write_ios_ipa(path: Path, version: str = "1.2.3", build: str = "42", signed: bool = True) -> None:
         info = plistlib.dumps({
             "CFBundleIdentifier": "org.openimx.client",
@@ -53,6 +65,37 @@ class ReleaseContractTests(unittest.TestCase):
             release_contract.version_from_tag("release-1.2.3")
         with self.assertRaises(release_contract.ReleaseContractError):
             release_contract.version_from_tag("v1.2.3+build.7")
+
+    def test_exact_tag_accepts_one_formal_tag_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.1")
+
+    def test_exact_tag_rejects_two_formal_tags_at_same_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.2")
+            with self.assertRaises(release_contract.ReleaseContractError):
+                release_contract.ensure_exact_tag(repo, "v1.2.3-rc.2")
+
+    def test_exact_tag_ignores_unrelated_non_semver_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.run_git(repo, "tag", "nightly-test")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.1")
+
+    def test_rc_tags_on_different_commits_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            (repo / "payload.txt").write_text("two\n", encoding="utf-8")
+            release_contract.run_git(repo, "add", "payload.txt")
+            release_contract.run_git(repo, "commit", "-m", "test: second release commit")
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.2")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.2")
 
     def test_checksum_verification_detects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

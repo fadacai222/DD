@@ -98,10 +98,26 @@ Assert-Match $Codemagic 'security cms -D -i' 'Signed iOS workflow must inspect t
 Assert-Match $Codemagic 'flutter build ipa --release' 'Signed iOS workflow must create a Release IPA.'
 Assert-Match $Codemagic 'submit_to_app_store:\s*false' 'iOS workflow must not automatically submit to Production App Store.'
 Assert-Match $Codemagic 'DD_IOS_MARKETING_VERSION' 'iOS prerelease-safe marketing-version mapping is missing.'
+Assert-Match $Contract 'a release commit may have exactly one DD formal SemVer tag' 'Formal release tag uniqueness guard is missing.'
+Assert-Match $Codemagic "SYFT_VERSION='[0-9]+\.[0-9]+\.[0-9]+'" 'Codemagic iOS Syft scanner version must be pinned.'
+Assert-Match $Codemagic "TRIVY_VERSION='[0-9]+\.[0-9]+\.[0-9]+'" 'Codemagic iOS Trivy scanner version must be pinned.'
+Assert-Match $Codemagic "SYFT_CHECKSUMS_SHA256='[0-9a-f]{64}'" 'Codemagic iOS Syft checksum integrity pin is missing.'
+Assert-Match $Codemagic "TRIVY_CHECKSUMS_SHA256='[0-9a-f]{64}'" 'Codemagic iOS Trivy checksum integrity pin is missing.'
+Assert-Match $Codemagic 'shasum -a 256 -c' 'Codemagic iOS scanner downloads must be checksum-verified.'
+Assert-Match $Codemagic '--severity HIGH,CRITICAL' 'Codemagic resolved iOS native dependency scan must gate HIGH/CRITICAL findings.'
+Assert-Match $Codemagic '--exit-code 1' 'Codemagic resolved iOS native dependency scan must fail closed.'
+Assert-Match $Codemagic 'ios-codemagic-resolved\.spdx\.json' 'Codemagic resolved iOS SPDX SBOM artifact is missing.'
+Assert-Match $Codemagic 'ios-codemagic-resolved\.trivy\.json' 'Codemagic resolved iOS Trivy report artifact is missing.'
+$IosScanIndex = $Codemagic.IndexOf('- name: Scan resolved iOS dependencies before App Store Connect upload')
+$PublishingIndex = $Codemagic.IndexOf('    publishing:')
+Assert-True ($IosScanIndex -ge 0 -and $PublishingIndex -gt $IosScanIndex) 'Resolved iOS Trivy/Syft gate must run before App Store Connect publishing.'
 Assert-Match $Workflow 'codemagic_ios_bridge\.py' 'Formal release must trigger the Codemagic signed iOS workflow.'
 Assert-Match $Workflow 'verify-ios-ipa' 'Downloaded iOS IPA must pass release-contract validation.'
 Assert-Match $Workflow 'ios-arm64\.ipa' 'Versioned iOS IPA naming contract is missing.'
-Assert-Match $Workflow 'ios\.spdx\.json' 'iOS SPDX SBOM is missing.'
+Assert-Match $Workflow 'ios-codemagic-resolved\.spdx\.json' 'Codemagic pre-publish iOS SPDX SBOM must enter the GitHub release bundle.'
+Assert-Match $Workflow 'ios-codemagic-resolved\.trivy\.json' 'Codemagic pre-publish iOS Trivy report must enter the GitHub release bundle.'
+Assert-Match $Workflow 'ios-github-verified\.spdx\.json' 'GitHub-verified iOS SPDX SBOM is missing.'
+Assert-Match $Workflow 'ios-github-verified\.trivy\.json' 'GitHub-verified iOS Trivy report is missing.'
 Assert-Match $Workflow '\$signtool\.FullName verify' 'Windows Authenticode verification is missing.'
 Assert-Match $Workflow 'apksigner.*verify' 'Android APK signature verification is missing.'
 Assert-Match $Workflow '--severity HIGH,CRITICAL' 'HIGH/CRITICAL vulnerability gate is missing.'
@@ -185,6 +201,11 @@ try {
     Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-web-any.tar.gz') -Value 'web' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-server-api-linux-amd64.tar') -Value 'server' -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-arm64.ipa') -Value 'ios-release-fixture' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-native-deps.zip') -Value 'ios-native-evidence' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-codemagic-resolved.spdx.json') -Value '{"sbom":"codemagic"}' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-codemagic-resolved.trivy.json') -Value '{"scan":"codemagic"}' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-github-verified.spdx.json') -Value '{"sbom":"github"}' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-ios-github-verified.trivy.json') -Value '{"scan":"github"}' -Encoding UTF8
 
     $Head = ((& git -C $Repo rev-parse HEAD) | Select-Object -Last 1).Trim()
     $CommitDate = ((& git -C $Repo show -s --format=%cI HEAD) | Select-Object -Last 1).Trim()
@@ -221,9 +242,18 @@ try {
     Assert-True ($Provenance.predicate.gitTag -eq 'v1.2.3') 'Provenance does not link to the formal Git tag.'
     Assert-True ($Provenance.predicate.releaseVersion -eq '1.2.3') 'Provenance does not link to the release version.'
     Assert-True ($Provenance.predicate.workflowRun -eq 'https://github.com/example/dd/actions/runs/12345') 'Provenance does not link to the workflow run.'
-    Assert-True (@($Provenance.subject).Count -ge 3) 'Provenance must contain artifact subjects.'
-    Assert-True (@($Metadata.artifacts | Where-Object { $_.name -eq 'DD-v1.2.3-ios-arm64.ipa' }).Count -eq 1) 'Release metadata must include the iOS IPA.'
-    Assert-True (@($Provenance.subject | Where-Object { $_.name -eq 'DD-v1.2.3-ios-arm64.ipa' }).Count -eq 1) 'Provenance must include the iOS IPA.'
+    Assert-True (@($Provenance.subject).Count -ge 8) 'Provenance must contain all iOS release/security subjects.'
+    foreach ($IosArtifact in @(
+        'DD-v1.2.3-ios-arm64.ipa',
+        'DD-v1.2.3-ios-native-deps.zip',
+        'DD-v1.2.3-ios-codemagic-resolved.spdx.json',
+        'DD-v1.2.3-ios-codemagic-resolved.trivy.json',
+        'DD-v1.2.3-ios-github-verified.spdx.json',
+        'DD-v1.2.3-ios-github-verified.trivy.json'
+    )) {
+        Assert-True (@($Metadata.artifacts | Where-Object { $_.name -eq $IosArtifact }).Count -eq 1) "Release metadata must include $IosArtifact."
+        Assert-True (@($Provenance.subject | Where-Object { $_.name -eq $IosArtifact }).Count -eq 1) "Provenance must include $IosArtifact."
+    }
 
     $Manifest = Join-Path $Artifacts 'DD-v1.2.3-SHA256SUMS.txt'
     & python $ContractPath checksums --root $Artifacts --output $Manifest | Out-Null
@@ -236,6 +266,11 @@ try {
     }
     $ManifestText = Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8
     Assert-Match $ManifestText 'DD-v1\.2\.3-ios-arm64\.ipa' 'SHA256SUMS must include the iOS IPA.'
+    Assert-Match $ManifestText 'DD-v1\.2\.3-ios-native-deps\.zip' 'SHA256SUMS must include iOS native dependency evidence.'
+    Assert-Match $ManifestText 'DD-v1\.2\.3-ios-codemagic-resolved\.spdx\.json' 'SHA256SUMS must include Codemagic iOS SBOM.'
+    Assert-Match $ManifestText 'DD-v1\.2\.3-ios-codemagic-resolved\.trivy\.json' 'SHA256SUMS must include Codemagic iOS Trivy report.'
+    Assert-Match $ManifestText 'DD-v1\.2\.3-ios-github-verified\.spdx\.json' 'SHA256SUMS must include GitHub-verified iOS SBOM.'
+    Assert-Match $ManifestText 'DD-v1\.2\.3-ios-github-verified\.trivy\.json' 'SHA256SUMS must include GitHub-verified iOS Trivy report.'
     Add-Content -LiteralPath (Join-Path $Artifacts 'DD-v1.2.3-web-any.tar.gz') -Value 'tampered' -Encoding UTF8
     Invoke-ExpectedFailure -Message 'Tampered release artifact passed checksum verification.' -Action {
         & python $ContractPath verify-checksums --root $Artifacts --manifest $Manifest | Out-Null

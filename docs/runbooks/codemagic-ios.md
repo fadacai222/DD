@@ -86,7 +86,7 @@ Git tag                    = v + full SemVer (including prerelease)
 IPA                        = DD-<tag>-ios-arm64.ipa
 ```
 
-Apple 不接受 `1.2.3-rc.1` 作为 `CFBundleShortVersionString`，所以 prerelease 必须确定性映射到 `1.2.3`；RC 与 stable 仍由不同 Git tag + commit-count build number 区分。Codemagic 在复制 IPA 前真实执行：
+Apple 不接受 `1.2.3-rc.1` 作为 `CFBundleShortVersionString`，所以 prerelease 必须确定性映射到 `1.2.3`。为避免 rc.1/rc.2 同一 commit 时产生相同 Apple build identity，U25 release contract 现在强制**一个 commit 最多一个 DD 正式 SemVer tag**；`nightly-test` 等非正式 tag 不影响发布。这样 RC/stable 继续使用 SemVer core + commit-count，同时不会让两个正式 DD release 共享同一个 `(Bundle ID, version, build)`。Codemagic 在复制 IPA 前真实执行：
 
 ```text
 codesign --verify --deep --strict
@@ -97,7 +97,7 @@ security cms -D -i embedded.mobileprovision
 
 ## 5. TestFlight
 
-`ios-signed-release` 使用 `publishing.app_store_connect.auth: integration` 上传已签名 IPA 到 App Store Connect，因此成功处理后进入 TestFlight 构建链；默认 `submit_to_app_store: false`，绝不自动提交 Production App Store review。
+`ios-signed-release` 使用 `publishing.app_store_connect.auth: integration` **自动上传 IPA 到 App Store Connect**；Apple 随后可以进行 build/TestFlight processing。当前同时保持 `submit_to_testflight: false` 和 `submit_to_app_store: false`：不会自动提交 TestFlight Beta App Review、不会自动把 build 分发给 tester groups，也不会自动提交 Production App Store review。
 
 正式顺序：
 
@@ -105,8 +105,10 @@ security cms -D -i embedded.mobileprovision
 U25 release gates
 → GitHub release-signing Environment approval
 → Codemagic signed IPA
+→ capture resolved native dependency evidence
+→ pinned Syft SBOM + pinned Trivy HIGH/CRITICAL fail-closed gate
 → signing identity verification
-→ App Store Connect upload / TestFlight processing
+→ App Store Connect upload / possible TestFlight processing
 → U25 checksum + provenance + attestation + GitHub Release
 ```
 
@@ -114,10 +116,10 @@ U25 release gates
 
 ## 6. iOS SBOM 与漏洞覆盖边界
 
-现有通用 client SBOM 不能单独宣称覆盖完整 iOS native dependency。Codemagic 会在实际 iOS 依赖解析后收集 Dart pub dependency、`pubspec.lock`，以及生成/存在的 `Package.swift`、`Package.resolved`、`Podfile.lock`，打成 `DD-<tag>-ios-native-deps.zip`；U25 再对这份云端解析结果运行 pinned Trivy（HIGH/CRITICAL `--exit-code 1`）和 pinned Syft，分别生成 `DD-<tag>-ios.trivy.json` 与 `DD-<tag>-ios.spdx.json`。
+现有通用 client SBOM 不能单独宣称覆盖完整 iOS native dependency。Codemagic 会在实际 iOS 依赖解析后收集 Dart pub dependency、`pubspec.lock`，以及生成/存在的 `Package.swift`、`Package.resolved`、`Podfile.lock`，打成 `DD-<tag>-ios-native-deps.zip`。在 `publishing.app_store_connect` **之前**，Codemagic 下载固定版本 Syft/Trivy，并先校验固定 SHA-256 checksum manifest，再校验 scanner archive；任何下载失败、checksum 错误、scanner 缺失、native evidence 为空、SBOM/Trivy report 为空或 Trivy HIGH/CRITICAL 命中都会直接失败，IPA 不会进入 Apple upload。Codemagic 产出 `DD-<tag>-ios-codemagic-resolved.spdx.json` 与 `DD-<tag>-ios-codemagic-resolved.trivy.json`；GitHub `build-ios` 下载这些证据后，再使用 U25 已 pin digest 的 Syft/Trivy 独立重扫，产出 `DD-<tag>-ios-github-verified.spdx.json` 与 `DD-<tag>-ios-github-verified.trivy.json`。
 
 当前 Runner 使用 Flutter 生成的本地 Swift Package，仓库基线没有 `Podfile/Podfile.lock`，因此不能伪造 CocoaPods 清单。若以后引入 CocoaPods，云端 evidence 会自动带入实际 `Podfile.lock`。Syft/Trivy 对 Xcode build settings、Apple SDK、预编译 framework 内部组件及部分 SPM metadata 的识别并不等于 Apple 平台全覆盖；U25 仍保持 repository Trivy `HIGH/CRITICAL` fail closed，但这些 native blind spot 必须明确保留为 coverage gap，而不是宣称“已扫描全部 iOS native 组件”。
 
 ## 7. Rollback / retention
 
-iOS IPA、iOS SPDX SBOM 与 native dependency evidence 都进入 U25 `assemble-attest-and-sign`，因此进入 `SHA256SUMS`、descriptive provenance、GitHub Artifact Attestation 与 GitHub Release assets。Retention 继续使用 U25 同一策略：保留当前和立即上一条 published DD SemVer release，包含 prerelease（例如 rc.2 的 predecessor 可以是 rc.1）。
+iOS IPA、native dependency evidence、Codemagic pre-publish SBOM/Trivy report、GitHub 二次验证 SBOM/Trivy report 全部进入 U25 `assemble-attest-and-sign`，因此进入 `SHA256SUMS`、descriptive provenance、GitHub Artifact Attestation 与 GitHub Release assets。Retention 继续使用 U25 同一策略：保留当前和立即上一条 published DD SemVer release，包含 prerelease（例如 rc.2 的 predecessor 可以是 rc.1）。

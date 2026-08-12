@@ -179,6 +179,20 @@ def ensure_exact_tag(repo: Path, tag: str) -> None:
             f"formal release tag {tag!r} does not point at HEAD; tags at HEAD: "
             f"{sorted(tags_at_head)!r}"
         )
+
+    formal_tags_at_head: list[str] = []
+    for candidate in sorted(tags_at_head):
+        try:
+            version_from_tag(candidate)
+        except ReleaseContractError:
+            continue
+        formal_tags_at_head.append(candidate)
+    if formal_tags_at_head != [tag]:
+        raise ReleaseContractError(
+            "a release commit may have exactly one DD formal SemVer tag; "
+            f"expected only {tag!r}, found {formal_tags_at_head!r}"
+        )
+
     tagged_sha = run_git(repo, "rev-list", "-n", "1", tag)
     head = run_git(repo, "rev-parse", "HEAD")
     if tagged_sha != head:
