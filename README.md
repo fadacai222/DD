@@ -46,8 +46,8 @@ Web 通过 `scripts/start-dd-web.ps1` 启动已构建的 Release 静态文件。
 | P9 | `IMPLEMENTED / QR-DIRECTED-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | 个人码、群二维码、扫码登录 |
 | P10 | `IMPLEMENTED / PUSH-DIRECTED-AUTO-EVIDENCE / GLOBAL-GATE-PASS / HUMAN-PENDING` | Push job/Worker、FCM/APNs/UnifiedPush、Flutter token、Android data-only FCM |
 | P11 | `OUT-OF-SCOPE` | V1 明确不做 Production E2EE |
-| P12 | `PLANNED` | Admin / Abuse / Data Rights |
-| P13 | `PARTIAL INFRA` | Production Self-host / Backup / Upgrade / Observability |
+| P12 | `IMPLEMENTED + AUTO-VERIFIED` | Admin / Abuse / Data Rights 主链已完成；普通用户 MFA/Passkey 为后续 P2 扩展 |
+| P13 | `IMPLEMENTED / AUTO-VERIFIED / HUMAN-PENDING` | Production Self-host / TURN/TLS / Backup / Upgrade / Observability 已完成自动闭环；公网与真实规模仍待验收 |
 | P14 | `PLANNED` | iOS / macOS 正式交付 |
 
 详细状态以 [开发进度跟踪.md](开发进度跟踪.md) 和 [未开发任务.md](未开发任务.md) 为准。
@@ -199,10 +199,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-secret-scan.ps1
 
 ```text
 修复当前真人回归暴露的问题
-→ Moments/QR 指定 PG 门禁
-→ P12 Admin / Abuse / Data Rights
-→ P13 Production Self-host / Backup / Upgrade / Observability
+→ U25 Release provenance / 正式发布链
 → P14 iOS / macOS
+→ P2 扩展：普通用户 MFA / Passkey
 ```
 
 并行保留 P6/P7/P8/P9/P10 的多端、弱网、真机、长时通话、二维码、Push 和大媒体人工验收债务。

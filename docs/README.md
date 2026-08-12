@@ -55,7 +55,7 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-12 本轮�
 - **P5 Sticker/Media 本轮收口**：自定义 Sticker 支持 PNG/WebP/GIF/MP4/WebM（单项 ≤64 MiB），从 Telegram Pack/已收到消息加入个人库时同时允许 TGS；Telegram Pack Relay 现完整覆盖静态 WebP/PNG、动态 TGS 与视频 WebM，TGS 由 Flutter Lottie gzip decoder 循环渲染，WebM 复用静音循环视频 Sticker 播放链；失败/取消/重试上传会立即释放 reservation；2026-08-12 TG 表情包整包分享进一步改为正式 `STICKER_PACK` 消息：服务端强制取该包排序第一项作为 PRIMARY 预览媒体并生成 `dd://stickers/telegram/...` 导入元数据，接收方即使尚未添加该包也能看到真实首个表情缩略图，转发后仍保留缩略图与导入能力；同时保留面板 4 秒静默账号同步和真实 16 MiB GIF 流式回归，并修复“视频自定义表情刚上传可播、关闭再打开候选格永久转圈”的 BottomSheet 入场可见性回归。视频 Sticker 现不再只依赖临时签名 URL：首次加载会进入 DD 的 `VideoFileCache` 持久缓存，聊天气泡、候选格和分享预览跨面板复用本地文件；缓存受统一容量预算/LRU 和 30 天年龄约束。地址解析/播放器打开超过 15 秒则进入可重试失败态并记录客户端日志，不再无限转圈。
 - **需求0812 性能/稳定性收口**：性能页提供节能模式、减少动画、视频自动预览与硬件加速视频解码；本轮已把 `外观 / 聊天背景 / 媒体与缓存 / 性能 / 传输中心` 从内层设置迁移到“我的”外层，并把原“账号、隐私与设备”收敛为“隐私与设备”。2026-08-12 Android 真机再次复现大视频闪退后，ADB Logcat 已把根因定位到文件选择返回阶段 Java 堆 OOM：约 128 MiB / 503 MiB 样本分别触发同量级整块内存申请，而进程堆增长上限约 256 MiB。聊天相册、文件和自定义表情 Android 选择入口现改为 DD 原生 `ACTION_OPEN_DOCUMENT`，在后台以 64 KiB 缓冲流式复制到 App cache，仅向 Dart 返回路径/元数据；后续继续使用原生缩放 poster + `uploadStream`，不再在选择阶段把整文件 materialize 成 `byte[]`。新增大文件选择合同测试通过、相关 Dart analyzer 0 issue，仓库标准 Android Debug APK 已重新构建成功；状态为 `FIXED-PENDING-RETEST`，仍需真人用同一 100 MiB/500 MiB 级样本复测。Telegram 表情包分享计时器用例已改为有界 pump，`text_chat_page_test.dart` 当前 39/39 全绿。
 - **需求0812 账号/表情/链接新增**：删除独立“刷新登录会话 / 切换账号”入口，新增“账号管理”；Native 客户端按 `origin + userId` 在安全存储中保存最多 8 个独立 Refresh Token 槽位，已有有效会话可直接切换，失效槽位回落密码登录，“添加账号”进入登录页但不撤销原账号。发现页“更多能力”替换为“表情”，复用现有自定义 Sticker + Telegram Pack 管理链。文本消息中的 HTTP/HTTPS URL 现为蓝色可点击实体，每条消息首链接可加载服务端 `/api/v1/link-preview` 元数据卡，点击文字或卡片交给系统外部浏览器/处理器；服务端预览强制鉴权并拦截私网/回环/链路本地/危险端口/不安全重定向，限制 5 秒、512 KiB HTML。Windows 窗口层新增全局 `Esc` 返回上一层：局部 Escape 处理优先，未被消费时根 Navigator `maybePop`，主导航根层不退出/不缩托盘。Native 多账号、链接 UI/客户端和服务器均有自动回归；Web 不持久化多份 Refresh Token，因此直接切换会话仍按 Web 安全模型回落重新认证。
-- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Data Rights、P13 Production Self-host、P14 iOS/macOS 正式交付仍未完成。P13 中 U24 Observability/Alerting 已落地 `server/internal/observability` + `infra/observability` overlay，但不能替代 U20-U23 的正式部署/公网 TURN/TLS/备份恢复/升级回滚。
+- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 主链与 P13 U20-U24 Production Self-host 已完成总集成自动验证。P13 当前只剩 U25 Release provenance 代码收口以及公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等 `HUMAN-PENDING`；P14 iOS/macOS 正式交付仍未完成。
 
 当前不能宣称 Stable 1.0，也不能把“今晚能运行开发环境”写成“商业上线完成”。
 
@@ -81,6 +81,9 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-12 本轮�
 000028_moment_activity      ← Moments 点赞/评论/回复持久未读事实
 000029_telegram_sticker_dynamic_video ← Telegram TGS/WebM + Custom TGS MIME 前向扩展
 000030_sticker_pack_share ← STICKER_PACK 消息类型与首表情分享缩略图
+000031_admin_auth ← 独立 Admin identity/session/MFA
+000032_admin_governance ← 举报/治理/审计
+000033_data_rights ← 数据导出/账号注销生命周期
 ```
 
 当前 Go 正式业务模块包括：
@@ -98,6 +101,9 @@ qrcode
 realtimebus
 realtimev1
 push
+admin
+datarights
+observability
 ```
 
 P10 Push 已形成正式 domain package、HTTP surface、Worker consumer 与客户端接入。
@@ -152,7 +158,7 @@ POST   /api/v1/qr-login/consume
 
 ### Server
 
-2026-08-12 当前 `go test ./...` 已全量通过；Groups/Calls/Moments/QR 都保留真实 PostgreSQL integration coverage，P9 QR migration `000021` 已完成 `up → idempotent up → down → up` 验证。朋友圈互动未读的 HTTP/service/migration 编译与单元门禁已通过；`TestMomentPrivacyLifecycleWithPostgres` 已扩展点赞/评论/回复未读、已读与删除清理断言，但本机未配置 `DD_MOMENTS_TEST_DATABASE_URL`，所以本轮真实 PostgreSQL 用例被明确 SKIP，不能冒充已跑过新 migration 的数据库实测。OpenAPI runtime 合同测试通过；媒体取消路由采用 `/api/v1/media/uploads/{uploadId}/cancel` 避开与 `/api/v1/media/{mediaId}/download-url` 的模板歧义，2026-08-12 Redocly CLI `2.45.0 --extends=recommended-strict` 已重新全绿。
+2026-08-12 总集成当前 `go test ./...`、`go vet ./...` 已全量通过；Admin/Data Rights/Moments/QR/Push 均在包含 `000031/000032/000033` 的 PostgreSQL 18.4 最终 schema 上真实运行通过，QR `000021` 与 Moment Activity `000028` migration roundtrip 通过，未以 SKIP 冒充数据库实测。OpenAPI runtime 合同与 Redocly `recommended-strict` 全绿；U06 full-history Gitleaks 在 Git worktree 中真实验证 61/61 commits，Git fatal/0 commits 假绿已被阻断。
 
 ### P6 Group
 
@@ -260,8 +266,8 @@ Push 的设备级退出项仍是：真实 Android 设备安装后取得 FCM toke
 ```text
 完成 P9 真人扫码/跨设备验收
 → 完成 P10 Push
-→ P12 Admin / Abuse / Data Rights
-→ P13 Production Self-host / Backup / Upgrade / Observability
+→ U25 Release provenance / 正式发布链
+→ P13 公网 TURN / DR / Observability 真人生产验收
 → P14 iOS/macOS 产品交付
 ```
 
