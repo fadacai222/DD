@@ -32,7 +32,14 @@ void main() {
     expect(entitlements, isNot(contains('application-identifier')));
 
     expect(project, contains('PRODUCT_BUNDLE_IDENTIFIER = org.openimx.client;'));
-    expect(project, contains('IPHONEOS_DEPLOYMENT_TARGET = 13.0;'));
+    final deploymentTargets = RegExp(
+      r'IPHONEOS_DEPLOYMENT_TARGET = ([0-9.]+);',
+    ).allMatches(project).map((match) => match.group(1)).toList();
+    expect(
+      deploymentTargets,
+      equals(const ['15.0', '15.0', '15.0']),
+      reason: 'Runner project Debug/Profile/Release deployment targets must stay aligned',
+    );
     expect(project, contains('TARGETED_DEVICE_FAMILY = "1,2";'));
     expect(project, contains('CODE_SIGN_STYLE = Automatic;'));
     expect(project, contains('CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;'));

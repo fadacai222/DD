@@ -22,7 +22,7 @@
 
 ## Platform Foundation 当前合同
 
-- iOS Bundle ID：`org.openimx.client`；deployment target：iOS 13.0；目标设备族为 iPhone + iPad。
+- iOS Bundle ID：`org.openimx.client`；deployment target：iOS 15.0；Runner Debug/Profile/Release 保持一致；目标设备族为 iPhone + iPad。当前锁定的 `firebase_core 4.13.0` / `firebase_messaging 16.5.0` iOS native metadata 要求 iOS 15.0，因此 Runner deployment target 必须保持 15.0。
 - `Info.plist` 已声明当前真实产品链需要的 Camera、Microphone、Photo Library read/add、Local Network 文案，以及 `audio` / `remote-notification` Background Modes；通知授权本身由 iOS runtime API 请求，不存在 `NSNotificationsUsageDescription` 这类 plist key。
 - Bluetooth 未声明：当前 AVAudioSession/LiveKit 音频路由不需要为了蓝牙耳机额外请求 CoreBluetooth 权限。若后续确实扫描/连接 BLE 设备，再由对应功能 owner 增加权限并给出用途。
 - Universal Links / Associated Domains 当前未声明：现有 DD 路由先使用 `dd://` custom scheme；在正式 HTTPS 域名、AASA 文件和 Developer Portal Associated Domains 能力齐备前，不伪造 production entitlement。
