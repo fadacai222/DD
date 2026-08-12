@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:media_kit/media_kit.dart' as mk;
 
+import 'app_audio_activity.dart';
 import 'app_sound_source.dart';
 
 abstract interface class AppSoundBackend {
@@ -95,12 +96,16 @@ enum AppSoundCue {
 }
 
 final class AppSoundService {
-  AppSoundService({AppSoundBackend? backend})
-    : _backend = backend ?? AudioPlayersSoundBackend();
+  AppSoundService({
+    AppSoundBackend? backend,
+    AppAudioActivity? audioActivity,
+  }) : _backend = backend ?? AudioPlayersSoundBackend(),
+       _audioActivity = audioActivity ?? AppAudioActivity.shared;
 
   static final AppSoundService shared = AppSoundService();
 
   final AppSoundBackend _backend;
+  final AppAudioActivity _audioActivity;
   AppSoundCue? _activeCallCue;
   DateTime? _lastMessageSoundAt;
   bool _disposed = false;
@@ -148,7 +153,7 @@ final class AppSoundService {
   }
 
   Future<void> playMessageNotification() async {
-    if (_disposed) return;
+    if (_disposed || _audioActivity.callActive) return;
     final now = DateTime.now();
     final last = _lastMessageSoundAt;
     if (last != null &&

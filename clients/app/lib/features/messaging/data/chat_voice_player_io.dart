@@ -5,10 +5,12 @@ import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart' as ap;
 import 'package:media_kit/media_kit.dart' as mk;
 
+import '../../../core/sound/app_audio_activity.dart';
 import 'voice_playback_source.dart';
 
 final class ChatVoicePlayer {
-  ChatVoicePlayer() {
+  ChatVoicePlayer({bool Function()? callActive})
+    : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive) {
     if (!Platform.isWindows) {
       final player = ap.AudioPlayer();
       _audioPlayer = player;
@@ -36,6 +38,7 @@ final class ChatVoicePlayer {
     }
   }
 
+  final bool Function() _callActive;
   mk.Player? _mediaKitPlayer;
   ap.AudioPlayer? _audioPlayer;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -93,6 +96,7 @@ final class ChatVoicePlayer {
     String? mimeType,
     double rate = 1,
   }) async {
+    _ensureCallAudioAvailable();
     if (Platform.isWindows) {
       final mediaKit = _ensureMediaKitPlayer();
       final source = await createVoicePlaybackSource(
@@ -134,6 +138,7 @@ final class ChatVoicePlayer {
   }
 
   Future<void> resume() async {
+    _ensureCallAudioAvailable();
     if (Platform.isWindows) {
       await _mediaKitPlayer?.play();
       return;
@@ -156,6 +161,12 @@ final class ChatVoicePlayer {
       return;
     }
     await _audioPlayer?.setPlaybackRate(rate);
+  }
+
+  void _ensureCallAudioAvailable() {
+    if (_callActive()) {
+      throw StateError('通话进行中，暂不能播放语音消息。');
+    }
   }
 
   Future<void> dispose() async {

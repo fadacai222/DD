@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import '../../../core/sound/app_audio_activity.dart';
 import '../../../theme/app_theme.dart';
+import '../data/call_audio_session_controller.dart';
+import '../data/call_platform_service.dart';
 import '../data/group_call_api_client.dart';
 import '../domain/group_call_models.dart';
 
@@ -40,11 +43,15 @@ class _GroupCallPageState extends State<GroupCallPage>
   late final GroupCallGateway _gateway;
   late final bool _ownsGateway;
   EventsListener<RoomEvent>? _listener;
+  StreamSubscription<CallPlatformEvent>? _platformSubscription;
+  final CallAudioSessionController _audioSession = CallAudioSessionController();
+  final Object _audioActivityOwner = Object();
   bool _connecting = true;
   bool _leaving = false;
   bool _micEnabled = true;
   bool _cameraEnabled = false;
   bool _speakerEnabled = true;
+  String _audioRouteLabel = '系统音频';
   String? _error;
   DateTime? _connectedAt;
   Timer? _durationTimer;
@@ -66,6 +73,12 @@ class _GroupCallPageState extends State<GroupCallPage>
         dynacast: true,
       ),
     );
+    _platformSubscription = CallPlatformService.shared.events.listen((event) {
+      final route = event.route;
+      if (route == null || !mounted) return;
+      _audioSession.updateRoute(route);
+      setState(() => _audioRouteLabel = route.label);
+    });
     _listener = _room.createListener()
       ..on<RoomDisconnectedEvent>((event) {
         if (!mounted || _leaving) return;
@@ -90,6 +103,12 @@ class _GroupCallPageState extends State<GroupCallPage>
 
   Future<void> _connect() async {
     try {
+      AppAudioActivity.shared.acquire(_audioActivityOwner);
+      await _audioSession.prepare(
+        video: _videoCall,
+        externalCallSystem: false,
+      );
+      _speakerEnabled = _audioSession.speakerPreferred;
       await _room.connect(widget.join.liveKitUrl, widget.join.token);
       final local = _room.localParticipant;
       if (local == null) throw StateError('LiveKit local participant unavailable');
@@ -109,6 +128,8 @@ class _GroupCallPageState extends State<GroupCallPage>
       );
       if (mounted) setState(() => _connecting = false);
     } catch (error) {
+      AppAudioActivity.shared.release(_audioActivityOwner);
+      await _audioSession.release();
       if (mounted) {
         setState(() {
           _connecting = false;
@@ -124,7 +145,11 @@ class _GroupCallPageState extends State<GroupCallPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused && _cameraEnabled) {
+    final suspended = state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+    if (suspended && _cameraEnabled) {
       unawaited(_room.localParticipant?.setCameraEnabled(false));
     } else if (state == AppLifecycleState.resumed &&
         _cameraEnabled &&
@@ -139,6 +164,9 @@ class _GroupCallPageState extends State<GroupCallPage>
     _durationTimer?.cancel();
     _membershipTimer?.cancel();
     _listener?.dispose();
+    unawaited(_platformSubscription?.cancel());
+    AppAudioActivity.shared.release(_audioActivityOwner);
+    unawaited(_audioSession.release());
     unawaited(_room.disconnect());
     unawaited(_room.dispose());
     if (_ownsGateway) _gateway.close();
@@ -448,7 +476,9 @@ class _GroupCallPageState extends State<GroupCallPage>
           const SizedBox(width: 16),
           _callButton(
             key: const Key('group-call-speaker'),
-            label: _speakerEnabled ? '扬声器' : '听筒',
+            label: _audioRouteLabel == '系统音频'
+                ? (_speakerEnabled ? '扬声器' : '听筒')
+                : _audioRouteLabel,
             icon: _speakerEnabled ? Icons.volume_up_rounded : Icons.hearing_rounded,
             onPressed: _toggleSpeaker,
           ),
@@ -524,7 +554,7 @@ class _GroupCallPageState extends State<GroupCallPage>
   Future<void> _toggleSpeaker() async {
     final next = !_speakerEnabled;
     try {
-      await AudioManager.instance.setSpeakerOutputPreferred(next);
+      await _audioSession.setSpeakerPreferred(next);
       if (mounted) setState(() => _speakerEnabled = next);
     } catch (_) {
       if (mounted) _show('音频输出切换失败。');

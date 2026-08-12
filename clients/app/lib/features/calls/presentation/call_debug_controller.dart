@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import '../../../core/sound/app_audio_activity.dart';
+import '../data/call_audio_session_controller.dart';
+import '../data/call_platform_service.dart';
 import '../data/http_call_token_provider.dart';
 import '../domain/call_log_entry.dart';
 import '../domain/call_media_gateway.dart';
@@ -16,11 +19,19 @@ final class CallDebugController extends ChangeNotifier
   CallDebugController({
     CallTokenProvider? tokenProvider,
     CallConnectivityCheckRunner? connectivityCheckRunner,
+    CallPlatformGateway? platformGateway,
+    CallAudioSessionController? audioSession,
+    AppAudioActivity? audioActivity,
     DateTime Function()? now,
   }) : _tokenProvider = tokenProvider ?? HttpCallTokenProvider(),
        _connectivityCheckRunner =
            connectivityCheckRunner ?? _runLiveKitConnectivityChecks,
-       _now = now ?? DateTime.now;
+       _platformGateway = platformGateway ?? CallPlatformService.shared,
+       _audioSession = audioSession ?? CallAudioSessionController(),
+       _audioActivity = audioActivity ?? AppAudioActivity.shared,
+       _now = now ?? DateTime.now {
+    _platformSubscription = _platformGateway.events.listen(_handlePlatformEvent);
+  }
 
   static const int maxLogEntries = 150;
   static final RegExp _safeIdentifier = RegExp(
@@ -29,16 +40,26 @@ final class CallDebugController extends ChangeNotifier
 
   final CallTokenProvider _tokenProvider;
   final CallConnectivityCheckRunner _connectivityCheckRunner;
+  final CallPlatformGateway _platformGateway;
+  final CallAudioSessionController _audioSession;
+  final AppAudioActivity _audioActivity;
   final DateTime Function() _now;
   final List<CallLogEntry> _logs = <CallLogEntry>[];
+  final StreamController<CallMediaConnectionEvent> _connectionEvents =
+      StreamController<CallMediaConnectionEvent>.broadcast(sync: true);
+  final Object _mediaAudioOwner = Object();
+  final Object _systemAudioOwner = Object();
 
   Room? _room;
   EventsListener<RoomEvent>? _listener;
+  StreamSubscription<CallPlatformEvent>? _platformSubscription;
   bool _busy = false;
   bool _connected = false;
   bool _microphoneEnabled = false;
   bool _cameraEnabled = false;
+  bool _cameraSuspended = false;
   bool _frontCamera = true;
+  bool _systemCallManaged = false;
   bool _closed = false;
   String? _roomName;
 
@@ -50,6 +71,13 @@ final class CallDebugController extends ChangeNotifier
   bool get microphoneEnabled => _microphoneEnabled;
   @override
   bool get cameraEnabled => _cameraEnabled;
+  @override
+  bool get speakerPreferred => _audioSession.speakerPreferred;
+  @override
+  String get audioRouteLabel => _audioSession.route.label;
+  @override
+  Stream<CallMediaConnectionEvent> get connectionEvents =>
+      _connectionEvents.stream;
   @override
   String? get lastError {
     for (final entry in _logs.reversed) {
@@ -290,8 +318,101 @@ final class CallDebugController extends ChangeNotifier
   }
 
   @override
+  Future<void> toggleSpeaker() async {
+    if (!_connected || _busy) return;
+    _busy = true;
+    _notify();
+    try {
+      await _audioSession.toggleSpeaker();
+      _addLog(
+        CallLogLevel.success,
+        _audioSession.speakerPreferred ? '已优先使用扬声器。' : '已优先使用听筒/外接设备。',
+      );
+    } catch (error) {
+      _addLog(CallLogLevel.error, '音频输出切换失败：${_safeError(error)}');
+    } finally {
+      _busy = false;
+      _notify();
+    }
+  }
+
+  @override
+  Future<void> setCameraSuspended(bool suspended) async {
+    if (_cameraSuspended == suspended) return;
+    _cameraSuspended = suspended;
+    final participant = _room?.localParticipant;
+    if (participant == null || !_connected || !_cameraEnabled) {
+      _notify();
+      return;
+    }
+    try {
+      await participant.setCameraEnabled(!suspended);
+      _addLog(
+        CallLogLevel.info,
+        suspended ? 'App 进入后台，已暂停通话摄像头。' : 'App 回到前台，已恢复通话摄像头。',
+      );
+    } catch (error) {
+      _addLog(CallLogLevel.error, '摄像头生命周期切换失败：${_safeError(error)}');
+    }
+    _notify();
+  }
+
+  @override
+  Future<bool> setSystemCallManaged(bool managed, {required bool video}) async {
+    if (_systemCallManaged == managed) return true;
+    if (managed) {
+      _audioActivity.acquire(_systemAudioOwner);
+      try {
+        await _audioSession.prepare(video: video, externalCallSystem: true);
+        _systemCallManaged = true;
+        _notify();
+        return true;
+      } catch (error) {
+        _audioActivity.release(_systemAudioOwner);
+        _systemCallManaged = false;
+        _addLog(CallLogLevel.error, '系统通话音频协调失败：${_safeError(error)}');
+        _notify();
+        return false;
+      }
+    }
+
+    var released = true;
+    try {
+      await _audioSession.release();
+    } catch (error) {
+      released = false;
+      _addLog(CallLogLevel.error, '系统通话音频释放失败：${_safeError(error)}');
+    } finally {
+      _systemCallManaged = false;
+      _audioActivity.release(_systemAudioOwner);
+      _notify();
+    }
+    return released;
+  }
+
+  @override
+  Future<void> setSystemAudioActive(bool active) async {
+    try {
+      await _audioSession.handleSystemAudioActivation(active);
+    } catch (error) {
+      _addLog(CallLogLevel.error, '系统音频激活同步失败：${_safeError(error)}');
+    }
+    _notify();
+  }
+
+  @override
+  Future<void> setSystemAudioInterrupted(bool interrupted) async {
+    try {
+      await _audioSession.handleInterruption(interrupted);
+    } catch (error) {
+      _addLog(CallLogLevel.error, '系统音频中断同步失败：${_safeError(error)}');
+    }
+    _notify();
+  }
+
+  @override
   Future<void> switchCamera() async {
-    if (!_connected || !_cameraEnabled || _busy) return;
+    if (!_connected || !_cameraEnabled || _cameraSuspended || _busy) return;
     final track = localVideoTrack;
     if (track is! LocalVideoTrack) {
       _addLog(CallLogLevel.warning, '当前没有可切换的本地摄像头轨道。');
@@ -324,6 +445,17 @@ final class CallDebugController extends ChangeNotifier
     if (_closed) return;
     _closed = true;
     await _releaseRoom(notify: false);
+    await _platformSubscription?.cancel();
+    _platformSubscription = null;
+    if (_systemCallManaged) {
+      try {
+        await _audioSession.release();
+      } catch (_) {}
+      _systemCallManaged = false;
+    }
+    _audioActivity.release(_systemAudioOwner);
+    _audioActivity.release(_mediaAudioOwner);
+    await _connectionEvents.close();
     _tokenProvider.close();
   }
 
@@ -339,6 +471,32 @@ final class CallDebugController extends ChangeNotifier
     required bool enableMicrophone,
     required bool enableCamera,
   }) async {
+    final permissions = await _platformGateway.requestMediaPermissions(
+      microphone: enableMicrophone,
+      camera: enableCamera,
+    );
+    if (!permissions.allGranted(
+      microphone: enableMicrophone,
+      camera: enableCamera,
+    )) {
+      final denied = <String>[
+        if (enableMicrophone &&
+            permissions.microphone == CallMediaPermission.denied)
+          '麦克风',
+        if (enableCamera && permissions.camera == CallMediaPermission.denied)
+          '摄像头',
+      ];
+      throw StateError('${denied.join('、')}权限被拒绝，请在系统设置中允许后重试。');
+    }
+
+    _audioActivity.acquire(_mediaAudioOwner);
+    if (!_systemCallManaged) {
+      await _audioSession.prepare(
+        video: enableCamera,
+        externalCallSystem: false,
+      );
+    }
+    _emitConnection(CallMediaConnectionState.connecting);
     final room = Room(
       roomOptions: const RoomOptions(adaptiveStream: true, dynacast: true),
     );
@@ -358,6 +516,7 @@ final class CallDebugController extends ChangeNotifier
       credentials.participantToken,
     );
     _connected = true;
+    _emitConnection(CallMediaConnectionState.connected);
     _addLog(CallLogLevel.success, '已加入房间 $roomName。');
 
     if (enableMicrophone) {
@@ -383,7 +542,9 @@ final class CallDebugController extends ChangeNotifier
 
   Future<void> _setCameraEnabled(bool enabled) async {
     try {
-      await _room?.localParticipant?.setCameraEnabled(enabled);
+      await _room?.localParticipant?.setCameraEnabled(
+        enabled && !_cameraSuspended,
+      );
       _cameraEnabled = enabled;
       _addLog(CallLogLevel.success, enabled ? '摄像头已开启。' : '摄像头已关闭。');
     } catch (error) {
@@ -395,6 +556,7 @@ final class CallDebugController extends ChangeNotifier
   void _configureRoomEvents(EventsListener<RoomEvent> listener) {
     listener
       ..on<RoomReconnectingEvent>((_) {
+        _emitConnection(CallMediaConnectionState.reconnecting);
         _addLog(CallLogLevel.warning, '媒体连接中断，正在重连…');
       })
       ..on<RoomAttemptReconnectEvent>((event) {
@@ -405,12 +567,18 @@ final class CallDebugController extends ChangeNotifier
       })
       ..on<RoomReconnectedEvent>((_) {
         _connected = true;
+        _emitConnection(CallMediaConnectionState.connected);
         _addLog(CallLogLevel.success, '媒体连接已恢复。');
       })
       ..on<RoomDisconnectedEvent>((event) {
         _connected = false;
         _microphoneEnabled = false;
         _cameraEnabled = false;
+        _emitConnection(
+          CallMediaConnectionState.disconnected,
+          unexpected: true,
+        );
+        _audioActivity.release(_mediaAudioOwner);
         _addLog(
           CallLogLevel.warning,
           '房间连接已断开${event.reason == null ? '' : '：${event.reason}'}。',
@@ -444,6 +612,24 @@ final class CallDebugController extends ChangeNotifier
 
   void _handleRoomChange() => _notify();
 
+  void _handlePlatformEvent(CallPlatformEvent event) {
+    final route = event.route;
+    if (route != null) {
+      _audioSession.updateRoute(route);
+      _notify();
+    }
+  }
+
+  void _emitConnection(
+    CallMediaConnectionState state, {
+    bool unexpected = false,
+  }) {
+    if (_connectionEvents.isClosed) return;
+    _connectionEvents.add(
+      CallMediaConnectionEvent(state: state, unexpected: unexpected),
+    );
+  }
+
   Future<void> _releaseRoom({bool notify = true}) async {
     final room = _room;
     final listener = _listener;
@@ -452,6 +638,7 @@ final class CallDebugController extends ChangeNotifier
     _connected = false;
     _microphoneEnabled = false;
     _cameraEnabled = false;
+    _cameraSuspended = false;
     _frontCamera = true;
     _roomName = null;
 
@@ -467,6 +654,8 @@ final class CallDebugController extends ChangeNotifier
       }
       await room.dispose();
     }
+    _audioActivity.release(_mediaAudioOwner);
+    _emitConnection(CallMediaConnectionState.disconnected);
     if (notify) _notify();
   }
 

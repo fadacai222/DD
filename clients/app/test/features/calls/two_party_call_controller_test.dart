@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:im_client/features/calls/data/call_platform_service.dart';
 import 'package:im_client/features/calls/data/call_signaling_client.dart';
 import 'package:im_client/features/calls/data/http_call_session_api.dart';
 import 'package:im_client/features/calls/domain/call_media_gateway.dart';
@@ -153,6 +154,36 @@ void main() {
     expect(signaling.disposed, isFalse);
   });
 
+  test('outgoing CallKit audio is prepared before the system transaction starts', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    platform.isAudioPrepared = () => media.systemCallManaged;
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'alice',
+      participantName: 'Alice',
+    );
+    await controller.placeCall(calleeIdentity: 'bob', kind: CallKind.audio);
+
+    expect(signaling.disposed, isFalse);
+    expect(platform.outgoingReports, 1);
+    expect(platform.audioPreparedWhenOutgoingStarted, isTrue);
+    expect(controller.systemCallManaged, isTrue);
+  });
+
   test('reconnect recovers a missed accepted call', () async {
     final api = _FakeCallSessionApi();
     final media = _FakeCallMedia();
@@ -183,6 +214,95 @@ void main() {
     expect(controller.currentCall?.status, CallSessionStatus.accepted);
     expect(media.connected, isTrue);
     expect(media.joinCount, 1);
+  });
+
+  test('iOS CallKit actions stay synchronized with DD call state', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+
+    expect(platform.incomingReports, 1);
+    expect(controller.systemCallManaged, isTrue);
+    expect(media.systemCallManaged, isTrue);
+
+    await controller.accept();
+    await pumpEventQueue();
+    expect(platform.answerRequests, 1);
+    expect(controller.currentCall?.status, CallSessionStatus.accepted);
+    expect(platform.connectedReports, 1);
+    expect(media.joinCount, 1);
+
+    platform.emit(const CallPlatformEvent(type: CallPlatformEventType.audioActivated));
+    await pumpEventQueue();
+    expect(media.lastSystemAudioActive, isTrue);
+
+    platform.emit(const CallPlatformEvent(type: CallPlatformEventType.interruptionBegan));
+    await pumpEventQueue();
+    expect(media.lastSystemAudioInterrupted, isTrue);
+
+    final ended = api.acceptedCall.copyWith(
+      status: CallSessionStatus.ended,
+      endedAt: DateTime.utc(2026, 8, 7, 1, 2),
+      endReason: 'hangup',
+    );
+    signaling.emitCall('call.updated', ended.toJson());
+    await pumpEventQueue();
+
+    expect(platform.endedReports, 1);
+    expect(controller.systemCallManaged, isFalse);
+    expect(media.systemCallManaged, isFalse);
+  });
+
+  test('accepted call recovers media after an unexpected disconnect', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      mediaRecoveryDelays: const <Duration>[Duration.zero],
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+    await controller.accept();
+    expect(media.joinCount, 1);
+
+    media.emitUnexpectedDisconnect();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(media.connected, isTrue);
+    expect(media.joinCount, 2);
+    expect(controller.currentCall?.status, CallSessionStatus.accepted);
   });
 
   test(
@@ -374,7 +494,86 @@ final class _FakeSignalingClient implements CallSignalingClient {
   }
 }
 
+final class _FakeCallPlatform implements CallPlatformGateway {
+  final StreamController<CallPlatformEvent> _events =
+      StreamController<CallPlatformEvent>.broadcast(sync: true);
+
+  int incomingReports = 0;
+  int outgoingReports = 0;
+  int answerRequests = 0;
+  int endRequests = 0;
+  int connectedReports = 0;
+  int endedReports = 0;
+  bool Function()? isAudioPrepared;
+  bool? audioPreparedWhenOutgoingStarted;
+
+  @override
+  bool get isIOS => true;
+
+  @override
+  Stream<CallPlatformEvent> get events => _events.stream;
+
+  @override
+  Future<bool> isAvailable() async => true;
+
+  @override
+  Future<CallMediaPermissionResult> requestMediaPermissions({
+    required bool microphone,
+    required bool camera,
+  }) async => CallMediaPermissionResult.unavailable;
+
+  @override
+  Future<bool> reportIncomingCall({
+    required String callId,
+    required String callerName,
+    required bool video,
+  }) async {
+    incomingReports++;
+    return true;
+  }
+
+  @override
+  Future<bool> startOutgoingCall({
+    required String callId,
+    required String peerName,
+    required bool video,
+  }) async {
+    outgoingReports++;
+    audioPreparedWhenOutgoingStarted = isAudioPrepared?.call();
+    return true;
+  }
+
+  @override
+  Future<bool> answerCall(String callId) async {
+    answerRequests++;
+    emit(CallPlatformEvent(type: CallPlatformEventType.accept, callId: callId));
+    return true;
+  }
+
+  @override
+  Future<bool> endCall(String callId) async {
+    endRequests++;
+    emit(CallPlatformEvent(type: CallPlatformEventType.end, callId: callId));
+    return true;
+  }
+
+  @override
+  Future<void> reportConnected(String callId) async {
+    connectedReports++;
+  }
+
+  @override
+  Future<void> reportEnded(String callId) async {
+    endedReports++;
+  }
+
+  void emit(CallPlatformEvent event) => _events.add(event);
+}
+
 final class _FakeCallMedia implements CallMediaGateway {
+  final StreamController<CallMediaConnectionEvent> _connectionEvents =
+      StreamController<CallMediaConnectionEvent>.broadcast(sync: true);
+
   @override
   bool connected = false;
   @override
@@ -382,10 +581,20 @@ final class _FakeCallMedia implements CallMediaGateway {
   @override
   bool cameraEnabled = false;
   @override
+  bool speakerPreferred = false;
+  @override
+  String audioRouteLabel = '系统音频';
+  @override
   String? lastError;
+  @override
+  Stream<CallMediaConnectionEvent> get connectionEvents =>
+      _connectionEvents.stream;
 
   int joinCount = 0;
   int leaveCount = 0;
+  bool systemCallManaged = false;
+  bool? lastSystemAudioActive;
+  bool? lastSystemAudioInterrupted;
 
   @override
   Future<bool> joinWithCredentials({
@@ -398,6 +607,9 @@ final class _FakeCallMedia implements CallMediaGateway {
     connected = true;
     microphoneEnabled = enableMicrophone;
     cameraEnabled = enableCamera;
+    _connectionEvents.add(
+      const CallMediaConnectionEvent(state: CallMediaConnectionState.connected),
+    );
     return true;
   }
 
@@ -407,6 +619,40 @@ final class _FakeCallMedia implements CallMediaGateway {
     connected = false;
     microphoneEnabled = false;
     cameraEnabled = false;
+    _connectionEvents.add(
+      const CallMediaConnectionEvent(state: CallMediaConnectionState.disconnected),
+    );
+  }
+
+  void emitUnexpectedDisconnect() {
+    connected = false;
+    microphoneEnabled = false;
+    cameraEnabled = false;
+    _connectionEvents.add(
+      const CallMediaConnectionEvent(
+        state: CallMediaConnectionState.disconnected,
+        unexpected: true,
+      ),
+    );
+  }
+
+  @override
+  Future<void> setCameraSuspended(bool suspended) async {}
+
+  @override
+  Future<void> setSystemAudioActive(bool active) async {
+    lastSystemAudioActive = active;
+  }
+
+  @override
+  Future<void> setSystemAudioInterrupted(bool interrupted) async {
+    lastSystemAudioInterrupted = interrupted;
+  }
+
+  @override
+  Future<bool> setSystemCallManaged(bool managed, {required bool video}) async {
+    systemCallManaged = managed;
+    return true;
   }
 
   @override
@@ -420,6 +666,11 @@ final class _FakeCallMedia implements CallMediaGateway {
   @override
   Future<void> toggleMicrophone() async {
     microphoneEnabled = !microphoneEnabled;
+  }
+
+  @override
+  Future<void> toggleSpeaker() async {
+    speakerPreferred = !speakerPreferred;
   }
 }
 
