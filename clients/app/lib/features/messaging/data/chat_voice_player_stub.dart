@@ -3,10 +3,12 @@ import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 
+import '../../../core/sound/app_audio_activity.dart';
 import 'voice_playback_source.dart';
 
 final class ChatVoicePlayer {
-  ChatVoicePlayer() {
+  ChatVoicePlayer({bool Function()? callActive})
+    : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive) {
     _subscriptions.add(
       _player.onPlayerStateChanged.listen((state) {
         final playing = state == PlayerState.playing;
@@ -29,6 +31,7 @@ final class ChatVoicePlayer {
     );
   }
 
+  final bool Function() _callActive;
   final AudioPlayer _player = AudioPlayer();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final StreamController<bool> _playingController =
@@ -54,6 +57,7 @@ final class ChatVoicePlayer {
     String? mimeType,
     double rate = 1,
   }) async {
+    _ensureCallAudioAvailable();
     await _player.stop();
     await _player.setPlaybackRate(rate);
     final source = await createVoicePlaybackSource(
@@ -66,9 +70,18 @@ final class ChatVoicePlayer {
   }
 
   Future<void> pause() => _player.pause();
-  Future<void> resume() => _player.resume();
+  Future<void> resume() {
+    _ensureCallAudioAvailable();
+    return _player.resume();
+  }
   Future<void> stop() => _player.stop();
   Future<void> setRate(double rate) => _player.setPlaybackRate(rate);
+
+  void _ensureCallAudioAvailable() {
+    if (_callActive()) {
+      throw StateError('通话进行中，暂不能播放语音消息。');
+    }
+  }
 
   Future<void> dispose() async {
     for (final subscription in _subscriptions) {

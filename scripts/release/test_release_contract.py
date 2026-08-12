@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import plistlib
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +12,33 @@ import verify_github_gates
 
 
 class ReleaseContractTests(unittest.TestCase):
+    @staticmethod
+    def _git_repo(root: Path) -> Path:
+        repo = root / "repo"
+        repo.mkdir()
+        release_contract.run_git(repo, "init", "-b", "master")
+        release_contract.run_git(repo, "config", "user.email", "release-contract@example.invalid")
+        release_contract.run_git(repo, "config", "user.name", "DD Release Contract Test")
+        (repo / "payload.txt").write_text("one\n", encoding="utf-8")
+        release_contract.run_git(repo, "add", "payload.txt")
+        release_contract.run_git(repo, "commit", "-m", "test: first release commit")
+        return repo
+
+    @staticmethod
+    def _write_ios_ipa(path: Path, version: str = "1.2.3", build: str = "42", signed: bool = True) -> None:
+        info = plistlib.dumps({
+            "CFBundleIdentifier": "org.openimx.client",
+            "CFBundleShortVersionString": version,
+            "CFBundleVersion": build,
+        })
+        with zipfile.ZipFile(path, "w") as archive:
+            prefix = "Payload/Runner.app/"
+            archive.writestr(prefix + "Info.plist", info)
+            archive.writestr(prefix + "embedded.mobileprovision", b"profile")
+            if signed:
+                archive.writestr(prefix + "_CodeSignature/CodeResources", b"signature")
+            archive.writestr(prefix + "Runner", b"mach-o-placeholder")
+
     @staticmethod
     def _release(
         tag: str,
@@ -30,10 +59,43 @@ class ReleaseContractTests(unittest.TestCase):
     def test_semver_rejects_build_metadata_and_non_version_tags(self) -> None:
         self.assertEqual(release_contract.version_from_tag("v1.2.3"), "1.2.3")
         self.assertEqual(release_contract.version_from_tag("v1.2.3-rc.1"), "1.2.3-rc.1")
+        self.assertEqual(release_contract.ios_marketing_version("1.2.3"), "1.2.3")
+        self.assertEqual(release_contract.ios_marketing_version("1.2.3-rc.1"), "1.2.3")
         with self.assertRaises(release_contract.ReleaseContractError):
             release_contract.version_from_tag("release-1.2.3")
         with self.assertRaises(release_contract.ReleaseContractError):
             release_contract.version_from_tag("v1.2.3+build.7")
+
+    def test_exact_tag_accepts_one_formal_tag_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.1")
+
+    def test_exact_tag_rejects_two_formal_tags_at_same_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.2")
+            with self.assertRaises(release_contract.ReleaseContractError):
+                release_contract.ensure_exact_tag(repo, "v1.2.3-rc.2")
+
+    def test_exact_tag_ignores_unrelated_non_semver_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            release_contract.run_git(repo, "tag", "nightly-test")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.1")
+
+    def test_rc_tags_on_different_commits_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = self._git_repo(Path(temp))
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.1")
+            (repo / "payload.txt").write_text("two\n", encoding="utf-8")
+            release_contract.run_git(repo, "add", "payload.txt")
+            release_contract.run_git(repo, "commit", "-m", "test: second release commit")
+            release_contract.run_git(repo, "tag", "v1.2.3-rc.2")
+            release_contract.ensure_exact_tag(repo, "v1.2.3-rc.2")
 
     def test_checksum_verification_detects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -46,6 +108,32 @@ class ReleaseContractTests(unittest.TestCase):
             artifact.write_bytes(b"tampered")
             with self.assertRaises(release_contract.ReleaseContractError):
                 release_contract.verify_checksums(root, manifest)
+
+    def test_ios_ipa_missing_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(release_contract.ReleaseContractError):
+                release_contract.validate_ios_ipa_shape(Path(temp) / "missing.ipa", "1.2.3", 42)
+
+    def test_unsigned_production_ios_ipa_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ipa = Path(temp) / "DD-v1.2.3-ios-arm64.ipa"
+            self._write_ios_ipa(ipa, signed=False)
+            with self.assertRaises(release_contract.ReleaseContractError):
+                release_contract.validate_ios_ipa_shape(ipa, "1.2.3", 42)
+
+    def test_ios_ipa_wrong_version_or_build_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ipa = Path(temp) / "DD-v1.2.3-ios-arm64.ipa"
+            self._write_ios_ipa(ipa, version="1.2.2", build="41")
+            with self.assertRaises(release_contract.ReleaseContractError):
+                release_contract.validate_ios_ipa_shape(ipa, "1.2.3", 42)
+
+    def test_ios_ipa_expected_version_and_signature_shape_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ipa = Path(temp) / "DD-v1.2.3-ios-arm64.ipa"
+            self._write_ios_ipa(ipa)
+            release_contract.validate_ios_ipa_shape(ipa, "1.2.3", 42)
+            self.assertEqual(release_contract.classify_platform(ipa.name), "ios-arm64")
 
     def test_previous_formal_release_stable_to_stable(self) -> None:
         releases = [

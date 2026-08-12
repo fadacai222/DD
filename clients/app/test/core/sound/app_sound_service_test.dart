@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:im_client/core/sound/app_audio_activity.dart';
 import 'package:im_client/core/sound/app_sound_service.dart';
 
 void main() {
@@ -51,6 +52,22 @@ void main() {
     addTearDown(service.dispose);
 
     await service.playMessageNotification();
+    await service.playMessageNotification();
+    expect(backend.effectPlays, 1);
+  });
+
+  test('message sounds do not steal the audio session from an active call', () async {
+    final backend = _FakeSoundBackend();
+    final activity = AppAudioActivity();
+    final service = AppSoundService(backend: backend, audioActivity: activity);
+    final owner = Object();
+    addTearDown(service.dispose);
+
+    activity.acquire(owner);
+    await service.playMessageNotification();
+
+    expect(backend.effectPlays, 0);
+    activity.release(owner);
     await service.playMessageNotification();
     expect(backend.effectPlays, 1);
   });

@@ -128,12 +128,46 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	if delivery.Title != "Alice" || delivery.Body != "hello from push" || delivery.ConversationID != conversationID.String() {
 		t.Fatalf("delivery=%+v", delivery)
 	}
+	if delivery.Badge != 1 || delivery.Data["badge"] != "1" || delivery.Data["recipientUserId"] != recipientID.String() || delivery.Data["previewMode"] != PreviewFull {
+		t.Fatalf("delivery badge/account/privacy facts=%+v", delivery)
+	}
 	var jobStatus string
 	if err := pool.QueryRow(ctx, `SELECT status FROM push_jobs WHERE dedupe_key=$1`, "push-it:"+suffix).Scan(&jobStatus); err != nil {
 		t.Fatal(err)
 	}
 	if jobStatus != "SENT" {
 		t.Fatalf("job status=%s", jobStatus)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE conversation_members SET muted_until=$3
+		WHERE conversation_id=$1 AND user_id=$2
+	`, conversationID, recipientID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("mute push conversation: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
+	`, recipientID, messageID, conversationID, senderID, "push-muted:"+suffix, now); err != nil {
+		t.Fatalf("seed muted message push job: %v", err)
+	}
+	mutedProvider := &captureProvider{}
+	processed, err = service.DispatchJobs(ctx, Providers{UnifiedPush: mutedProvider}, 1)
+	if err != nil {
+		t.Fatalf("dispatch muted badge-only push: %v", err)
+	}
+	if processed != 1 || len(mutedProvider.deliveries) != 1 {
+		t.Fatalf("muted processed=%d deliveries=%d", processed, len(mutedProvider.deliveries))
+	}
+	mutedDelivery := mutedProvider.deliveries[0]
+	if !mutedDelivery.BadgeOnly || mutedDelivery.Title != "" || mutedDelivery.Body != "" || mutedDelivery.Badge != 1 || mutedDelivery.Data["badgeOnly"] != "1" {
+		t.Fatalf("muted delivery must only refresh badge: %+v", mutedDelivery)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE conversation_members SET muted_until=NULL
+		WHERE conversation_id=$1 AND user_id=$2
+	`, conversationID, recipientID); err != nil {
+		t.Fatalf("unmute push conversation: %v", err)
 	}
 
 	if err := service.DeleteEndpoint(ctx, recipientPrincipal, ProviderUnifiedPush); err != nil {
@@ -196,6 +230,50 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	}
 	if endpointStatus != "ACTIVE" || failureCount != 0 {
 		t.Fatalf("retryable provider failure polluted endpoint status=%s failureCount=%d", endpointStatus, failureCount)
+	}
+
+	ownershipToken := strings.Repeat("ab", 32)
+	if _, err := service.RegisterEndpoint(ctx, recipientPrincipal, RegisterEndpointInput{
+		Provider: ProviderAPNS, Endpoint: ownershipToken, AppID: "org.openimx.client", Environment: "SANDBOX",
+	}); err != nil {
+		t.Fatalf("register ownership APNS endpoint: %v", err)
+	}
+	var reinstallDevice uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO devices(user_id,name,platform,app_version)
+		VALUES($1,'Bob reinstalled iPhone','IOS','test') RETURNING id
+	`, recipientID).Scan(&reinstallDevice); err != nil {
+		t.Fatalf("insert reinstall device: %v", err)
+	}
+	reinstallPrincipal := account.Principal{UserID: recipientID, DeviceID: reinstallDevice}
+	if _, err := service.RegisterEndpoint(ctx, reinstallPrincipal, RegisterEndpointInput{
+		Provider: ProviderAPNS, Endpoint: ownershipToken, AppID: "org.openimx.client", Environment: "SANDBOX",
+	}); err != nil {
+		t.Fatalf("same-account reinstall should move APNS endpoint: %v", err)
+	}
+	var endpointDevice uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		SELECT device_id FROM device_push_endpoints WHERE provider='APNS' AND endpoint=$1
+	`, ownershipToken).Scan(&endpointDevice); err != nil {
+		t.Fatalf("load moved reinstall endpoint: %v", err)
+	}
+	if endpointDevice != reinstallDevice {
+		t.Fatalf("reinstall endpoint device=%s want=%s", endpointDevice, reinstallDevice)
+	}
+
+	senderPrincipal := account.Principal{UserID: senderID, DeviceID: senderDevice}
+	if _, err := service.RegisterEndpoint(ctx, senderPrincipal, RegisterEndpointInput{
+		Provider: ProviderAPNS, Endpoint: ownershipToken, AppID: "org.openimx.client", Environment: "SANDBOX",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active cross-account endpoint takeover err=%v want conflict", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE devices SET revoked_at=$2 WHERE id=$1`, reinstallDevice, now); err != nil {
+		t.Fatalf("revoke previous endpoint owner device: %v", err)
+	}
+	if _, err := service.RegisterEndpoint(ctx, senderPrincipal, RegisterEndpointInput{
+		Provider: ProviderAPNS, Endpoint: ownershipToken, AppID: "org.openimx.client", Environment: "SANDBOX",
+	}); err != nil {
+		t.Fatalf("revoked endpoint owner should not block active account registration: %v", err)
 	}
 
 	if _, err := pool.Exec(ctx, `

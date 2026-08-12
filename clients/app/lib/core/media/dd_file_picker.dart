@@ -4,17 +4,30 @@ import 'package:flutter/services.dart';
 
 const MethodChannel _ddFilePickerChannel = MethodChannel('dd/file_picker');
 
+enum DdFilePickerSource { files, photos }
+
+bool isDdPhotoLibraryPermissionError(PlatformException error) =>
+    error.code == 'PHOTO_LIBRARY_PERMISSION_DENIED' ||
+    error.code == 'PHOTO_LIBRARY_ADD_PERMISSION_DENIED';
+
+bool get _usesNativeDdPicker =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS);
+
 Future<XFile?> ddOpenFile({
   List<XTypeGroup>? acceptedTypeGroups,
+  DdFilePickerSource source = DdFilePickerSource.files,
   int? maxBytes,
 }) async {
-  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+  if (!_usesNativeDdPicker) {
     return openFile(
       acceptedTypeGroups: acceptedTypeGroups ?? const <XTypeGroup>[],
     );
   }
-  final files = await _androidOpenFiles(
+  final files = await _nativeOpenFiles(
     acceptedTypeGroups: acceptedTypeGroups,
+    source: source,
     allowMultiple: false,
     maxFiles: 1,
     maxBytes: maxBytes,
@@ -24,24 +37,32 @@ Future<XFile?> ddOpenFile({
 
 Future<List<XFile>> ddOpenFiles({
   List<XTypeGroup>? acceptedTypeGroups,
+  DdFilePickerSource source = DdFilePickerSource.files,
   int? maxFiles,
   int? maxBytes,
 }) async {
-  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+  if (!_usesNativeDdPicker) {
     return openFiles(
       acceptedTypeGroups: acceptedTypeGroups ?? const <XTypeGroup>[],
     );
   }
-  return _androidOpenFiles(
+  return _nativeOpenFiles(
     acceptedTypeGroups: acceptedTypeGroups,
+    source: source,
     allowMultiple: true,
     maxFiles: maxFiles,
     maxBytes: maxBytes,
   );
 }
 
-Future<List<XFile>> _androidOpenFiles({
+Future<void> ddOpenFilePickerAppSettings() async {
+  if (!_usesNativeDdPicker) return;
+  await _ddFilePickerChannel.invokeMethod<void>('openAppSettings');
+}
+
+Future<List<XFile>> _nativeOpenFiles({
   required List<XTypeGroup>? acceptedTypeGroups,
+  required DdFilePickerSource source,
   required bool allowMultiple,
   required int? maxFiles,
   required int? maxBytes,
@@ -50,15 +71,14 @@ Future<List<XFile>> _androidOpenFiles({
   for (final group in acceptedTypeGroups ?? const <XTypeGroup>[]) {
     mimeTypes.addAll(group.mimeTypes ?? const <String>[]);
   }
-  final raw = await _ddFilePickerChannel.invokeListMethod<dynamic>(
-    'openFiles',
-    <String, Object?>{
-      'allowMultiple': allowMultiple,
-      'mimeTypes': mimeTypes.toList(growable: false),
-      'maxFiles': ?maxFiles,
-      'maxBytes': ?maxBytes,
-    },
-  );
+  final raw = await _ddFilePickerChannel
+      .invokeListMethod<dynamic>('openFiles', <String, Object?>{
+        'allowMultiple': allowMultiple,
+        'source': source.name,
+        'mimeTypes': mimeTypes.toList(growable: false),
+        'maxFiles': ?maxFiles,
+        'maxBytes': ?maxBytes,
+      });
   if (raw == null || raw.isEmpty) return const <XFile>[];
 
   final files = <XFile>[];

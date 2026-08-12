@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import plistlib
 import re
 import subprocess
 import sys
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -57,6 +59,11 @@ def validate_semver(version: str) -> None:
             "pre-release suffix; build metadata (+...) is intentionally not "
             "accepted because Docker tags must map 1:1 to Git tags"
         )
+
+
+def ios_marketing_version(version: str) -> str:
+    validate_semver(version)
+    return version.split("-", 1)[0]
 
 
 def version_from_tag(tag: str) -> str:
@@ -172,6 +179,20 @@ def ensure_exact_tag(repo: Path, tag: str) -> None:
             f"formal release tag {tag!r} does not point at HEAD; tags at HEAD: "
             f"{sorted(tags_at_head)!r}"
         )
+
+    formal_tags_at_head: list[str] = []
+    for candidate in sorted(tags_at_head):
+        try:
+            version_from_tag(candidate)
+        except ReleaseContractError:
+            continue
+        formal_tags_at_head.append(candidate)
+    if formal_tags_at_head != [tag]:
+        raise ReleaseContractError(
+            "a release commit may have exactly one DD formal SemVer tag; "
+            f"expected only {tag!r}, found {formal_tags_at_head!r}"
+        )
+
     tagged_sha = run_git(repo, "rev-list", "-n", "1", tag)
     head = run_git(repo, "rev-parse", "HEAD")
     if tagged_sha != head:
@@ -301,8 +322,46 @@ def verify_checksums(root: Path, manifest: Path) -> int:
     return len(records)
 
 
+def validate_ios_ipa_shape(ipa: Path, version: str, build_number: int) -> None:
+    validate_semver(version)
+    if build_number <= 0:
+        raise ReleaseContractError("iOS build number must be positive")
+    if not ipa.is_file() or ipa.stat().st_size == 0:
+        raise ReleaseContractError(f"iOS IPA is missing: {ipa}")
+    try:
+        with zipfile.ZipFile(ipa) as archive:
+            names = archive.namelist()
+            apps = sorted({name.split("/")[1] for name in names if re.match(r"^Payload/[^/]+\.app/", name)})
+            if len(apps) != 1:
+                raise ReleaseContractError("iOS IPA must contain exactly one top-level .app")
+            app = apps[0]
+            prefix = f"Payload/{app}/"
+            info_name = prefix + "Info.plist"
+            profile_name = prefix + "embedded.mobileprovision"
+            signature_name = prefix + "_CodeSignature/CodeResources"
+            for required in (info_name, profile_name, signature_name):
+                if required not in names:
+                    raise ReleaseContractError(f"production iOS IPA is unsigned/incomplete: missing {required}")
+            info = plistlib.loads(archive.read(info_name))
+    except (zipfile.BadZipFile, plistlib.InvalidFileException, KeyError) as exc:
+        raise ReleaseContractError(f"invalid iOS IPA structure: {exc}") from exc
+    actual_version = str(info.get("CFBundleShortVersionString", ""))
+    actual_build = str(info.get("CFBundleVersion", ""))
+    if actual_version != version:
+        raise ReleaseContractError(
+            f"iOS CFBundleShortVersionString mismatch: expected {version}, got {actual_version or 'EMPTY'}"
+        )
+    if actual_build != str(build_number):
+        raise ReleaseContractError(
+            f"iOS CFBundleVersion mismatch: expected {build_number}, got {actual_build or 'EMPTY'}"
+        )
+
+
 def classify_platform(name: str) -> str:
     patterns = (
+        (r"-ios-arm64\.ipa$", "ios-arm64"),
+        (r"-ios\.spdx\.json$", "ios-sbom"),
+        (r"-ios-native-deps\.zip$", "ios-native-dependency-evidence"),
         (r"-windows-x64\.zip$", "windows-x64"),
         (r"-android-arm64-v8a\.apk$", "android-arm64-v8a"),
         (r"-android-armeabi-v7a\.apk$", "android-armeabi-v7a"),
@@ -418,6 +477,7 @@ def command_validate(args: argparse.Namespace) -> None:
     facts = git_facts(repo)
     outputs = {
         "version": version,
+        "ios_version": ios_marketing_version(version),
         "tag": tag,
         "sha": facts["gitCommit"],
         "commit_count": facts["gitCommitCount"],
@@ -441,6 +501,11 @@ def command_previous_release(args: argparse.Namespace) -> None:
     if args.github_output:
         write_github_outputs(Path(args.github_output), outputs)
     print(json.dumps(previous, sort_keys=True))
+
+
+def command_verify_ios_ipa(args: argparse.Namespace) -> None:
+    validate_ios_ipa_shape(Path(args.ipa), args.version, args.build_number)
+    print(args.ipa)
 
 
 def command_checksums(args: argparse.Namespace) -> None:
@@ -494,6 +559,12 @@ def build_parser() -> argparse.ArgumentParser:
     previous.add_argument("--current-tag", required=True)
     previous.add_argument("--github-output", default="")
     previous.set_defaults(func=command_previous_release)
+
+    ios = sub.add_parser("verify-ios-ipa")
+    ios.add_argument("--ipa", required=True)
+    ios.add_argument("--version", required=True)
+    ios.add_argument("--build-number", type=int, required=True)
+    ios.set_defaults(func=command_verify_ios_ipa)
 
     checksums = sub.add_parser("checksums")
     checksums.add_argument("--root", required=True)

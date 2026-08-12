@@ -1,7 +1,8 @@
 # 开发 Todolist
 
-> 状态同步：2026-08-09（UTC+8）。当前 P4/P5 主链已继续加入 DDID 非好友直聊、唯一 SELF 我的收藏、Android 会话左右滑、资料自动保存/切换账号、历史登录、关系实时刷新和媒体本地缓存等在制改动。最近完整门禁记录为 Flutter 92/92、Go test/vet、真 PostgreSQL 集成与三端构建 PASS；其后最新改动尚未在本次文档同步中重跑，因此所有要求真实设备/跨端 Verify 的任务继续保持未勾选。
-> 规则：按依赖顺序执行。每个任务完成时必须同时满足 Acceptance 与 Verify。任何任务如果预计改动超过 5 个主要文件，应继续拆分。
+> **历史执行清单，冻结快照：2026-08-09。** 本文件保留当时的任务拆分、Acceptance 与 Verify 作为历史索引，内部大量 Progress/checkbox 已被后续 P6-P14 实现事实超越，**不得再用本文件判断当前完成度或重新开发已经落地的能力**。
+> 当前状态唯一以 `docs/README.md` → `docs/15-当前实现状态与开发路线.md` → 根目录 `未开发任务.md` 为准。2026-08-13 U30 iOS 已完成本地总集成与自动门禁；P10 Push、P12 Admin/Data Rights、P13 Production/Release 也已形成正式主链。
+> 规则：若未来从本历史清单恢复某项工作，必须先对照当前代码/route/migration/tests 重新确认仍然缺失，再按 Acceptance 与 Verify 执行。
 
 ## P0：决策与技术验证
 

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../../core/media/dd_file_picker.dart';
 import '../../../theme/app_theme.dart';
 import '../../groups/domain/group_models.dart';
 import '../data/qr_api_client.dart';
@@ -48,7 +49,8 @@ class QrScannerPage extends StatefulWidget {
   State<QrScannerPage> createState() => _QrScannerPageState();
 }
 
-class _QrScannerPageState extends State<QrScannerPage> {
+class _QrScannerPageState extends State<QrScannerPage>
+    with WidgetsBindingObserver {
   late final QrGateway _gateway;
   late final bool _ownsGateway;
   late final MobileScannerController _scannerController;
@@ -68,19 +70,63 @@ class _QrScannerPageState extends State<QrScannerPage> {
           defaultTargetPlatform == TargetPlatform.iOS ||
           defaultTargetPlatform == TargetPlatform.macOS);
 
+  bool get _manualCameraLifecycle =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
   @override
   void initState() {
     super.initState();
     _ownsGateway = widget.gateway == null;
     _gateway = widget.gateway ?? QrApiClient();
     _scannerController = MobileScannerController(
+      autoStart: !_manualCameraLifecycle,
       formats: const [BarcodeFormat.qrCode],
       detectionSpeed: DetectionSpeed.noDuplicates,
     );
+    if (_manualCameraLifecycle) {
+      WidgetsBinding.instance.addObserver(this);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_startIosScanner());
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_manualCameraLifecycle) return;
+
+    final scannerState = _scannerController.value;
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // A denied permission is cached in MobileScannerState. Always retry on
+        // resume so returning from iOS Settings can re-read system permission.
+        unawaited(_startIosScanner());
+      case AppLifecycleState.inactive:
+        // The first system permission dialog itself makes the app inactive.
+        // Do not stop an uninitialized/denied scanner while that dialog is up.
+        if (scannerState.hasCameraPermission || scannerState.isRunning) {
+          unawaited(_scannerController.stop());
+        }
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        if (scannerState.isRunning) {
+          unawaited(_scannerController.stop());
+        }
+    }
+  }
+
+  Future<void> _startIosScanner() async {
+    try {
+      await _scannerController.start();
+    } catch (error) {
+      if (mounted) setState(() => _error = '摄像头无法启动：$error');
+    }
   }
 
   @override
   void dispose() {
+    if (_manualCameraLifecycle) WidgetsBinding.instance.removeObserver(this);
     _manualController.dispose();
     unawaited(_scannerController.dispose());
     if (_ownsGateway) _gateway.close();
@@ -104,7 +150,9 @@ class _QrScannerPageState extends State<QrScannerPage> {
             IconButton(
               key: const Key('qr-scan-gallery'),
               tooltip: '从相册识别',
-              onPressed: _processing ? null : () => unawaited(_scanFromGallery()),
+              onPressed: _processing
+                  ? null
+                  : () => unawaited(_scanFromGallery()),
               icon: const Icon(Icons.photo_library_outlined),
             ),
         ],
@@ -123,7 +171,10 @@ class _QrScannerPageState extends State<QrScannerPage> {
                 child: Text(
                   _error!,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFFFF9C9C), fontSize: 12),
+                  style: const TextStyle(
+                    color: Color(0xFFFF9C9C),
+                    fontSize: 12,
+                  ),
                 ),
               ),
             Container(
@@ -135,7 +186,9 @@ class _QrScannerPageState extends State<QrScannerPage> {
                 children: [
                   TextButton.icon(
                     key: const Key('qr-scan-paste'),
-                    onPressed: _processing ? null : () => unawaited(_pastePayload()),
+                    onPressed: _processing
+                        ? null
+                        : () => unawaited(_pastePayload()),
                     icon: const Icon(Icons.content_paste_rounded),
                     label: const Text('粘贴二维码内容'),
                   ),
@@ -166,6 +219,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
         MobileScanner(
           key: const Key('dd-mobile-scanner'),
           controller: _scannerController,
+          useAppLifecycleState: !_manualCameraLifecycle,
           onDetect: (capture) {
             if (_processing) return;
             for (final barcode in capture.barcodes) {
@@ -176,16 +230,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
               }
             }
           },
-          errorBuilder: (context, error) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(26),
-              child: Text(
-                '摄像头无法启动：${error.errorCode.name}\n\n可以使用下方“粘贴二维码内容”。',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70),
-              ),
-            ),
-          ),
+          errorBuilder: (context, error) => _cameraErrorView(error),
         ),
         IgnorePointer(
           child: Center(
@@ -208,6 +253,46 @@ class _QrScannerPageState extends State<QrScannerPage> {
           ),
       ],
     );
+  }
+
+  Widget _cameraErrorView(MobileScannerException error) {
+    final permissionDenied =
+        _manualCameraLifecycle &&
+        error.errorCode == MobileScannerErrorCode.permissionDenied;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(26),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '摄像头无法启动：${error.errorCode.name}\n\n可以使用下方“粘贴二维码内容”。',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            if (permissionDenied) ...[
+              const SizedBox(height: 12),
+              TextButton.icon(
+                key: const Key('qr-camera-open-settings'),
+                onPressed: () => unawaited(_openCameraSettings()),
+                icon: const Icon(Icons.settings_outlined),
+                label: const Text('去设置'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openCameraSettings() async {
+    try {
+      await ddOpenFilePickerAppSettings();
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? '无法打开系统设置。');
+    } catch (_) {
+      if (mounted) setState(() => _error = '无法打开系统设置。');
+    }
   }
 
   Widget _desktopFallback() {
@@ -279,7 +364,32 @@ class _QrScannerPageState extends State<QrScannerPage> {
       extensions: ['jpg', 'jpeg', 'png', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
     );
-    final file = await openFile(acceptedTypeGroups: const [images]);
+    XFile? file;
+    try {
+      file = await ddOpenFile(
+        acceptedTypeGroups: const [images],
+        source: DdFilePickerSource.photos,
+        maxBytes: 32 * 1024 * 1024,
+      );
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      final message = error.message ?? '无法读取所选二维码图片。';
+      setState(() => _error = message);
+      if (isDdPhotoLibraryPermissionError(error)) {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(message),
+            action: SnackBarAction(
+              label: '去设置',
+              onPressed: () => unawaited(ddOpenFilePickerAppSettings()),
+            ),
+          ),
+        );
+      }
+      return;
+    }
     if (file == null || !mounted) return;
     try {
       final capture = await _scannerController.analyzeImage(file.path);
@@ -425,7 +535,10 @@ class _QrScannerPageState extends State<QrScannerPage> {
         children: [
           Icon(icon, size: 19, color: DdColors.textSecondary),
           const SizedBox(width: 8),
-          Text('$label：', style: const TextStyle(color: DdColors.textSecondary)),
+          Text(
+            '$label：',
+            style: const TextStyle(color: DdColors.textSecondary),
+          ),
           Expanded(
             child: Text(
               value,

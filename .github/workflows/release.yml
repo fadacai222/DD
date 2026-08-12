@@ -27,6 +27,7 @@ jobs:
       actions: read
     outputs:
       version: ${{ steps.contract.outputs.version }}
+      ios_version: ${{ steps.contract.outputs.ios_version }}
       tag: ${{ steps.contract.outputs.tag }}
       sha: ${{ steps.contract.outputs.sha }}
       commit_count: ${{ steps.contract.outputs.commit_count }}
@@ -465,6 +466,107 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  build-ios:
+    name: Build signed iOS IPA via Codemagic
+    needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    environment: release-signing
+    permissions:
+      contents: read
+    env:
+      DD_CODEMAGIC_API_TOKEN: ${{ secrets.DD_CODEMAGIC_API_TOKEN }}
+      DD_CODEMAGIC_APP_ID: ${{ vars.DD_CODEMAGIC_APP_ID }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require Codemagic bridge contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$DD_CODEMAGIC_API_TOKEN" || { echo 'DD_CODEMAGIC_API_TOKEN is missing' >&2; exit 1; }
+          test -n "$DD_CODEMAGIC_APP_ID" || { echo 'DD_CODEMAGIC_APP_ID is missing' >&2; exit 1; }
+
+      - name: Trigger approved Codemagic signed iOS build and retrieve IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          python scripts/release/codemagic_ios_bridge.py \
+            --app-id "$DD_CODEMAGIC_APP_ID" \
+            --tag '${{ needs.verify-source-and-upstream-gates.outputs.tag }}' \
+            --version '${{ needs.verify-source-and-upstream-gates.outputs.version }}' \
+            --sha '${{ needs.verify-source-and-upstream-gates.outputs.sha }}' \
+            --ios-version '${{ needs.verify-source-and-upstream-gates.outputs.ios_version }}' \
+            --build-number '${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}' \
+            --output 'release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-arm64.ipa'
+
+      - name: Reject missing, wrong-version, or structurally unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py verify-ios-ipa \
+            --ipa 'release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-arm64.ipa' \
+            --version '${{ needs.verify-source-and-upstream-gates.outputs.ios_version }}' \
+            --build-number '${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}'
+
+      - name: Verify Codemagic pre-publish iOS security evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.spdx.json" || { echo 'Codemagic pre-publish iOS SBOM is missing or empty' >&2; exit 1; }
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.trivy.json" || { echo 'Codemagic pre-publish iOS Trivy report is missing or empty' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.spdx.json"
+          python scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.trivy.json"
+
+      - name: Independently rescan Codemagic-resolved iOS dependency evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ios-sbom-input
+          unzip -q "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-native-deps.zip" -d ios-sbom-input
+          NATIVE_ROOT="$GITHUB_WORKSPACE/ios-sbom-input/ios-dependency-evidence/native"
+          python scripts/release/ios_native_scan_validator.py evidence --root "$NATIVE_ROOT"
+          docker run --rm \
+            --volume "$NATIVE_ROOT:/src:ro" \
+            --volume "$GITHUB_WORKSPACE/release:/out" \
+            "$TRIVY_IMAGE" \
+            fs \
+            --scanners vuln \
+            --pkg-types library \
+            --list-all-pkgs \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            --format json \
+            --output "/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" \
+            /src
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" || { echo 'GitHub-verified iOS Trivy report was not generated' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json"
+          docker run --rm \
+            --volume "$NATIVE_ROOT:/src:ro" \
+            --volume "$GITHUB_WORKSPACE/release:/out" \
+            "$SYFT_IMAGE" \
+            scan dir:/src \
+            --output "spdx-json=/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json"
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json" || { echo 'GitHub-verified iOS SPDX SBOM was not generated' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json"
+
+      - name: Upload signed iOS artifact and SBOM evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios
+          path: release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-*
+          if-no-files-found: error
+          retention-days: 90
+
   build-server-images:
     name: Build, scan, and SBOM server images
     needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
@@ -556,6 +658,7 @@ jobs:
       - build-web
       - build-android
       - build-windows
+      - build-ios
       - build-server-images
     runs-on: ubuntu-latest
     timeout-minutes: 20

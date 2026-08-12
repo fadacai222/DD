@@ -16,6 +16,7 @@ workflows:
     scripts:
       - name: Show toolchain versions
         script: |
+          set -euo pipefail
           flutter --version
           xcodebuild -version
       - name: Resolve Flutter dependencies
@@ -26,8 +27,195 @@ workflows:
         script: flutter test
       - name: Install CocoaPods dependencies when present
         script: find ios -name "Podfile" -execdir pod install \;
-      - name: Build unsigned iOS app
-        script: flutter build ios --debug --no-codesign
+      - name: Build unsigned iOS Release app
+        script: flutter build ios --release --no-codesign
+      - name: Validate unsigned Release archive
+        script: |
+          xcodebuild archive \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/ios/DD-unsigned.xcarchive \
+            CODE_SIGNING_ALLOWED=NO
     artifacts:
       - clients/app/build/ios/iphoneos/*.app
+      - clients/app/build/ios/DD-unsigned.xcarchive/**
       - /tmp/xcodebuild_logs/*.log
+
+  ios-signed-release:
+    name: DD iOS signed release
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    working_directory: clients/app
+    integrations:
+      app_store_connect: DD_APP_STORE_CONNECT
+    environment:
+      groups:
+        - dd_ios_release
+      flutter: "3.44.9"
+      xcode: "26.6"
+      cocoapods: default
+    cache:
+      cache_paths:
+        - ~/.pub-cache
+    scripts:
+      - name: Require formal iOS release contract
+        script: |
+          set -euo pipefail
+          for name in DD_RELEASE_TAG DD_RELEASE_VERSION DD_IOS_MARKETING_VERSION DD_RELEASE_BUILD_NUMBER DD_RELEASE_SHA DD_IOS_BUNDLE_ID DD_IOS_TEAM_ID; do
+            value="$(eval "printf '%s' \"\${$name:-}\"")"
+            if [ -z "$value" ]; then
+              echo "required iOS release value is missing: $name" >&2
+              exit 1
+            fi
+          done
+          case "$DD_RELEASE_TAG" in
+            v*) ;;
+            *) echo 'DD_RELEASE_TAG must be a formal vSemVer tag' >&2; exit 1 ;;
+          esac
+          [ "$DD_RELEASE_TAG" = "v$DD_RELEASE_VERSION" ] || { echo 'release tag/version mismatch' >&2; exit 1; }
+          expected_ios_version="${DD_RELEASE_VERSION%%-*}"
+          [ "$DD_IOS_MARKETING_VERSION" = "$expected_ios_version" ] || { echo 'iOS marketing version mapping mismatch' >&2; exit 1; }
+          printf '%s' "$DD_RELEASE_BUILD_NUMBER" | grep -Eq '^[1-9][0-9]*$' || { echo 'DD_RELEASE_BUILD_NUMBER must be a positive integer' >&2; exit 1; }
+          printf '%s' "$DD_RELEASE_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo 'DD_RELEASE_SHA must be a full lowercase commit SHA' >&2; exit 1; }
+          [ "$CM_COMMIT" = "$DD_RELEASE_SHA" ] || { echo "Codemagic commit mismatch: $CM_COMMIT != $DD_RELEASE_SHA" >&2; exit 1; }
+      - name: Resolve Flutter dependencies
+        script: flutter pub get
+      - name: Analyze Flutter client
+        script: dart analyze --fatal-infos
+      - name: Run Flutter tests
+        script: flutter test
+      - name: Fetch App Store signing files from Codemagic Apple integration
+        script: |
+          set -euo pipefail
+          keychain initialize
+          app-store-connect fetch-signing-files "$DD_IOS_BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+          security find-identity -v -p codesigning | grep -q 'Apple Distribution' || { echo 'Apple Distribution signing certificate is unavailable' >&2; exit 1; }
+          find "$HOME/Library/MobileDevice/Provisioning Profiles" -type f -name '*.mobileprovision' -print -quit | grep -q . || { echo 'App Store provisioning profile is unavailable' >&2; exit 1; }
+      - name: Build production-signed IPA
+        script: |
+          set -euo pipefail
+          flutter build ipa --release --no-pub \
+            --build-name "$DD_IOS_MARKETING_VERSION" \
+            --build-number "$DD_RELEASE_BUILD_NUMBER"
+      - name: Verify signed IPA identity and version
+        script: |
+          set -euo pipefail
+          IPA="$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          [ -n "$IPA" ] && [ -s "$IPA" ] || { echo 'signed IPA was not produced' >&2; exit 1; }
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          unzip -q "$IPA" -d "$TMP"
+          APP="$(find "$TMP/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          [ -n "$APP" ] || { echo 'IPA contains no .app bundle' >&2; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          ACTUAL_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          ACTUAL_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          ACTUAL_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          [ "$ACTUAL_BUNDLE" = "$DD_IOS_BUNDLE_ID" ] || { echo "Bundle ID mismatch: $ACTUAL_BUNDLE" >&2; exit 1; }
+          [ "$ACTUAL_VERSION" = "$DD_IOS_MARKETING_VERSION" ] || { echo "CFBundleShortVersionString mismatch: $ACTUAL_VERSION" >&2; exit 1; }
+          [ "$ACTUAL_BUILD" = "$DD_RELEASE_BUILD_NUMBER" ] || { echo "CFBundleVersion mismatch: $ACTUAL_BUILD" >&2; exit 1; }
+          security cms -D -i "$APP/embedded.mobileprovision" > "$TMP/profile.plist"
+          PROFILE_TEAM="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$TMP/profile.plist")"
+          PROFILE_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$TMP/profile.plist")"
+          [ "$PROFILE_TEAM" = "$DD_IOS_TEAM_ID" ] || { echo "Team ID mismatch: $PROFILE_TEAM" >&2; exit 1; }
+          [ "$PROFILE_APP_ID" = "$DD_IOS_TEAM_ID.$DD_IOS_BUNDLE_ID" ] || { echo "provisioning application-identifier mismatch: $PROFILE_APP_ID" >&2; exit 1; }
+          codesign -d --entitlements :- "$APP" > "$TMP/entitlements.plist" 2>/dev/null
+          SIGNED_APP_ID="$(/usr/libexec/PlistBuddy -c 'Print :application-identifier' "$TMP/entitlements.plist")"
+          [ "$SIGNED_APP_ID" = "$DD_IOS_TEAM_ID.$DD_IOS_BUNDLE_ID" ] || { echo "signed application-identifier mismatch: $SIGNED_APP_ID" >&2; exit 1; }
+          mkdir -p release
+          cp "$IPA" "release/DD-${DD_RELEASE_TAG}-ios-arm64.ipa"
+      - name: Capture iOS dependency evidence
+        script: |
+          set -euo pipefail
+          rm -rf ios-dependency-evidence
+          mkdir -p release ios-dependency-evidence/dart ios-dependency-evidence/native
+          dart pub deps --json > "ios-dependency-evidence/dart/dart-pub-deps.json"
+          cp pubspec.lock "ios-dependency-evidence/dart/pubspec.lock"
+          find ios -type f \( -name Package.swift -o -name Package.resolved -o -name Podfile.lock \) -print | sort > ios-dependency-evidence/native-files.txt
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            test -s "$file" || { echo "iOS native dependency manifest is empty: $file" >&2; exit 1; }
+            dest="ios-dependency-evidence/native/$file"
+            mkdir -p "$(dirname "$dest")"
+            cp "$file" "$dest"
+          done < ios-dependency-evidence/native-files.txt
+          python ../../scripts/release/ios_native_scan_validator.py evidence \
+            --root ios-dependency-evidence/native
+          ditto -c -k --sequesterRsrc --keepParent ios-dependency-evidence "release/DD-${DD_RELEASE_TAG}-ios-native-deps.zip"
+          test -s "release/DD-${DD_RELEASE_TAG}-ios-native-deps.zip" || { echo 'iOS native dependency evidence archive is empty' >&2; exit 1; }
+      - name: Scan resolved iOS dependencies before App Store Connect upload
+        script: |
+          set -euo pipefail
+          SYFT_VERSION='1.50.0'
+          SYFT_CHECKSUMS_SHA256='bb8824a06c27c625fc103db5d7e9d7131ba2cc6e7c7a79318ee71686ede3c3f0'
+          TRIVY_VERSION='0.70.0'
+          TRIVY_CHECKSUMS_SHA256='c45281240bb9211ea9e830fc0bf5cf8acf7c0ca830feb64ac8a0aa932c5c92d9'
+          [ "$(uname -m)" = 'arm64' ] || { echo 'pinned iOS scanner artifacts require macOS arm64' >&2; exit 1; }
+          TOOL_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$TOOL_ROOT"' EXIT
+
+          SYFT_ARCHIVE="syft_${SYFT_VERSION}_darwin_arm64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt" \
+            --output "$TOOL_ROOT/syft-checksums.txt"
+          printf '%s  %s\n' "$SYFT_CHECKSUMS_SHA256" "$TOOL_ROOT/syft-checksums.txt" | shasum -a 256 -c -
+          curl --fail --location --silent --show-error \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/${SYFT_ARCHIVE}" \
+            --output "$TOOL_ROOT/$SYFT_ARCHIVE"
+          grep -E "^[0-9a-f]{64}  ${SYFT_ARCHIVE}$" "$TOOL_ROOT/syft-checksums.txt" > "$TOOL_ROOT/syft-selected.txt"
+          test -s "$TOOL_ROOT/syft-selected.txt" || { echo 'pinned Syft checksum entry is missing' >&2; exit 1; }
+          (cd "$TOOL_ROOT" && shasum -a 256 -c syft-selected.txt)
+          tar -xzf "$TOOL_ROOT/$SYFT_ARCHIVE" -C "$TOOL_ROOT" syft
+          test -x "$TOOL_ROOT/syft" || { echo 'pinned Syft binary is unavailable' >&2; exit 1; }
+
+          TRIVY_ARCHIVE="trivy_${TRIVY_VERSION}_macOS-ARM64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            --output "$TOOL_ROOT/trivy-checksums.txt"
+          printf '%s  %s\n' "$TRIVY_CHECKSUMS_SHA256" "$TOOL_ROOT/trivy-checksums.txt" | shasum -a 256 -c -
+          curl --fail --location --silent --show-error \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TRIVY_ARCHIVE}" \
+            --output "$TOOL_ROOT/$TRIVY_ARCHIVE"
+          grep -E "^[0-9a-f]{64}  ${TRIVY_ARCHIVE}$" "$TOOL_ROOT/trivy-checksums.txt" > "$TOOL_ROOT/trivy-selected.txt"
+          test -s "$TOOL_ROOT/trivy-selected.txt" || { echo 'pinned Trivy checksum entry is missing' >&2; exit 1; }
+          (cd "$TOOL_ROOT" && shasum -a 256 -c trivy-selected.txt)
+          tar -xzf "$TOOL_ROOT/$TRIVY_ARCHIVE" -C "$TOOL_ROOT" trivy
+          test -x "$TOOL_ROOT/trivy" || { echo 'pinned Trivy binary is unavailable' >&2; exit 1; }
+
+          python ../../scripts/release/ios_native_scan_validator.py evidence \
+            --root ios-dependency-evidence/native
+          "$TOOL_ROOT/syft" scan dir:ios-dependency-evidence/native \
+            --output "spdx-json=release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json"
+          test -s "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json" || { echo 'Codemagic resolved iOS SPDX SBOM is missing or empty' >&2; exit 1; }
+          python ../../scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json"
+          "$TOOL_ROOT/trivy" fs \
+            --scanners vuln \
+            --pkg-types library \
+            --list-all-pkgs \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            --format json \
+            --output "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json" \
+            ios-dependency-evidence/native
+          test -s "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json" || { echo 'Codemagic resolved iOS Trivy report is missing or empty' >&2; exit 1; }
+          python ../../scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json"
+    artifacts:
+      - clients/app/release/DD-*-ios-arm64.ipa
+      - clients/app/release/DD-*-ios-native-deps.zip
+      - clients/app/release/DD-*-ios-codemagic-resolved.spdx.json
+      - clients/app/release/DD-*-ios-codemagic-resolved.trivy.json
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Uploads the approved signed build to App Store Connect/TestFlight.
+        # It deliberately does not submit a production App Store release.
+        submit_to_testflight: false
+        submit_to_app_store: false

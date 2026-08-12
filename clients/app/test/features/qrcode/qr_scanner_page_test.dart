@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/auth/data/auth_api_client.dart';
 import 'package:im_client/features/auth/domain/auth_session.dart';
 import 'package:im_client/features/groups/domain/group_models.dart';
 import 'package:im_client/features/qrcode/data/qr_api_client.dart';
 import 'package:im_client/features/qrcode/presentation/qr_scanner_page.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 void main() {
   testWidgets('Windows scanner uses explicit manual payload fallback', (
@@ -42,6 +46,223 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('expired group QR shows an actionable expiry message', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(
+      redeemError: const QrApiException(
+        statusCode: 410,
+        code: 'QR_EXPIRED',
+        message: 'expired',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/group?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pump();
+
+    expect(find.text('这个二维码已经过期，请重新生成。'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('revoked group QR maps QR_NOT_FOUND to invalid credential', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(
+      redeemError: const QrApiException(
+        statusCode: 404,
+        code: 'QR_NOT_FOUND',
+        message: 'not found',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/group?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pump();
+
+    expect(find.text('二维码凭证不存在或已经失效。'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('login QR scans and confirms the presented device', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(supportLogin: true);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/login?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认登录 DD？'), findsOneWidget);
+    await tester.tap(find.text('确认登录'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.scanCalls, 1);
+    expect(gateway.confirmCalls, 1);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'iOS denied camera shows Settings recovery and resumed restarts after grant',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final originalPlatform = MobileScannerPlatform.instance;
+      final scannerPlatform = _FakeMobileScannerPlatform(
+        permissionGranted: false,
+      );
+      MobileScannerPlatform.instance = scannerPlatform;
+      const settingsChannel = MethodChannel('dd/file_picker');
+      var settingsCalls = 0;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        settingsChannel,
+        (call) async {
+          if (call.method == 'openAppSettings') settingsCalls++;
+          return null;
+        },
+      );
+      addTearDown(() async {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          settingsChannel,
+          null,
+        );
+        MobileScannerPlatform.instance = originalPlatform;
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScannerPage(
+            origin: Uri.parse('https://chat.example.invalid'),
+            accessToken: 'token',
+            onUnauthorized: () async => 'token',
+            gateway: _FakeQrGateway(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(scannerPlatform.startCalls, 1);
+      expect(
+        scannerPlatform.lastStartOptions?.detectionSpeed,
+        DetectionSpeed.noDuplicates,
+      );
+      expect(find.text('去设置'), findsOneWidget);
+      expect(find.byKey(const Key('qr-scan-paste')), findsOneWidget);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(scannerPlatform.stopCalls, 0);
+
+      await tester.tap(find.text('去设置'));
+      await tester.pump();
+      expect(settingsCalls, 1);
+
+      scannerPlatform.permissionGranted = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump();
+
+      expect(scannerPlatform.startCalls, 2);
+      expect(find.text('去设置'), findsNothing);
+      debugDefaultTargetPlatformOverride = null;
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'iOS resumed retries cached denial once without inactive stop or retry loop',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final originalPlatform = MobileScannerPlatform.instance;
+      final scannerPlatform = _FakeMobileScannerPlatform(
+        permissionGranted: false,
+      );
+      MobileScannerPlatform.instance = scannerPlatform;
+      addTearDown(() {
+        MobileScannerPlatform.instance = originalPlatform;
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScannerPage(
+            origin: Uri.parse('https://chat.example.invalid'),
+            accessToken: 'token',
+            onUnauthorized: () async => 'token',
+            gateway: _FakeQrGateway(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(scannerPlatform.startCalls, 1);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(scannerPlatform.stopCalls, 0);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(scannerPlatform.startCalls, 2);
+      expect(scannerPlatform.stopCalls, 0);
+      expect(find.text('去设置'), findsOneWidget);
+      expect(find.byKey(const Key('qr-scan-paste')), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('foreign-instance payload is rejected before server action', (
     tester,
   ) async {
@@ -73,8 +294,61 @@ void main() {
   });
 }
 
+final class _FakeMobileScannerPlatform extends MobileScannerPlatform {
+  _FakeMobileScannerPlatform({required this.permissionGranted});
+
+  bool permissionGranted;
+  int startCalls = 0;
+  int stopCalls = 0;
+  StartOptions? lastStartOptions;
+
+  @override
+  Stream<BarcodeCapture?> get barcodesStream =>
+      const Stream<BarcodeCapture?>.empty();
+
+  @override
+  Stream<TorchState> get torchStateStream => const Stream<TorchState>.empty();
+
+  @override
+  Stream<double> get zoomScaleStateStream => const Stream<double>.empty();
+
+  @override
+  Future<MobileScannerViewAttributes> start(StartOptions startOptions) async {
+    startCalls++;
+    lastStartOptions = startOptions;
+    if (!permissionGranted) {
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.permissionDenied,
+      );
+    }
+    return const MobileScannerViewAttributes(
+      cameraDirection: CameraFacing.back,
+      currentTorchMode: TorchState.unavailable,
+      size: Size(200, 200),
+      numberOfCameras: 1,
+    );
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+
+  @override
+  Widget buildCameraView() => const SizedBox.square(dimension: 100);
+
+  @override
+  Future<void> dispose() async {}
+}
+
 final class _FakeQrGateway implements QrGateway {
+  _FakeQrGateway({this.redeemError, this.supportLogin = false});
+
+  final QrApiException? redeemError;
+  final bool supportLogin;
   int redeemCalls = 0;
+  int scanCalls = 0;
+  int confirmCalls = 0;
 
   @override
   Future<GroupInfo> redeemGroupInvite({
@@ -83,6 +357,8 @@ final class _FakeQrGateway implements QrGateway {
     required String nonce,
   }) async {
     redeemCalls++;
+    final error = redeemError;
+    if (error != null) throw error;
     throw UnimplementedError();
   }
 
@@ -91,7 +367,19 @@ final class _FakeQrGateway implements QrGateway {
     required Uri origin,
     required String accessToken,
     required String nonce,
-  }) => throw UnimplementedError();
+  }) async {
+    scanCalls++;
+    if (!supportLogin) throw UnimplementedError();
+    return QrLoginState(
+      status: 'SCANNED',
+      device: const AuthDeviceInput(
+        name: 'DD Windows',
+        platform: 'WINDOWS',
+        appVersion: '1.0.0',
+      ),
+      expiresAt: DateTime.utc(2026, 8, 13),
+    );
+  }
 
   @override
   Future<QrLoginState> confirmLogin({
@@ -99,7 +387,19 @@ final class _FakeQrGateway implements QrGateway {
     required String accessToken,
     required String nonce,
     required bool approved,
-  }) => throw UnimplementedError();
+  }) async {
+    confirmCalls++;
+    if (!supportLogin) throw UnimplementedError();
+    return QrLoginState(
+      status: approved ? 'CONFIRMED' : 'REJECTED',
+      device: const AuthDeviceInput(
+        name: 'DD Windows',
+        platform: 'WINDOWS',
+        appVersion: '1.0.0',
+      ),
+      expiresAt: DateTime.utc(2026, 8, 13),
+    );
+  }
 
   @override
   Future<GroupQrInviteData> createGroupInvite({

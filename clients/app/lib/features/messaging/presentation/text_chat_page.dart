@@ -1752,9 +1752,9 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _openExternalLink(Uri uri) async {
     final opened = await openExternalHttpUrl(uri);
     if (opened || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('无法调用系统浏览器打开这个链接。')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('无法调用系统浏览器打开这个链接。')));
   }
 
   ({bool video, String text})? _parseCallSummary(String? raw) {
@@ -2085,7 +2085,7 @@ class _TextChatPageState extends State<TextChatPage>
           value: 'save',
           icon: Icons.download_rounded,
           label: '保存文件',
-          subtitle: 'Android 保存到 Downloads/DD',
+          subtitle: '保存到系统文件位置',
         ),
         DdActionSheetItem<String>(
           value: 'share',
@@ -2836,12 +2836,13 @@ class _TextChatPageState extends State<TextChatPage>
     final current = _stickerVideoSourceInflight[id];
     if (current != null) return current;
 
-    final request = _resolveCachedStickerVideoOnce(
-      id,
-      expectedSizeBytes: expectedSizeBytes,
-    ).whenComplete(() {
-      _stickerVideoSourceInflight.remove(id);
-    });
+    final request =
+        _resolveCachedStickerVideoOnce(
+          id,
+          expectedSizeBytes: expectedSizeBytes,
+        ).whenComplete(() {
+          _stickerVideoSourceInflight.remove(id);
+        });
     _stickerVideoSourceInflight[id] = request;
     return request;
   }
@@ -5232,11 +5233,27 @@ class _TextChatPageState extends State<TextChatPage>
     try {
       files = await ddOpenFiles(
         acceptedTypeGroups: const [typeGroup],
+        source: DdFilePickerSource.photos,
         maxFiles: 30,
         maxBytes: 2 * 1024 * 1024 * 1024,
       );
     } on PlatformException catch (error) {
-      if (mounted) _showImageError(error.message ?? '读取所选媒体失败。');
+      if (!mounted) return;
+      if (isDdPhotoLibraryPermissionError(error)) {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(error.message ?? '照片权限被拒绝。'),
+            action: SnackBarAction(
+              label: '去设置',
+              onPressed: () => unawaited(ddOpenFilePickerAppSettings()),
+            ),
+          ),
+        );
+      } else {
+        _showImageError(error.message ?? '读取所选媒体失败。');
+      }
       return;
     }
     if (files.isEmpty || !mounted) return;

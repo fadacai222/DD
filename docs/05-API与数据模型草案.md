@@ -976,9 +976,9 @@ max_uses
 
 ---
 
-# 16. P10 Push 数据（`000022_push.up.sql`，IN-PROGRESS）
+# 16. P10 Push 数据（IMPLEMENTED / AUTO-VERIFIED / HUMAN-PENDING）
 
-当前已出现 **up/down 成对 migration，但仍处于 P10 开发阶段**：
+`000022_push` 已从 schema 预留推进为正式 Push domain/API/Worker/provider 主链；后续 migration 又补充产品约束、索引和生命周期。核心事实表仍包括：
 
 ```text
 user_notification_preferences
@@ -1024,7 +1024,7 @@ last_error
 created_at/sent_at
 ```
 
-当前 `000022_push.up.sql` / `000022_push.down.sql` 已形成 migration 对，但尚无 Push domain/API/Worker/provider，因此这里只记录进行中的 schema，不是正式稳定合同。
+当前 Push domain、`/api/v1/push/*` HTTP surface、durable Worker、FCM/APNs/UnifiedPush provider、endpoint retry/INVALID lifecycle 与 Flutter token/偏好接入均已落地；PostgreSQL lifecycle/worker integration 和 provider tests 已形成自动证据。真实 FCM/APNs 设备 delivery/click 与 credential rotation 仍属于真人/生产环境验收，Push 仍不作为消息业务真相源。
 
 ---
 

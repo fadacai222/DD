@@ -39,7 +39,9 @@ final class MediaExportService implements MediaExporter {
   }) async {
     if (bytes.isEmpty) throw const FormatException('图片内容为空。');
     final fileName = safeFileName(suggestedName);
-    if (!kIsWeb && _platform == TargetPlatform.android) {
+    if (!kIsWeb &&
+        (_platform == TargetPlatform.android ||
+            _platform == TargetPlatform.iOS)) {
       final uri = await _channel.invokeMethod<String>('saveImageToGallery', {
         'bytes': bytes,
         'mimeType': mimeType,
@@ -48,7 +50,8 @@ final class MediaExportService implements MediaExporter {
       if (uri == null || uri.trim().isEmpty) {
         throw PlatformException(
           code: 'MEDIA_EXPORT_FAILED',
-          message: 'Android 未返回保存结果。',
+          message:
+              '${_platform == TargetPlatform.iOS ? 'iOS' : 'Android'} 未返回保存结果。',
         );
       }
       return '已保存到系统相册';

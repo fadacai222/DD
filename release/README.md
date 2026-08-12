@@ -17,11 +17,12 @@ The tag is the source of truth. The workflow rejects:
 
 - non-SemVer tags;
 - a tag that does not point at the checked-out commit;
+- any commit carrying more than one DD formal SemVer tag (unrelated non-SemVer tags such as `nightly-test` are ignored);
 - a tag whose commit is not the current `origin/master` HEAD;
 - a dirty source tree;
 - a version without a dated `CHANGELOG.md` entry.
 
-Flutter `build-number` is derived from the positive Git commit count, so native package metadata is reproducible for the same release commit. Server binaries receive the release version through linker flags; server images also carry OCI version/revision/created/source labels. The downloadable release metadata additionally records the full SHA, tag, version, commit date/count, workflow URL and artifact hashes.
+Flutter `build-number` is derived from the positive Git commit count, so native package metadata is reproducible for the same release commit. Android/Windows use the full SemVer as their release version. Apple requires `CFBundleShortVersionString` to be a numeric marketing version, so iOS deterministically maps both stable and prerelease tags to the SemVer core (`v1.2.3-rc.1` -> `1.2.3`) and uses the Git commit count as `CFBundleVersion`. Because the release contract now permits at most one DD formal SemVer tag per commit, `(CFBundleIdentifier, CFBundleShortVersionString, CFBundleVersion)` cannot collide between two formal DD releases. Server binaries receive the release version through linker flags; server images also carry OCI version/revision/created/source labels. The downloadable release metadata additionally records the full SHA, tag, version, commit date/count, workflow URL and artifact hashes.
 
 ## Fail-closed gate DAG
 
@@ -35,7 +36,8 @@ v* tag push
   -> build-web ---------------------------\
   -> build-android [release-signing env] --+-> assemble-attest-and-sign
   -> build-windows [release-signing env] --+      -> SHA-256 manifest + verify
-  -> build-server-images -----------------/       -> SPDX SBOMs / Trivy reports
+  -> build-ios [release-signing env -> Codemagic signed IPA] --+
+  -> build-server-images -------------------------------/     -> SPDX SBOMs / Trivy reports
                                                   -> Sigstore keyless checksum signature
                                                   -> GitHub Artifact Attestation
      -> production-release [production-release env approval]
@@ -62,6 +64,7 @@ DD_ANDROID_KEY_ALIAS
 DD_ANDROID_KEY_PASSWORD
 DD_WINDOWS_CODESIGN_PFX_BASE64
 DD_WINDOWS_CODESIGN_PFX_PASSWORD
+DD_CODEMAGIC_API_TOKEN
 ```
 
 Environment variables:
@@ -70,11 +73,14 @@ Environment variables:
 DD_ANDROID_CERT_SHA256
 DD_WINDOWS_CERT_THUMBPRINT
 DD_WINDOWS_TIMESTAMP_URL
+DD_CODEMAGIC_APP_ID
 ```
 
-`DD_ANDROID_CERT_SHA256` is the expected SHA-256 signing-certificate digest, not a secret. `DD_WINDOWS_CERT_THUMBPRINT` is the expected certificate thumbprint. `DD_WINDOWS_TIMESTAMP_URL` must be an HTTPS RFC3161 timestamp endpoint.
+`DD_ANDROID_CERT_SHA256` is the expected SHA-256 signing-certificate digest, not a secret. `DD_WINDOWS_CERT_THUMBPRINT` is the expected certificate thumbprint. `DD_WINDOWS_TIMESTAMP_URL` must be an HTTPS RFC3161 timestamp endpoint. `DD_CODEMAGIC_API_TOKEN` only authorizes the GitHub release job to trigger/read the Codemagic build; Apple signing material remains exclusively in Codemagic. `DD_CODEMAGIC_APP_ID` identifies the Codemagic application.
 
 The workflow writes decoded JKS/PFX material only to the hosted runner temporary directory. Nothing is written to the repository. Missing signing material, malformed fingerprints, or signer mismatch is a hard failure. Formal Android builds explicitly set `DD_ANDROID_REQUIRE_PROD_SIGNING=true`; therefore the debug signing fallback retained for ordinary CI smoke builds cannot be used by the formal release job.
+
+iOS uses Codemagic workflow `ios-signed-release`. Apple integration `DD_APP_STORE_CONNECT` holds the App Store Connect API key and obtains the App Store distribution certificate/provisioning profile; protected Codemagic variable group `dd_ios_release` must provide `DD_IOS_BUNDLE_ID` and `DD_IOS_TEAM_ID`. GitHub never receives `.p8`, `.p12`, `.mobileprovision`, Apple private keys, certificate passwords, or Apple ID passwords. Before Codemagic reaches `publishing.app_store_connect`, it separates Dart evidence from native evidence, preserves each native file's original relative path/basename, and requires at least one non-empty scanner-supported resolved lockfile (`Package.resolved` or `Podfile.lock`). Fixed-version Syft/Trivy binaries are installed only after pinned SHA-256 checksum verification. Syft scans only the native evidence and its SPDX JSON must contain at least one package; Trivy scans only the native evidence with `--list-all-pkgs`, `HIGH,CRITICAL --exit-code 1`, and its JSON must contain a `Package.resolved`/`Podfile.lock` target with at least one detected package. Empty/native-unrecognized reports fail before Apple upload. Codemagic also verifies `codesign`, embedded provisioning identity, Bundle ID, Team ID and Flutter version/build metadata before exposing the IPA. GitHub independently repeats the same native-lockfile, Trivy-target/package, and SPDX-package validation against the downloaded evidence as a second gate.
 
 ### `production-release`
 
@@ -95,6 +101,12 @@ For tag `vX.Y.Z`:
 
 ```text
 DD-vX.Y.Z-windows-x64.zip
+DD-vX.Y.Z-ios-arm64.ipa
+DD-vX.Y.Z-ios-codemagic-resolved.spdx.json
+DD-vX.Y.Z-ios-codemagic-resolved.trivy.json
+DD-vX.Y.Z-ios-github-verified.spdx.json
+DD-vX.Y.Z-ios-github-verified.trivy.json
+DD-vX.Y.Z-ios-native-deps.zip
 DD-vX.Y.Z-android-arm64-v8a.apk
 DD-vX.Y.Z-android-armeabi-v7a.apk
 DD-vX.Y.Z-android-x86_64.apk
@@ -139,7 +151,7 @@ A consumer should verify, in this order:
 2. GitHub Artifact Attestation for downloaded artifacts.
 3. Sigstore bundle for `SHA256SUMS.txt`.
 4. SHA-256 of the actual artifact against `SHA256SUMS.txt`.
-5. Native platform signature where applicable (Android signer certificate / Windows Authenticode).
+5. Native platform signature where applicable (Android signer certificate / Windows Authenticode / iOS Apple Distribution + provisioning identity).
 6. Trivy report and SPDX SBOM corresponding to the release.
 
 ## Rollback retention and U23 compatibility

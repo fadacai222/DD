@@ -60,7 +60,8 @@ final class RemoteMediaActionService {
       cancellation: cancellation,
       onProgress: onProgress,
     );
-    if (_platform == TargetPlatform.android) {
+    if (_platform == TargetPlatform.android ||
+        _platform == TargetPlatform.iOS) {
       final opened = await _channel.invokeMethod<bool>('openLocalFile', {
         'path': file.path,
         'mimeType': mimeType,
@@ -69,7 +70,8 @@ final class RemoteMediaActionService {
       if (opened != true) {
         throw PlatformException(
           code: 'MEDIA_OPEN_FAILED',
-          message: 'Android 文件打开失败。',
+          message:
+              '${_platform == TargetPlatform.iOS ? 'iOS' : 'Android'} 文件打开失败。',
         );
       }
       return '已交给系统应用打开';
@@ -96,10 +98,12 @@ final class RemoteMediaActionService {
     void Function(int received, int? total)? onProgress,
   }) async {
     final fileName = MediaExportService.safeFileName(suggestedName);
-    final location = _platform == TargetPlatform.android
+    final nativeExport =
+        _platform == TargetPlatform.android || _platform == TargetPlatform.iOS;
+    final location = nativeExport
         ? null
         : await getSaveLocation(suggestedName: fileName);
-    if (_platform != TargetPlatform.android && location == null) {
+    if (!nativeExport && location == null) {
       throw const MediaExportCancelled();
     }
     final file = await _downloadTransferFile(
@@ -111,11 +115,10 @@ final class RemoteMediaActionService {
       onProgress: onProgress,
     );
     if (_platform == TargetPlatform.android) {
-      final uri = await _channel.invokeMethod<String>('saveLocalFileToDownloads', {
-        'path': file.path,
-        'mimeType': mimeType,
-        'fileName': fileName,
-      });
+      final uri = await _channel.invokeMethod<String>(
+        'saveLocalFileToDownloads',
+        {'path': file.path, 'mimeType': mimeType, 'fileName': fileName},
+      );
       if (uri == null || uri.trim().isEmpty) {
         throw PlatformException(
           code: 'MEDIA_EXPORT_FAILED',
@@ -123,6 +126,20 @@ final class RemoteMediaActionService {
         );
       }
       return '文件已保存到下载目录';
+    }
+    if (_platform == TargetPlatform.iOS) {
+      final exported = await _channel.invokeMethod<bool>('exportLocalFile', {
+        'path': file.path,
+        'mimeType': mimeType,
+        'fileName': fileName,
+      });
+      if (exported != true) {
+        throw PlatformException(
+          code: 'MEDIA_EXPORT_FAILED',
+          message: 'iOS 未返回文件导出结果。',
+        );
+      }
+      return '已导出到“文件”';
     }
     await file.copy(location!.path);
     return '文件已保存';
@@ -146,7 +163,8 @@ final class RemoteMediaActionService {
       cancellation: cancellation,
       onProgress: onProgress,
     );
-    if (_platform == TargetPlatform.android) {
+    if (_platform == TargetPlatform.android ||
+        _platform == TargetPlatform.iOS) {
       final shared = await _channel.invokeMethod<bool>('shareLocalFile', {
         'path': file.path,
         'mimeType': mimeType,
@@ -155,7 +173,8 @@ final class RemoteMediaActionService {
       if (shared != true) {
         throw PlatformException(
           code: 'MEDIA_SHARE_FAILED',
-          message: 'Android 文件分享失败。',
+          message:
+              '${_platform == TargetPlatform.iOS ? 'iOS' : 'Android'} 文件分享失败。',
         );
       }
       return '已打开系统分享';
@@ -180,6 +199,32 @@ final class RemoteMediaActionService {
         throw PlatformException(
           code: 'MEDIA_EXPORT_FAILED',
           message: 'Android 未返回视频保存结果。',
+        );
+      }
+      return '视频已保存到系统相册';
+    }
+    if (_platform == TargetPlatform.iOS) {
+      final file = url.scheme == 'file'
+          ? File(url.toFilePath())
+          : await _downloadTransferFile(
+              url: url,
+              transferKey: 'video-save-${url.hashCode}',
+              fileName: fileName,
+              expectedBytes: null,
+              cancellation: null,
+              onProgress: onProgress,
+            );
+      if (!await file.exists()) {
+        throw FileSystemException('待保存的视频文件不存在。', file.path);
+      }
+      final saved = await _channel.invokeMethod<bool>(
+        'saveLocalVideoToGallery',
+        {'path': file.path, 'mimeType': mimeType, 'fileName': fileName},
+      );
+      if (saved != true) {
+        throw PlatformException(
+          code: 'MEDIA_EXPORT_FAILED',
+          message: 'iOS 未返回视频保存结果。',
         );
       }
       return '视频已保存到系统相册';
@@ -210,7 +255,8 @@ final class RemoteMediaActionService {
     if (!await file.exists()) {
       throw FileSystemException('待分享的视频文件不存在。', file.path);
     }
-    if (_platform == TargetPlatform.android) {
+    if (_platform == TargetPlatform.android ||
+        _platform == TargetPlatform.iOS) {
       final shared = await _channel.invokeMethod<bool>('shareLocalFile', {
         'path': file.path,
         'mimeType': mimeType,
@@ -219,7 +265,8 @@ final class RemoteMediaActionService {
       if (shared != true) {
         throw PlatformException(
           code: 'MEDIA_SHARE_FAILED',
-          message: 'Android 视频分享失败。',
+          message:
+              '${_platform == TargetPlatform.iOS ? 'iOS' : 'Android'} 视频分享失败。',
         );
       }
       return '已打开系统分享';
@@ -243,6 +290,32 @@ final class RemoteMediaActionService {
         throw PlatformException(
           code: 'MEDIA_COPY_FAILED',
           message: 'Android 视频复制失败。',
+        );
+      }
+      return '视频已复制';
+    }
+    if (_platform == TargetPlatform.iOS) {
+      final file = url.scheme == 'file'
+          ? File(url.toFilePath())
+          : await _downloadTransferFile(
+              url: url,
+              transferKey: 'video-copy-${url.hashCode}',
+              fileName: fileName,
+              expectedBytes: null,
+              cancellation: null,
+              onProgress: null,
+            );
+      if (!await file.exists()) {
+        throw FileSystemException('待复制的视频文件不存在。', file.path);
+      }
+      final copied = await _channel.invokeMethod<bool>(
+        'copyLocalFileToClipboard',
+        {'path': file.path, 'mimeType': mimeType, 'fileName': fileName},
+      );
+      if (copied != true) {
+        throw PlatformException(
+          code: 'MEDIA_COPY_FAILED',
+          message: 'iOS 视频复制失败。',
         );
       }
       return '视频已复制';

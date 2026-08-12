@@ -152,6 +152,10 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	if loggedIn.Device.Platform != "WEB" {
 		t.Fatalf("login device = %#v", loggedIn.Device)
 	}
+	loginDeviceID, err := uuid.Parse(loggedIn.Device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rotated, err := service.Refresh(ctx, loggedIn.Tokens.RefreshToken)
 	if err != nil {
@@ -180,6 +184,41 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	if activeInFamily != 0 {
 		t.Fatalf("active refresh tokens after replay = %d", activeInFamily)
 	}
+	var reusedDeviceRevoked bool
+	if err := pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM devices WHERE id=$1`, loginDeviceID).Scan(&reusedDeviceRevoked); err != nil {
+		t.Fatalf("check device after refresh reuse: %v", err)
+	}
+	if reusedDeviceRevoked {
+		t.Fatal("refresh reuse must revoke only the refresh family, not the device")
+	}
+
+	expiryLogin, err := service.Login(ctx, LoginInput{
+		Email: email, Password: passwordValue,
+		Device: registration.DeviceInput{Name: "Expiry Test", Platform: "WEB", AppVersion: "0.5.0-test"},
+	})
+	if err != nil {
+		t.Fatalf("expiry login: %v", err)
+	}
+	expiryDeviceID, err := uuid.Parse(expiryLogin.Device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalNow := service.now
+	service.now = func() time.Time {
+		return expiryLogin.Tokens.RefreshExpiresAt.Add(time.Minute)
+	}
+	_, expiredRefreshErr := service.Refresh(ctx, expiryLogin.Tokens.RefreshToken)
+	service.now = originalNow
+	if !errors.Is(expiredRefreshErr, ErrInvalidRefreshToken) {
+		t.Fatalf("expired refresh error = %v", expiredRefreshErr)
+	}
+	var expiredDeviceRevoked bool
+	if err := pool.QueryRow(ctx, `SELECT revoked_at IS NOT NULL FROM devices WHERE id=$1`, expiryDeviceID).Scan(&expiredDeviceRevoked); err != nil {
+		t.Fatalf("check device after expired refresh: %v", err)
+	}
+	if expiredDeviceRevoked {
+		t.Fatal("expired refresh token must not imply device revocation")
+	}
 
 	principal, err := service.AuthenticateAccessToken(ctx, registered.Tokens.AccessToken)
 	if err != nil {
@@ -205,15 +244,14 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	if err != nil || len(devices) < 2 {
 		t.Fatalf("devices = %#v err=%v", devices, err)
 	}
-	loginDeviceID, err := uuid.Parse(loggedIn.Device.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := service.RevokeDevice(ctx, principal, loginDeviceID); err != nil {
 		t.Fatalf("revoke remote device: %v", err)
 	}
-	if _, err := service.AuthenticateAccessToken(ctx, loggedIn.Tokens.AccessToken); !errors.Is(err, ErrUnauthorized) {
+	if _, err := service.AuthenticateAccessToken(ctx, loggedIn.Tokens.AccessToken); !errors.Is(err, ErrDeviceSessionRevoked) {
 		t.Fatalf("revoked device access token error = %v", err)
+	}
+	if _, err := service.Refresh(ctx, loggedIn.Tokens.RefreshToken); !errors.Is(err, ErrDeviceSessionRevoked) {
+		t.Fatalf("revoked device refresh error = %v", err)
 	}
 	cleared, err := service.ClearRevokedDevices(ctx, principal)
 	if err != nil || cleared < 1 {
@@ -244,7 +282,7 @@ func TestAccountLifecycleWithPostgresAndMailpit(t *testing.T) {
 	if err := service.ResetPassword(ctx, ResetPasswordInput{Email: email, Code: resetCode, NewPassword: newPassword}); err != nil {
 		t.Fatalf("reset password: %v", err)
 	}
-	if _, err := service.AuthenticateAccessToken(ctx, registered.Tokens.AccessToken); !errors.Is(err, ErrUnauthorized) {
+	if _, err := service.AuthenticateAccessToken(ctx, registered.Tokens.AccessToken); !errors.Is(err, ErrDeviceSessionRevoked) {
 		t.Fatalf("old access after password reset error = %v", err)
 	}
 	if _, err := service.Login(ctx, LoginInput{Email: email, Password: passwordValue, Device: registration.DeviceInput{Name: "Old Password", Platform: "WEB"}}); !errors.Is(err, ErrInvalidCredentials) {

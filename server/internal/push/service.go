@@ -120,18 +120,19 @@ func (service *Service) RegisterEndpoint(ctx context.Context, principal account.
 		return Endpoint{}, ErrForbidden
 	}
 
-	var existingOwner *uuid.UUID
+	var existingOwner uuid.UUID
+	var existingDeviceRevoked bool
 	err = tx.QueryRow(ctx, `
-		SELECT d.user_id
+		SELECT d.user_id,(d.revoked_at IS NOT NULL)
 		FROM device_push_endpoints e
 		JOIN devices d ON d.id=e.device_id
 		WHERE e.provider=$1 AND e.endpoint_hash=$2
 		FOR UPDATE OF e
-	`, provider, hash[:]).Scan(&existingOwner)
+	`, provider, hash[:]).Scan(&existingOwner, &existingDeviceRevoked)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Endpoint{}, fmt.Errorf("check push endpoint ownership: %w", err)
 	}
-	if err == nil && existingOwner != nil && *existingOwner != principal.UserID {
+	if err == nil && existingOwner != principal.UserID && !existingDeviceRevoked {
 		return Endpoint{}, ErrConflict
 	}
 	if err == nil {

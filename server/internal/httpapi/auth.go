@@ -227,6 +227,8 @@ func (s *server) writeAuthError(response http.ResponseWriter, request *http.Requ
 		writeAPIError(response, http.StatusConflict, "HANDLE_UNAVAILABLE", "Handle is unavailable")
 	case errors.Is(err, account.ErrInvalidCredentials):
 		writeAPIError(response, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Email or password is incorrect")
+	case errors.Is(err, account.ErrDeviceSessionRevoked):
+		writeAPIError(response, http.StatusUnauthorized, "DEVICE_SESSION_REVOKED", "Device session has been revoked")
 	case errors.Is(err, account.ErrInvalidRefreshToken), errors.Is(err, account.ErrRefreshReuse), errors.Is(err, account.ErrUnauthorized):
 		writeAPIError(response, http.StatusUnauthorized, "SESSION_EXPIRED", "Session is no longer valid")
 	case errors.Is(err, account.ErrForbidden):

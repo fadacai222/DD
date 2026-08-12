@@ -1,11 +1,14 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../core/logging/client_log.dart';
 import '../../../core/notifications/app_notification_service.dart';
+import '../../../core/notifications/notification_authorization.dart';
 import '../../../theme/app_theme.dart';
+import '../../push/application/push_registration_service.dart';
 import '../../push/data/push_api_client.dart';
 import '../data/auth_api_client.dart';
 import '../domain/account_management.dart';
@@ -17,11 +20,15 @@ class AccountManagementPage extends StatefulWidget {
     required this.gateway,
     required this.origin,
     required this.session,
+    this.onPushPreferencesChanged,
+    this.onCurrentDeviceAuthoritativelyRevoked,
   });
 
   final AuthGateway gateway;
   final Uri origin;
   final AuthSession session;
+  final Future<void> Function(PushPreferences preferences)? onPushPreferencesChanged;
+  final Future<void> Function()? onCurrentDeviceAuthoritativelyRevoked;
 
   @override
   State<AccountManagementPage> createState() => _AccountManagementPageState();
@@ -39,6 +46,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   bool _pushEnabled = true;
   String _pushPreviewMode = 'SENDER_ONLY';
   bool _pushSettingsAvailable = false;
+  NotificationAuthorizationState? _iosNotificationAuthorization;
   late final PushApiClient _pushApiClient;
   String? _message;
   Timer? _autoSaveTimer;
@@ -51,6 +59,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     super.initState();
     _pushApiClient = PushApiClient();
     _load();
+    unawaited(_refreshIosNotificationAuthorization());
   }
 
   @override
@@ -235,6 +244,22 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                   unawaited(_savePushSettings());
                 },
               ),
+              if (_isIos) ...[
+                const Divider(height: 1, indent: 56),
+                _SettingLine(
+                  title: 'iOS 系统通知权限',
+                  subtitle: _iosNotificationAuthorizationSubtitle,
+                  trailing: TextButton(
+                    onPressed: _iosNotificationAuthorizationAction == null
+                        ? null
+                        : _handleIosNotificationAuthorization,
+                    child: Text(
+                      _iosNotificationAuthorizationAction ??
+                          _iosNotificationAuthorizationLabel,
+                    ),
+                  ),
+                ),
+              ],
               const Divider(height: 1, indent: 56),
               _SettingLine(
                 title: '后台通知预览',
@@ -357,6 +382,60 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     );
   }
 
+  bool get _isIos =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  String get _iosNotificationAuthorizationLabel =>
+      switch (_iosNotificationAuthorization) {
+        NotificationAuthorizationState.granted => '已允许',
+        NotificationAuthorizationState.provisional => '临时授权',
+        NotificationAuthorizationState.denied => '已拒绝',
+        NotificationAuthorizationState.notDetermined => '未询问',
+        NotificationAuthorizationState.unsupported => '不可用',
+        null => '检测中',
+      };
+
+  String get _iosNotificationAuthorizationSubtitle =>
+      switch (_iosNotificationAuthorization) {
+        NotificationAuthorizationState.granted => '横幅、声音与角标由 iOS 系统设置控制',
+        NotificationAuthorizationState.provisional => '当前为 iOS 临时授权，可在系统设置中改为显著通知',
+        NotificationAuthorizationState.denied => '系统已拒绝通知；DD 不会重复弹权限框，请前往系统设置恢复',
+        NotificationAuthorizationState.notDetermined => '尚未请求通知权限；开启后只会触发一次系统授权流程',
+        NotificationAuthorizationState.unsupported => '当前 iOS Push native service 尚未接入',
+        null => '正在读取 iOS 系统通知状态',
+      };
+
+  String? get _iosNotificationAuthorizationAction =>
+      switch (_iosNotificationAuthorization) {
+        NotificationAuthorizationState.notDetermined => '开启',
+        NotificationAuthorizationState.denied => '系统设置',
+        _ => null,
+      };
+
+  Future<void> _refreshIosNotificationAuthorization() async {
+    if (!_isIos) return;
+    final state = await PushRegistrationService.shared.authorizationState();
+    if (!mounted) return;
+    setState(() => _iosNotificationAuthorization = state);
+  }
+
+  Future<void> _handleIosNotificationAuthorization() async {
+    final current = _iosNotificationAuthorization;
+    if (current == NotificationAuthorizationState.denied) {
+      await PushRegistrationService.shared.openNotificationSettings();
+      return;
+    }
+    if (current == NotificationAuthorizationState.notDetermined) {
+      final next = await PushRegistrationService.shared
+          .requestNotificationPermission();
+      if (!mounted) return;
+      setState(() => _iosNotificationAuthorization = next);
+      if (next.canDeliver && _pushEnabled) {
+        await PushRegistrationService.shared.onAppResumed();
+      }
+    }
+  }
+
   String _pushPreviewLabel(String mode) => switch (mode) {
     'FULL' => '发送者 + 正文',
     'HIDDEN' => '全部隐藏',
@@ -370,6 +449,10 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       pushEnabled: _pushEnabled,
       previewMode: _pushPreviewMode,
     );
+    await widget.onPushPreferencesChanged?.call(preferences);
+    if (_isIos) {
+      await _refreshIosNotificationAuthorization();
+    }
     if (!mounted) return;
     setState(() {
       _pushEnabled = preferences.pushEnabled;
@@ -660,6 +743,9 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       accessToken: _accessToken,
       deviceId: device.id,
     );
+    if (device.current) {
+      await widget.onCurrentDeviceAuthoritativelyRevoked?.call();
+    }
     if (!mounted) return;
     if (device.current) {
       Navigator.of(context).pop(true);
@@ -730,6 +816,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       origin: widget.origin,
       accessToken: _accessToken,
     );
+    await widget.onCurrentDeviceAuthoritativelyRevoked?.call();
     if (!mounted) return;
     Navigator.of(context).pop(true);
   });

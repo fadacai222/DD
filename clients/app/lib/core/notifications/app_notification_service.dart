@@ -51,6 +51,7 @@ final class AppNotificationService {
   Future<void> initialize({bool requestPermission = true}) async {
     if (_initialized || _initializing || kIsWeb) return;
     if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS &&
         defaultTargetPlatform != TargetPlatform.windows) {
       return;
     }
@@ -59,6 +60,15 @@ final class AppNotificationService {
     try {
       const settings = InitializationSettings(
         android: AndroidInitializationSettings(androidSmallIcon),
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+          requestProvisionalPermission: false,
+          defaultPresentAlert: true,
+          defaultPresentBadge: true,
+          defaultPresentSound: false,
+        ),
         windows: WindowsInitializationSettings(
           appName: 'DD',
           appUserModelId: 'OpenIMX.DD.Client',
@@ -117,6 +127,7 @@ final class AppNotificationService {
     String? senderUserId,
     Uri? avatarUrl,
     Map<String, dynamic>? notificationData,
+    int? badgeCount,
   }) async {
     final windows = !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
     if (!_initialized && !windows) return;
@@ -215,6 +226,18 @@ final class AppNotificationService {
         }
       }
 
+      final iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBanner: true,
+        presentList: true,
+        presentBadge: badgeCount != null,
+        presentSound: false,
+        badgeNumber: badgeCount,
+        threadIdentifier: conversationId.trim().isEmpty
+            ? null
+            : conversationId.trim(),
+      );
+
       await _plugin.show(
         id: id,
         title: senderName,
@@ -224,6 +247,7 @@ final class AppNotificationService {
             : jsonEncode(notificationData),
         notificationDetails: NotificationDetails(
           android: androidDetails,
+          iOS: iosDetails,
           windows: windowsDetails,
         ),
       );

@@ -38,7 +38,8 @@ class ChatCallPage extends StatefulWidget {
   State<ChatCallPage> createState() => _ChatCallPageState();
 }
 
-class _ChatCallPageState extends State<ChatCallPage> {
+class _ChatCallPageState extends State<ChatCallPage>
+    with WidgetsBindingObserver {
   Timer? _durationTimer;
   Timer? _autoCloseTimer;
   Duration _elapsed = Duration.zero;
@@ -53,6 +54,7 @@ class _ChatCallPageState extends State<ChatCallPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_handleCallState);
     if (_android) {
       unawaited(
@@ -67,6 +69,7 @@ class _ChatCallPageState extends State<ChatCallPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_handleCallState);
     _durationTimer?.cancel();
     _autoCloseTimer?.cancel();
@@ -77,6 +80,17 @@ class _ChatCallPageState extends State<ChatCallPage> {
       );
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final suspendCamera = state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+    if (state == AppLifecycleState.resumed || suspendCamera) {
+      unawaited(widget.mediaController.setCameraSuspended(suspendCamera));
+    }
   }
 
   void _handleCallState() {
@@ -100,9 +114,15 @@ class _ChatCallPageState extends State<ChatCallPage> {
   }
 
   void _syncCallSounds(CallSession? call) {
-    final signature = call == null ? 'none' : '${call.id}:${call.status.name}';
+    final signature = call == null
+        ? 'none'
+        : '${call.id}:${call.status.name}:${widget.controller.systemCallManaged}';
     if (_lastSoundSignature == signature) return;
     _lastSoundSignature = signature;
+    if (widget.controller.systemCallManaged) {
+      unawaited(_sounds.stopCallSounds());
+      return;
+    }
     if (call == null) {
       unawaited(_sounds.stopCallSounds());
       return;
@@ -432,6 +452,17 @@ class _CallControls extends StatelessWidget {
             onTap: mediaController.toggleCamera,
           ),
         ],
+        const SizedBox(width: 24),
+        _RoundCallButton(
+          icon: mediaController.speakerPreferred
+              ? Icons.volume_up_rounded
+              : Icons.hearing_rounded,
+          label: mediaController.audioRouteLabel == '系统音频'
+              ? (mediaController.speakerPreferred ? '扬声器' : '听筒')
+              : mediaController.audioRouteLabel,
+          color: const Color(0xB3333333),
+          onTap: mediaController.toggleSpeaker,
+        ),
         const SizedBox(width: 24),
         _RoundCallButton(
           icon: Icons.call_end_rounded,

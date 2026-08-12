@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../auth/data/auth_api_client.dart';
+import '../application/push_endpoint_lifecycle.dart';
 
 final class PushPreferences {
   const PushPreferences({
@@ -19,7 +20,7 @@ final class PushPreferences {
   final String previewMode;
 }
 
-final class PushApiClient {
+final class PushApiClient implements PushEndpointGateway {
   PushApiClient({http.Client? client})
       : _client = client ?? http.Client(),
         _ownsClient = client == null;
@@ -61,6 +62,7 @@ final class PushApiClient {
     return PushPreferences.fromJson(data);
   }
 
+  @override
   Future<void> registerEndpoint({
     required Uri origin,
     required String accessToken,
@@ -84,6 +86,7 @@ final class PushApiClient {
     );
   }
 
+  @override
   Future<void> deleteEndpoint({
     required Uri origin,
     required String accessToken,

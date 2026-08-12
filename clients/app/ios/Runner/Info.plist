@@ -24,8 +24,34 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>dd</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>DD 需要使用相机扫描二维码，并在你主动选择时拍摄照片或视频。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>DD 需要访问你选择连接的局域网自托管服务器。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DD 需要使用麦克风发送语音消息，并在你发起或接听通话时传输声音。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>DD 需要在你主动保存媒体时将照片或视频写入系统相册。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>DD 需要在你主动选择时读取照片或视频用于聊天、头像和朋友圈。</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>remote-notification</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
