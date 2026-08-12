@@ -51,9 +51,10 @@ type Config struct {
 	MediaS3Region      string
 	MediaS3AccessKey   string
 	MediaS3SecretKey   string
-	TelegramBotToken   string
-	AuthTokenSecret    string
-	RegistrationMode   RegistrationMode
+	TelegramBotToken    string
+	AuthTokenSecret     string
+	AdminSecuritySecret string
+	RegistrationMode    RegistrationMode
 	EmailCodePepper    string
 	SMTPHost           string
 	SMTPPort           int
@@ -121,6 +122,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	adminSecuritySecret, err := ReadSecret("ADMIN_SECURITY_SECRET")
+	if err != nil {
+		return Config{}, err
+	}
 	emailCodePepper, err := ReadSecret("EMAIL_CODE_PEPPER")
 	if err != nil {
 		return Config{}, err
@@ -180,9 +185,10 @@ func Load() (Config, error) {
 		MediaS3Region:      strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
 		MediaS3AccessKey:   mediaS3AccessKey,
 		MediaS3SecretKey:   mediaS3SecretKey,
-		TelegramBotToken:   telegramBotToken,
-		AuthTokenSecret:    authTokenSecret,
-		RegistrationMode:   registrationMode,
+		TelegramBotToken:    telegramBotToken,
+		AuthTokenSecret:     authTokenSecret,
+		AdminSecuritySecret: adminSecuritySecret,
+		RegistrationMode:    registrationMode,
 		EmailCodePepper:    emailCodePepper,
 		SMTPHost:           smtpHost,
 		SMTPPort:           smtpPort,
@@ -212,6 +218,9 @@ func (config Config) Validate() error {
 	if strings.TrimSpace(config.DatabaseURL) != "" {
 		if len(config.AuthTokenSecret) < minimumProductionSecret {
 			return fmt.Errorf("AUTH_TOKEN_SECRET must contain at least %d characters when DATABASE_URL is configured", minimumProductionSecret)
+		}
+		if len(config.AdminSecuritySecret) < minimumProductionSecret {
+			return fmt.Errorf("ADMIN_SECURITY_SECRET or ADMIN_SECURITY_SECRET_FILE must contain at least %d bytes when DATABASE_URL is configured", minimumProductionSecret)
 		}
 	}
 	if strings.TrimSpace(config.DatabaseURL) != "" && config.RegistrationMode != RegistrationClosed {

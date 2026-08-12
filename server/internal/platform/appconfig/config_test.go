@@ -166,6 +166,7 @@ func TestLoadProductionDefaultsRegistrationClosed(t *testing.T) {
 	t.Setenv("LIVEKIT_API_SECRET", strings.Repeat("s", 32))
 	t.Setenv("DATABASE_URL", "postgres://dd:secret@db.example.com/dd")
 	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("a", 32))
+	t.Setenv("ADMIN_SECURITY_SECRET", strings.Repeat("m", 32))
 
 	config, err := Load()
 	if err != nil {
@@ -197,6 +198,7 @@ func TestLoadProductionOpenRegistrationRequiresMailSecurity(t *testing.T) {
 	t.Setenv("LIVEKIT_API_SECRET", strings.Repeat("s", 32))
 	t.Setenv("DATABASE_URL", "postgres://dd:secret@db.example.com/dd")
 	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("a", 32))
+	t.Setenv("ADMIN_SECURITY_SECRET", strings.Repeat("m", 32))
 	t.Setenv("IM_REGISTRATION_MODE", "open")
 
 	_, err := Load()
@@ -224,6 +226,70 @@ func TestLoadProductionRequiresDatabaseURL(t *testing.T) {
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Fatalf("Load() error = %v, want DATABASE_URL validation error", err)
+	}
+}
+
+func TestLoadRequiresIndependentAdminSecuritySecretWithDatabase(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("DATABASE_URL", "postgres://dd:secret@db.example.com/dd")
+	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("a", 32))
+	t.Setenv("IM_REGISTRATION_MODE", "closed")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_SECURITY_SECRET") {
+		t.Fatalf("Load() error = %v, want ADMIN_SECURITY_SECRET requirement", err)
+	}
+
+	t.Setenv("ADMIN_SECURITY_SECRET", strings.Repeat("m", 31))
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "at least 32 bytes") {
+		t.Fatalf("Load() error = %v, want weak ADMIN_SECURITY_SECRET rejection", err)
+	}
+}
+
+func TestLoadReadsAdminSecuritySecretFile(t *testing.T) {
+	clearConfigEnvironment(t)
+	secret := strings.Repeat("m", 40)
+	secretPath := filepath.Join(t.TempDir(), "admin-security-secret")
+	if err := os.WriteFile(secretPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write admin security secret file: %v", err)
+	}
+	t.Setenv("DATABASE_URL", "postgres://dd:secret@db.example.com/dd")
+	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("a", 32))
+	t.Setenv("ADMIN_SECURITY_SECRET_FILE", secretPath)
+	t.Setenv("IM_REGISTRATION_MODE", "closed")
+
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.AdminSecuritySecret != secret {
+		t.Fatal("AdminSecuritySecret was not read and trimmed from ADMIN_SECURITY_SECRET_FILE")
+	}
+}
+
+func TestLoadKeepsAuthAndAdminSecretsIndependent(t *testing.T) {
+	clearConfigEnvironment(t)
+	adminSecret := strings.Repeat("m", 40)
+	t.Setenv("DATABASE_URL", "postgres://dd:secret@db.example.com/dd")
+	t.Setenv("IM_REGISTRATION_MODE", "closed")
+	t.Setenv("ADMIN_SECURITY_SECRET", adminSecret)
+	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("a", 32))
+
+	first, err := Load()
+	if err != nil {
+		t.Fatalf("first Load() error = %v", err)
+	}
+	t.Setenv("AUTH_TOKEN_SECRET", strings.Repeat("b", 32))
+	second, err := Load()
+	if err != nil {
+		t.Fatalf("second Load() error = %v", err)
+	}
+	if first.AuthTokenSecret == second.AuthTokenSecret {
+		t.Fatal("test setup did not rotate AUTH_TOKEN_SECRET")
+	}
+	if first.AdminSecuritySecret != adminSecret || second.AdminSecuritySecret != adminSecret {
+		t.Fatal("ADMIN_SECURITY_SECRET changed when ordinary AUTH_TOKEN_SECRET rotated")
 	}
 }
 
@@ -309,6 +375,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"MEDIA_S3_SECRET_KEY_FILE",
 		"AUTH_TOKEN_SECRET",
 		"AUTH_TOKEN_SECRET_FILE",
+		"ADMIN_SECURITY_SECRET",
+		"ADMIN_SECURITY_SECRET_FILE",
 		"IM_REGISTRATION_MODE",
 		"EMAIL_CODE_PEPPER",
 		"EMAIL_CODE_PEPPER_FILE",

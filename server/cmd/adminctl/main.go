@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	masterSecret, err := appconfig.ReadSecret("AUTH_TOKEN_SECRET")
+	adminSecuritySecret, err := appconfig.ReadSecret("ADMIN_SECURITY_SECRET")
 	if err != nil {
 		fatal(err)
 	}
@@ -36,8 +36,8 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	if strings.TrimSpace(databaseURL) == "" || strings.TrimSpace(masterSecret) == "" || strings.TrimSpace(passwordValue) == "" {
-		fatal(fmt.Errorf("DATABASE_URL, AUTH_TOKEN_SECRET, and ADMIN_BOOTSTRAP_PASSWORD (or *_FILE) are required"))
+	if strings.TrimSpace(databaseURL) == "" || strings.TrimSpace(adminSecuritySecret) == "" || strings.TrimSpace(passwordValue) == "" {
+		fatal(fmt.Errorf("DATABASE_URL, ADMIN_SECURITY_SECRET, and ADMIN_BOOTSTRAP_PASSWORD (or *_FILE) are required"))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -47,7 +47,7 @@ func main() {
 		fatal(err)
 	}
 	defer pool.Close()
-	service, err := admin.NewService(admin.Config{Pool: pool, Hasher: password.NewDefaultHasher(), Secret: masterSecret})
+	service, err := admin.NewService(admin.Config{Pool: pool, Hasher: password.NewDefaultHasher(), Secret: adminSecuritySecret})
 	if err != nil {
 		fatal(err)
 	}

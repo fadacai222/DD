@@ -104,7 +104,7 @@ func main() {
 			logger.Error("authentication service initialization failed", "error", err)
 			os.Exit(2)
 		}
-		adminService, err = admin.NewService(admin.Config{Pool: pool, Hasher: hasher, Secret: config.AuthTokenSecret})
+		adminService, err = admin.NewService(admin.Config{Pool: pool, Hasher: hasher, Secret: config.AdminSecuritySecret})
 		if err != nil {
 			logger.Error("admin service initialization failed", "error", err)
 			os.Exit(2)
