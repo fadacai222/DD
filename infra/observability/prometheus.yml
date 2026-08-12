@@ -33,12 +33,12 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox:9115
 
-  - job_name: turn-tcp-blackbox
+  - job_name: livekit-ice-tcp-blackbox
     metrics_path: /probe
     params:
       module: [tcp_connect]
     static_configs:
-      - targets: ["turn:3478"]
+      - targets: ["livekit:7881"]
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -47,12 +47,26 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox:9115
 
-  - job_name: turn-tls-blackbox
+  - job_name: livekit-turn-tls-listener-blackbox
     metrics_path: /probe
     params:
-      module: [tcp_tls]
+      module: [tcp_connect]
     static_configs:
-      - targets: ["turn:5349"]
+      - targets: ["livekit:443"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: tls-mux-tcp-blackbox
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["tls-mux:443"]
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

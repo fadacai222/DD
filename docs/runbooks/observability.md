@@ -10,7 +10,7 @@ Observability 与正式 Production Compose 解耦，位于：
 infra/observability/
 ```
 
-它是 **Compose overlay**，不会修改 `infra/prod/compose.yml`。集成时由 Production Compose 提供 `api`、`worker`、`livekit`、`turn` 等正式 service；overlay 只补监控监听与 Prometheus/Grafana/Exporter。
+它是 **Compose overlay**，不会修改 `infra/prod/compose.yml`。集成时由 Production Compose 提供 `api`、`worker`、`livekit`、`tls-mux` 等正式 service；overlay 只补监控监听与 Prometheus/Grafana/Exporter。
 
 典型组合命令：
 
@@ -22,7 +22,7 @@ docker compose \
   up -d
 ```
 
-实际生产 service 名如果不是 `api` / `worker` / `livekit` / `turn`，必须同步修改 overlay 与 `prometheus.yml` 的固定 target，不能让 Prometheus 靠猜服务名。
+实际生产 service 名如果不是 `api` / `worker` / `livekit` / `tls-mux`，必须同步修改 overlay 与 `prometheus.yml` 的固定 target，不能让 Prometheus 靠猜服务名。overlay 的 bind mount 路径按第一个 `-f infra/prod/compose.yml` 的目录作为 Compose 基准，因此使用 `../observability/...`；不要改回会解析到 `infra/prod/...` 的 `./...`。
 
 API/Worker metrics 默认不会额外开放监听。overlay 显式设置：
 
@@ -132,15 +132,16 @@ process_*
 
 ### LiveKit / TURN
 
-`blackbox-exporter` 对：
+`blackbox-exporter` 按正式 Production 拓扑对以下 Compose 内部端点做主动探测：
 
 ```text
-livekit:7880 HTTP
-turn:3478 TCP
-turn:5349 TLS
+livekit:7880 HTTP                 # LiveKit HTTP listener
+livekit:7881 TCP                  # ICE/TCP listener
+livekit:443 TCP                   # embedded TURN/TLS listener
+tls-mux:443 TCP                   # public TLS mux listener 的容器内 TCP 可达性
 ```
 
-做主动探测。**这只能证明监听/握手层健康，不等于公网 NAT 穿透、UDP 媒体或跨运营商通话一定成功。** 完整公网通话仍归 U21 真人/网络环境验收。
+这里故意不再探测不存在的独立 TURN service，也不把 TCP connect 冒充 TLS/SNI 或 TURN relay 成功。**自动探测只能证明 Compose 内监听层可达；公网 UDP 443、RTC UDP range、SNI/TLS 证书链、NAT 穿透、移动网络和跨运营商真实通话继续是 `HUMAN-PENDING`。** 完整公网通话仍归 U21 真人/网络环境验收。
 
 ## 3. 告警清单
 
@@ -164,8 +165,8 @@ turn:5349 TLS
 | `DDWorkerStopped` | scrape fail 或 heartbeat > 60s | 2m |
 | `DDRealtimePublishFailures` | 10m 内重复 realtime failure | 5m |
 | `DDLiveKitUnavailable` | LiveKit probe fail | 2m |
-| `DDTurnTCPUnavailable` | TURN TCP probe fail | 5m |
-| `DDTurnTLSUnavailable` | TURN TLS probe fail | 5m |
+| `DDLiveKitICETCPUnavailable` | LiveKit ICE/TCP listener probe fail | 5m |
+| `DDTurnTLSPathListenerUnavailable` | embedded TURN/TLS 或 tls-mux TCP listener probe fail | 5m |
 | `DDDiskCapacityLow` | filesystem free < 10% | 15m |
 
 这些阈值是 **首版生产基线**，不是永久真理。上线后应根据真实流量/SLO 调优，但不能把 `for` 全删掉来追求“更灵敏”；瞬时抖动疯狂告警的运维价值很低。
@@ -261,7 +262,7 @@ time() - dd_worker_last_heartbeat_timestamp_seconds
 
 ### LiveKit / TURN
 
-Blackbox 失败先确认 service name/port 是否与 Production Compose 一致，然后查证书/监听/防火墙。Blackbox 成功之后仍需要 U21 的真实 UDP/TCP/TLS、NAT、移动网络和跨运营商通话测试。
+Blackbox 失败先确认 `livekit` / `tls-mux` service name、listener port 与 `internal` network membership 是否与 Production Compose 一致，再查监听和容器网络。当前 Compose 内 probe 不验证公网 TLS/SNI/证书链，也不验证 UDP/NAT；即使全部成功，仍必须执行 U21 的真实 UDP/TCP/TLS、NAT、移动网络和跨运营商通话测试。
 
 ### Disk capacity
 
@@ -326,4 +327,4 @@ HUMAN-PENDING
 - APNs Sandbox/Production 真机到达；
 - 用户点击与页面恢复；
 - Alertmanager 到短信/邮件/IM 的最终接收通道（本 overlay 当前只定义 Prometheus alert rules，不替用户假设 pager 供应商）；
-- U21 公网 LiveKit/TURN 的真实媒体质量与 NAT 穿透。
+- U21 公网 LiveKit/TURN 的 UDP 443、RTC UDP range、TLS/SNI/证书链、真实媒体质量与 NAT/跨运营商穿透。

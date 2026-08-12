@@ -209,24 +209,24 @@ groups:
           description: The configured LiveKit HTTP endpoint has failed blackbox probes for at least 2 minutes.
           runbook: docs/runbooks/observability.md#livekit-turn
 
-      - alert: DDTurnTCPUnavailable
-        expr: probe_success{job="turn-tcp-blackbox"} == 0
+      - alert: DDLiveKitICETCPUnavailable
+        expr: probe_success{job="livekit-ice-tcp-blackbox"} == 0
         for: 5m
         labels:
           severity: page
         annotations:
-          summary: TURN TCP listener is unavailable
-          description: The configured TURN TCP endpoint has failed probes for at least 5 minutes.
+          summary: LiveKit ICE/TCP listener is unavailable
+          description: The Compose-internal LiveKit ICE/TCP listener on port 7881 has failed TCP reachability probes for at least 5 minutes.
           runbook: docs/runbooks/observability.md#livekit-turn
 
-      - alert: DDTurnTLSUnavailable
-        expr: probe_success{job="turn-tls-blackbox"} == 0
+      - alert: DDTurnTLSPathListenerUnavailable
+        expr: probe_success{job=~"livekit-turn-tls-listener-blackbox|tls-mux-tcp-blackbox"} == 0
         for: 5m
         labels:
           severity: page
         annotations:
-          summary: TURN TLS listener is unavailable
-          description: The configured TURN TLS endpoint has failed TLS probes for at least 5 minutes.
+          summary: TURN/TLS path listener is unavailable
+          description: A Compose-internal TCP listener in the embedded LiveKit TURN/TLS or tls-mux path has failed reachability probes for at least 5 minutes; this does not prove public TLS/SNI routing or TURN relay success.
           runbook: docs/runbooks/observability.md#livekit-turn
 
   - name: dd-host

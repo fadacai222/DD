@@ -12,10 +12,3 @@ modules:
     timeout: 5s
     tcp:
       preferred_ip_protocol: ip4
-
-  tcp_tls:
-    prober: tcp
-    timeout: 5s
-    tcp:
-      preferred_ip_protocol: ip4
-      tls: true
