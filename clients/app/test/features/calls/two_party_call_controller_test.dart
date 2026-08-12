@@ -184,6 +184,265 @@ void main() {
     expect(controller.systemCallManaged, isTrue);
   });
 
+  test('incoming ringing system decline maps to reject and acks success', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.decline,
+      callId: 'abc123',
+      actionId: 'incoming-decline-1',
+    ));
+    await pumpEventQueue();
+
+    expect(api.appliedActions.last, 'reject');
+    expect(platform.completions.last, (actionId: 'incoming-decline-1', success: true));
+  });
+
+  test('outgoing ringing system cancel maps to hangup and acks success', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) =>
+          _FakeSignalingClient(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'alice',
+      participantName: 'Alice',
+    );
+    await controller.placeCall(calleeIdentity: 'bob', kind: CallKind.audio);
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.cancel,
+      callId: 'abc123',
+      actionId: 'outgoing-cancel-1',
+    ));
+    await pumpEventQueue();
+
+    expect(api.appliedActions.last, 'hangup');
+    expect(platform.completions.last, (actionId: 'outgoing-cancel-1', success: true));
+  });
+
+  test('accepted incoming system end maps to hangup', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform()
+      ..isSystemCallManaged = () => media.systemCallManaged;
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+    signaling.emitCall('call.updated', api.acceptedCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.end,
+      callId: 'abc123',
+      actionId: 'incoming-end-1',
+    ));
+    await pumpEventQueue();
+
+    expect(api.appliedActions.last, 'hangup');
+    expect(platform.completions.last, (actionId: 'incoming-end-1', success: true));
+    expect(platform.systemManagedWhenCompleting, isTrue);
+    expect(platform.endedReports, 0);
+    expect(controller.systemCallManaged, isFalse);
+  });
+
+  test('accepted outgoing system end maps to hangup', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform()
+      ..isSystemCallManaged = () => media.systemCallManaged;
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'alice',
+      participantName: 'Alice',
+    );
+    await controller.placeCall(calleeIdentity: 'bob', kind: CallKind.audio);
+    signaling.emitCall('call.updated', api.acceptedCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.end,
+      callId: 'abc123',
+      actionId: 'outgoing-end-1',
+    ));
+    await pumpEventQueue();
+
+    expect(api.appliedActions.last, 'hangup');
+    expect(platform.completions.last, (actionId: 'outgoing-end-1', success: true));
+    expect(platform.systemManagedWhenCompleting, isTrue);
+    expect(platform.endedReports, 0);
+    expect(controller.systemCallManaged, isFalse);
+  });
+
+  test('system answer server failure acks native failure and keeps ringing call', () async {
+    final api = _FakeCallSessionApi()..failAction = 'accept';
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.accept,
+      callId: 'abc123',
+      actionId: 'answer-fail-1',
+    ));
+    await pumpEventQueue();
+
+    expect(controller.currentCall?.status, CallSessionStatus.ringing);
+    expect(platform.completions.last, (actionId: 'answer-fail-1', success: false));
+  });
+
+  test('system end server failure acks native failure and retains active call', () async {
+    final api = _FakeCallSessionApi()..failAction = 'hangup';
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform();
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+    signaling.emitCall('call.updated', api.acceptedCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.end,
+      callId: 'abc123',
+      actionId: 'end-fail-1',
+    ));
+    await pumpEventQueue();
+
+    expect(controller.currentCall?.status, CallSessionStatus.accepted);
+    expect(controller.systemCallManaged, isTrue);
+    expect(platform.completions.last, (actionId: 'end-fail-1', success: false));
+  });
+
+  test('ended server state converges CallKit when native action already timed out', () async {
+    final api = _FakeCallSessionApi();
+    final media = _FakeCallMedia();
+    final platform = _FakeCallPlatform()..completionResult = false;
+    late _FakeSignalingClient signaling;
+    final controller = TwoPartyCallController(
+      media,
+      api: api,
+      platformGateway: platform,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        signaling = _FakeSignalingClient();
+        return signaling;
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    signaling.emitCall('call.incoming', api.ringingCall.toJson());
+    await pumpEventQueue();
+    signaling.emitCall('call.updated', api.acceptedCall.toJson());
+    await pumpEventQueue();
+
+    platform.emit(const CallPlatformEvent(
+      type: CallPlatformEventType.end,
+      callId: 'abc123',
+      actionId: 'timed-out-end-1',
+    ));
+    await pumpEventQueue();
+
+    expect(platform.completions.last, (actionId: 'timed-out-end-1', success: true));
+    expect(platform.endedReports, 1);
+    expect(controller.currentCall?.status, CallSessionStatus.ended);
+    expect(controller.systemCallManaged, isFalse);
+  });
+
   test('reconnect recovers a missed accepted call', () async {
     final api = _FakeCallSessionApi();
     final media = _FakeCallMedia();
@@ -249,6 +508,7 @@ void main() {
     expect(platform.answerRequests, 1);
     expect(controller.currentCall?.status, CallSessionStatus.accepted);
     expect(platform.connectedReports, 1);
+    expect(platform.completions.last, (actionId: 'answer-1', success: true));
     expect(media.joinCount, 1);
 
     platform.emit(const CallPlatformEvent(type: CallPlatformEventType.audioActivated));
@@ -358,6 +618,8 @@ final class _FakeCallSessionApi implements CallSessionApi {
   CallKind? lastCreatedKind;
   CallSession? activeCall;
   int fetchActiveCount = 0;
+  String? failAction;
+  final List<String> appliedActions = <String>[];
 
   late final CallSession ringingCall = CallSession(
     id: 'abc123',
@@ -418,7 +680,21 @@ final class _FakeCallSessionApi implements CallSessionApi {
     required String participantIdentity,
     required String action,
   }) async {
+    appliedActions.add(action);
+    if (failAction == action) {
+      throw const CallApiException(
+        code: 'TEST_FAILURE',
+        message: 'simulated system action failure',
+      );
+    }
     if (action == 'accept') return acceptedCall;
+    if (action == 'reject') {
+      return ringingCall.copyWith(
+        status: CallSessionStatus.rejected,
+        endedAt: now.add(const Duration(seconds: 4)),
+        endReason: 'rejected',
+      );
+    }
     return acceptedCall.copyWith(
       status: CallSessionStatus.ended,
       endedAt: now.add(const Duration(seconds: 4)),
@@ -504,8 +780,12 @@ final class _FakeCallPlatform implements CallPlatformGateway {
   int endRequests = 0;
   int connectedReports = 0;
   int endedReports = 0;
+  final List<({String actionId, bool success})> completions = [];
+  bool completionResult = true;
   bool Function()? isAudioPrepared;
+  bool Function()? isSystemCallManaged;
   bool? audioPreparedWhenOutgoingStarted;
+  bool? systemManagedWhenCompleting;
 
   @override
   bool get isIOS => true;
@@ -546,15 +826,33 @@ final class _FakeCallPlatform implements CallPlatformGateway {
   @override
   Future<bool> answerCall(String callId) async {
     answerRequests++;
-    emit(CallPlatformEvent(type: CallPlatformEventType.accept, callId: callId));
+    emit(CallPlatformEvent(
+      type: CallPlatformEventType.accept,
+      callId: callId,
+      actionId: 'answer-$answerRequests',
+    ));
     return true;
   }
 
   @override
   Future<bool> endCall(String callId) async {
     endRequests++;
-    emit(CallPlatformEvent(type: CallPlatformEventType.end, callId: callId));
+    emit(CallPlatformEvent(
+      type: CallPlatformEventType.end,
+      callId: callId,
+      actionId: 'end-$endRequests',
+    ));
     return true;
+  }
+
+  @override
+  Future<bool> completeSystemAction({
+    required String actionId,
+    required bool success,
+  }) async {
+    completions.add((actionId: actionId, success: success));
+    systemManagedWhenCompleting = isSystemCallManaged?.call();
+    return completionResult;
   }
 
   @override

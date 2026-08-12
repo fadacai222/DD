@@ -47,6 +47,7 @@ final class CallMediaPermissionResult {
 enum CallPlatformEventType {
   accept,
   decline,
+  cancel,
   end,
   audioActivated,
   audioDeactivated,
@@ -60,6 +61,7 @@ final class CallPlatformEvent {
   const CallPlatformEvent({
     required this.type,
     this.callId,
+    this.actionId,
     this.route,
   });
 
@@ -67,6 +69,7 @@ final class CallPlatformEvent {
     final type = switch (map['type']?.toString()) {
       'accept' => CallPlatformEventType.accept,
       'decline' => CallPlatformEventType.decline,
+      'cancel' => CallPlatformEventType.cancel,
       'end' => CallPlatformEventType.end,
       'audioActivated' => CallPlatformEventType.audioActivated,
       'audioDeactivated' => CallPlatformEventType.audioDeactivated,
@@ -88,6 +91,7 @@ final class CallPlatformEvent {
     return CallPlatformEvent(
       type: type,
       callId: map['callId']?.toString(),
+      actionId: map['actionId']?.toString(),
       route: hasRoute
           ? CallAudioRouteState(
               kind: routeKind,
@@ -101,6 +105,7 @@ final class CallPlatformEvent {
 
   final CallPlatformEventType type;
   final String? callId;
+  final String? actionId;
   final CallAudioRouteState? route;
 }
 
@@ -125,6 +130,10 @@ abstract interface class CallPlatformGateway {
   });
   Future<bool> answerCall(String callId);
   Future<bool> endCall(String callId);
+  Future<bool> completeSystemAction({
+    required String actionId,
+    required bool success,
+  });
   Future<void> reportConnected(String callId);
   Future<void> reportEnded(String callId);
 }
@@ -231,6 +240,15 @@ final class CallPlatformService implements CallPlatformGateway {
   @override
   Future<bool> endCall(String callId) =>
       _invokeBool('endCall', <String, Object?>{'callId': callId});
+
+  @override
+  Future<bool> completeSystemAction({
+    required String actionId,
+    required bool success,
+  }) => _invokeBool('completeSystemAction', <String, Object?>{
+    'actionId': actionId,
+    'success': success,
+  });
 
   @override
   Future<void> reportConnected(String callId) async {

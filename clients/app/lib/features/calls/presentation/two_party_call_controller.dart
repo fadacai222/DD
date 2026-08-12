@@ -266,11 +266,16 @@ final class TwoPartyCallController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> _applyServerAction(String action) async {
+  Future<bool> _applyServerAction(
+    String action, {
+    bool reportSystemEnd = true,
+    bool releaseSystemCallManagement = true,
+  }) async {
     final apiBaseUri = _apiBaseUri;
     final call = _currentCall;
-    if (_closed || _busy || apiBaseUri == null || call == null) return;
+    if (_closed || _busy || apiBaseUri == null || call == null) return false;
 
+    var succeeded = false;
     await _runAction(() async {
       final updated = await _api.applyAction(
         apiBaseUri: apiBaseUri,
@@ -278,8 +283,14 @@ final class TwoPartyCallController extends ChangeNotifier {
         participantIdentity: _identity,
         action: action,
       );
-      await _applyCall(updated);
+      await _applyCall(
+        updated,
+        reportSystemEnd: reportSystemEnd,
+        releaseSystemCallManagement: releaseSystemCallManagement,
+      );
+      succeeded = true;
     });
+    return succeeded;
   }
 
   Future<void> _runAction(Future<void> Function() action) async {
@@ -371,7 +382,11 @@ final class TwoPartyCallController extends ChangeNotifier {
     }
   }
 
-  Future<void> _applyCall(CallSession call) async {
+  Future<void> _applyCall(
+    CallSession call, {
+    bool reportSystemEnd = true,
+    bool releaseSystemCallManagement = true,
+  }) async {
     if (_closed) return;
     final previous = _currentCall;
     if (previous != null && previous.id != call.id && previous.isActive) {
@@ -394,9 +409,16 @@ final class TwoPartyCallController extends ChangeNotifier {
         await _media.leave();
       }
       if (_systemCallManaged) {
-        await _platformGateway.reportEnded(call.id);
-        await _media.setSystemCallManaged(false, video: call.kind == CallKind.video);
-        _systemCallManaged = false;
+        if (reportSystemEnd) {
+          await _platformGateway.reportEnded(call.id);
+        }
+        if (releaseSystemCallManagement) {
+          await _media.setSystemCallManaged(
+            false,
+            video: call.kind == CallKind.video,
+          );
+          _systemCallManaged = false;
+        }
       }
       _notify();
     }
@@ -490,25 +512,16 @@ final class TwoPartyCallController extends ChangeNotifier {
 
   void _handlePlatformEvent(CallPlatformEvent event) {
     if (_closed) return;
+    if (_isSystemActionEvent(event.type)) {
+      unawaited(_handleSystemCallAction(event));
+      return;
+    }
+
     final call = _currentCall;
     final eventCallId = event.callId;
     if (eventCallId != null && call?.id != eventCallId) return;
 
     switch (event.type) {
-      case CallPlatformEventType.accept:
-        if (call != null &&
-            call.status == CallSessionStatus.ringing &&
-            call.isIncomingFor(_identity)) {
-          unawaited(_applyServerAction('accept'));
-        }
-      case CallPlatformEventType.decline:
-        if (call?.status == CallSessionStatus.ringing) {
-          unawaited(_applyServerAction('reject'));
-        }
-      case CallPlatformEventType.end:
-        if (call?.isActive == true) {
-          unawaited(_applyServerAction('hangup'));
-        }
       case CallPlatformEventType.audioActivated:
         unawaited(_media.setSystemAudioActive(true));
       case CallPlatformEventType.audioDeactivated:
@@ -518,8 +531,94 @@ final class TwoPartyCallController extends ChangeNotifier {
       case CallPlatformEventType.interruptionEnded:
         unawaited(_media.setSystemAudioInterrupted(false));
       case CallPlatformEventType.routeChanged:
+      case CallPlatformEventType.accept:
+      case CallPlatformEventType.decline:
+      case CallPlatformEventType.cancel:
+      case CallPlatformEventType.end:
       case CallPlatformEventType.unknown:
         break;
+    }
+  }
+
+  bool _isSystemActionEvent(CallPlatformEventType type) =>
+      type == CallPlatformEventType.accept ||
+      type == CallPlatformEventType.decline ||
+      type == CallPlatformEventType.cancel ||
+      type == CallPlatformEventType.end;
+
+  Future<void> _handleSystemCallAction(CallPlatformEvent event) async {
+    final call = _currentCall;
+    final actionId = event.actionId?.trim();
+
+    if (actionId == null || actionId.isEmpty) {
+      // Provider reset and legacy native bridges do not carry a CXAction id.
+      // They cannot participate in the two-phase acknowledgement contract.
+      if (event.type == CallPlatformEventType.end && call?.isActive == true) {
+        await _applyServerAction('hangup');
+      }
+      return;
+    }
+
+    if (call == null || event.callId != call.id) {
+      await _platformGateway.completeSystemAction(
+        actionId: actionId,
+        success: false,
+      );
+      return;
+    }
+
+    final serverAction = switch (event.type) {
+      CallPlatformEventType.accept
+          when call.status == CallSessionStatus.ringing &&
+              call.isIncomingFor(_identity) =>
+        'accept',
+      CallPlatformEventType.decline
+          when call.status == CallSessionStatus.ringing &&
+              call.isIncomingFor(_identity) =>
+        'reject',
+      CallPlatformEventType.cancel
+          when call.status == CallSessionStatus.ringing &&
+              call.isOutgoingFor(_identity) =>
+        'hangup',
+      CallPlatformEventType.end
+          when call.status == CallSessionStatus.accepted =>
+        'hangup',
+      _ => null,
+    };
+
+    if (serverAction == null) {
+      await _platformGateway.completeSystemAction(
+        actionId: actionId,
+        success: false,
+      );
+      return;
+    }
+
+    final endsCall = serverAction != 'accept';
+    final succeeded = await _applyServerAction(
+      serverAction,
+      reportSystemEnd: false,
+      releaseSystemCallManagement: !endsCall,
+    );
+    final nativeCompleted = await _platformGateway.completeSystemAction(
+      actionId: actionId,
+      success: succeeded,
+    );
+
+    if (succeeded && endsCall && _systemCallManaged) {
+      if (!nativeCompleted) {
+        // CallKit may have timed the CXEndCallAction out while the DD server
+        // request was in flight. The server is now authoritative-ended, so
+        // explicitly converge the retained native record before releasing
+        // externalCallSystem audio ownership.
+        await _platformGateway.reportEnded(call.id);
+      }
+      await _media.setSystemCallManaged(
+        false,
+        video: call.kind == CallKind.video,
+      );
+      _systemCallManaged = false;
+      _notify();
     }
   }
 

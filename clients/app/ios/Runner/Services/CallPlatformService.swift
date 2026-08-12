@@ -20,12 +20,22 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
   private var eventSink: FlutterEventSink?
   private var recordsByCallID: [String: CallRecord] = [:]
   private var callIDByUUID: [UUID: String] = [:]
+  private var pendingActionsByID: [UUID: PendingSystemAction] = [:]
+  private var queuedSystemActionEventsByID: [UUID: [String: Any]] = [:]
+  private var completedActionIDs: Set<UUID> = []
+  private var completedActionOrder: [UUID] = []
 
   private struct CallRecord {
     let callID: String
     let uuid: UUID
     let incoming: Bool
     var answered: Bool
+  }
+
+  private struct PendingSystemAction {
+    let action: CXAction
+    let callID: String
+    let removeRecordOnSuccess: Bool
   }
 
   override private init() {
@@ -117,6 +127,17 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
       performCallAction(call, result: result) { CXAnswerCallAction(call: $0) }
     case "endCall":
       performCallAction(call, result: result) { CXEndCallAction(call: $0) }
+    case "completeSystemAction":
+      guard
+        let arguments = call.arguments as? [String: Any],
+        let rawActionID = arguments["actionId"] as? String,
+        let actionID = UUID(uuidString: rawActionID),
+        let success = arguments["success"] as? Bool
+      else {
+        result(false)
+        return
+      }
+      result(completeSystemAction(actionID: actionID, success: success))
     case "reportConnected":
       guard let callID = callID(from: call) else {
         result(false)
@@ -285,6 +306,61 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
     }
   }
 
+  private func beginSystemAction(
+    _ action: CXAction,
+    type: String,
+    callID: String,
+    removeRecordOnSuccess: Bool
+  ) {
+    let actionID = action.uuid
+    guard pendingActionsByID[actionID] == nil else {
+      action.fail()
+      return
+    }
+
+    pendingActionsByID[actionID] = PendingSystemAction(
+      action: action,
+      callID: callID,
+      removeRecordOnSuccess: removeRecordOnSuccess
+    )
+    let payload: [String: Any] = [
+      "type": type,
+      "callId": callID,
+      "actionId": actionID.uuidString,
+    ]
+    publishSystemAction(payload, actionID: actionID)
+  }
+
+  private func completeSystemAction(actionID: UUID, success: Bool) -> Bool {
+    if completedActionIDs.contains(actionID) {
+      return true
+    }
+    guard let pending = pendingActionsByID.removeValue(forKey: actionID) else {
+      return false
+    }
+    queuedSystemActionEventsByID.removeValue(forKey: actionID)
+
+    if success {
+      pending.action.fulfill()
+      if pending.removeRecordOnSuccess {
+        removeRecord(callID: pending.callID)
+      }
+    } else {
+      pending.action.fail()
+    }
+    rememberCompletedActionID(actionID)
+    return true
+  }
+
+  private func rememberCompletedActionID(_ actionID: UUID) {
+    guard completedActionIDs.insert(actionID).inserted else { return }
+    completedActionOrder.append(actionID)
+    if completedActionOrder.count > 64 {
+      let expired = completedActionOrder.removeFirst()
+      completedActionIDs.remove(expired)
+    }
+  }
+
   private func markConnected(callID: String) {
     guard var record = recordsByCallID[callID] else { return }
     record.answered = true
@@ -307,6 +383,9 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
 
   func providerDidReset(_ provider: CXProvider) {
     let activeCallIDs = Array(recordsByCallID.keys)
+    pendingActionsByID.values.forEach { $0.action.fail() }
+    pendingActionsByID.removeAll()
+    queuedSystemActionEventsByID.removeAll()
     recordsByCallID.removeAll()
     callIDByUUID.removeAll()
     activeCallIDs.forEach { publish(type: "end", callID: $0) }
@@ -322,8 +401,12 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
       action.fail()
       return
     }
-    action.fulfill()
-    publish(type: "accept", callID: callID)
+    beginSystemAction(
+      action,
+      type: "accept",
+      callID: callID,
+      removeRecordOnSuccess: false
+    )
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -334,9 +417,18 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
       action.fail()
       return
     }
-    action.fulfill()
-    publish(type: record.answered ? "end" : "decline", callID: callID)
-    removeRecord(callID: callID)
+    let eventType = record.answered ? "end" : (record.incoming ? "decline" : "cancel")
+    beginSystemAction(
+      action,
+      type: eventType,
+      callID: callID,
+      removeRecordOnSuccess: true
+    )
+  }
+
+  func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+    pendingActionsByID.removeValue(forKey: action.uuid)
+    queuedSystemActionEventsByID.removeValue(forKey: action.uuid)
   }
 
   func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
@@ -398,6 +490,11 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
     eventSink events: @escaping FlutterEventSink
   ) -> FlutterError? {
     eventSink = events
+    let queued = queuedSystemActionEventsByID
+    queuedSystemActionEventsByID.removeAll()
+    for (actionID, payload) in queued where pendingActionsByID[actionID] != nil {
+      events(payload)
+    }
     publishRoute()
     return nil
   }
@@ -413,6 +510,16 @@ final class CallPlatformService: NSObject, DDNativeService, FlutterStreamHandler
       payload["callId"] = callID
     }
     publish(payload)
+  }
+
+  private func publishSystemAction(_ payload: [String: Any], actionID: UUID) {
+    guard let sink = eventSink else {
+      queuedSystemActionEventsByID[actionID] = payload
+      return
+    }
+    DispatchQueue.main.async {
+      sink(payload)
+    }
   }
 
   private func publish(_ payload: [String: Any]) {

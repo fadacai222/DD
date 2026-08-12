@@ -155,6 +155,12 @@ final class _FakeCallPlatform implements CallPlatformGateway {
   Future<bool> endCall(String callId) async => true;
 
   @override
+  Future<bool> completeSystemAction({
+    required String actionId,
+    required bool success,
+  }) async => true;
+
+  @override
   Future<void> reportConnected(String callId) async {}
 
   @override
