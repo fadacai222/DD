@@ -36,8 +36,7 @@ done
 [[ -n "$backup_dir" ]] || fail "--backup is required"
 "$SCRIPT_DIR/verify-backup.sh" "$backup_dir"
 backup_dir="$(cd "$backup_dir" && pwd -P)"
-# shellcheck disable=SC1090
-source "$backup_dir/manifest.env"
+load_backup_manifest "$backup_dir/manifest.env" || fail "backup manifest validation failed"
 
 expected="RESTORE:${DD_API_DOMAIN}:${BACKUP_ID}"
 [[ "$confirmation" == "$expected" ]] || fail "destructive restore blocked; rerun with --confirm '$expected'"

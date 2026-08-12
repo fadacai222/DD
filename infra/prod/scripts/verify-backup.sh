@@ -16,6 +16,9 @@ for required in manifest.env config.env postgres.dump schema-status.txt object-s
 done
 [[ -d "$backup_dir/objects" ]] || fail "backup is incomplete; missing objects directory"
 
+load_backup_manifest "$backup_dir/manifest.env" || fail "backup manifest validation failed"
+[[ "$(basename "$backup_dir")" == "$BACKUP_ID" ]] || fail "backup directory name does not match manifest BACKUP_ID"
+
 log "verifying backup checksums"
 (
   cd "$backup_dir"
@@ -28,11 +31,6 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -v "$backup_host_path:/backup:ro" \
   postgres:18.4-alpine \
   pg_restore --list /backup/postgres.dump >/dev/null
-
-# shellcheck disable=SC1090
-source "$backup_dir/manifest.env"
-[[ "${BACKUP_FORMAT_VERSION:-}" == "1" ]] || fail "unsupported backup format version: ${BACKUP_FORMAT_VERSION:-missing}"
-[[ -n "${BACKUP_ID:-}" && -n "${CREATED_AT_UTC:-}" && -n "${DB_NAME:-}" && -n "${MEDIA_BUCKET:-}" ]] || fail "backup manifest is missing required metadata"
 
 actual_objects="$(find "$backup_dir/objects" -type f | wc -l | tr -d ' ')"
 [[ "$actual_objects" =~ ^[0-9]+$ ]] || fail "failed to count backed-up objects"

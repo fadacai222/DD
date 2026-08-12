@@ -120,7 +120,9 @@ case "${DD_OBJECT_STORAGE_MODE:-minio}" in
     ;;
 esac
 
-for secret in postgres_password database_url redis_password redis_url media_s3_access_key media_s3_secret_key backup_s3_access_key backup_s3_secret_key livekit_api_key livekit_api_secret auth_token_secret email_code_pepper; do
+require_storage_mode_secrets
+
+for secret in postgres_password database_url redis_password redis_url media_s3_access_key media_s3_secret_key backup_s3_access_key backup_s3_secret_key livekit_api_key livekit_api_secret auth_token_secret admin_security_secret email_code_pepper; do
   require_secret_nonempty "$secret"
 done
 for optional in smtp_password telegram_bot_token fcm_service_account_json apns_private_key; do
@@ -133,9 +135,12 @@ require_secret_nonempty turn_key.pem
 [[ "$(read_secret redis_url)" == redis://* || "$(read_secret redis_url)" == rediss://* ]] || fail "redis_url must be a redis:// or rediss:// URL"
 (( ${#DD_PUBLIC_IP} > 0 ))
 auth_token_value="$(read_secret auth_token_secret)"
+admin_security_value="$(read_secret admin_security_secret)"
 livekit_secret_value="$(read_secret livekit_api_secret)"
 email_pepper_value="$(read_secret email_code_pepper)"
 (( ${#auth_token_value} >= 32 )) || fail "auth_token_secret must contain at least 32 characters"
+(( ${#admin_security_value} >= 32 )) || fail "admin_security_secret must contain at least 32 characters"
+[[ "$admin_security_value" != "$auth_token_value" ]] || fail "admin_security_secret must be independent from auth_token_secret"
 (( ${#livekit_secret_value} >= 32 )) || fail "livekit_api_secret must contain at least 32 characters"
 (( ${#email_pepper_value} >= 32 )) || fail "email_code_pepper must contain at least 32 characters"
 
@@ -160,7 +165,7 @@ case "${DD_LIVEKIT_SKIP_EXTERNAL_IP_VALIDATION:-false}" in
 esac
 (( DD_BACKUP_RETENTION_DAYS >= 1 )) || fail "DD_BACKUP_RETENTION_DAYS must be >= 1"
 (( DD_BACKUP_INTERVAL_HOURS >= 1 )) || fail "DD_BACKUP_INTERVAL_HOURS must be >= 1"
-(( DD_RPO_HOURS >= DD_BACKUP_INTERVAL_HOURS )) || fail "configured backup interval exceeds DD_RPO_HOURS"
+(( DD_RPO_HOURS >= DD_BACKUP_INTERVAL_HOURS )) || fail "configured quiesced DR recovery-point interval exceeds DD_RPO_HOURS"
 (( DD_RTO_HOURS >= 1 )) || fail "DD_RTO_HOURS must be >= 1"
 
 turn_cert="$(secret_path turn_cert.pem)"

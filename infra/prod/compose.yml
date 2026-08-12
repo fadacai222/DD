@@ -214,6 +214,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       REDIS_URL_FILE: /run/secrets/redis_url
       AUTH_TOKEN_SECRET_FILE: /run/secrets/auth_token_secret
+      ADMIN_SECURITY_SECRET_FILE: /run/secrets/admin_security_secret
       EMAIL_CODE_PEPPER_FILE: /run/secrets/email_code_pepper
       LIVEKIT_URL: wss://${DD_LIVEKIT_DOMAIN:?DD_LIVEKIT_DOMAIN is required}
       LIVEKIT_PUBLIC_PORT: "443"
@@ -235,6 +236,7 @@ services:
       - database_url
       - redis_url
       - auth_token_secret
+      - admin_security_secret
       - email_code_pepper
       - livekit_api_key
       - livekit_api_secret
@@ -461,6 +463,8 @@ secrets:
     file: ./secrets/livekit_api_secret
   auth_token_secret:
     file: ./secrets/auth_token_secret
+  admin_security_secret:
+    file: ./secrets/admin_security_secret
   email_code_pepper:
     file: ./secrets/email_code_pepper
   smtp_password:

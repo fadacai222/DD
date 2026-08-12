@@ -68,6 +68,7 @@ fi
 write_secret_once livekit_api_key "dd_$(random_hex 12)"
 write_secret_once livekit_api_secret "$(random_hex 32)"
 write_secret_once auth_token_secret "$(random_hex 48)"
+write_secret_once admin_security_secret "$(random_hex 48)"
 write_secret_once email_code_pepper "$(random_hex 48)"
 
 for optional in smtp_password telegram_bot_token fcm_service_account_json apns_private_key; do

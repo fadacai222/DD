@@ -176,11 +176,11 @@ DD_RTO_HOURS=4
 DD_BACKUP_ROOT=./backups
 ```
 
-These are policy targets, **not performance guarantees**. RTO must be measured against your real database/object volume and hardware. `preflight.sh` fails if the configured backup interval is longer than the configured RPO.
+These are policy targets, **not performance guarantees**. RTO must be measured against your real database/object volume and hardware. `DD_BACKUP_INTERVAL_HOURS` is the cadence of the formal **quiesced cross-system DR recovery point**, and `DD_RPO_HOURS` is only supportable when those quiesced jobs actually complete successfully at that cadence. `preflight.sh` fails if the configured DR recovery-point interval is longer than the configured RPO.
 
 For actual DR, `DD_BACKUP_ROOT` must be on encrypted storage independent of the application data disk, or verified backup sets must be copied off-host. Keeping backups only on the same physical disk as PostgreSQL/MinIO is not disaster recovery.
 
-Online backup:
+Online backup (low-downtime supplementary copy only):
 
 ```bash
 bash scripts/backup.sh
@@ -192,7 +192,9 @@ Quiesced cross-system recovery point:
 bash scripts/backup.sh --quiesce
 ```
 
-Upgrade uses the stricter quiesced mode automatically. It stops API/Worker writers while taking the PostgreSQL dump and object snapshot and restarts them on completion/failure unless the caller explicitly owns the following maintenance phase.
+The quiesced mode is the formal DR recovery-point mode. It stops API/Worker writers while taking the PostgreSQL dump and object mirror, so the database and object-store copy represent one bounded cross-system recovery point. Upgrade uses this mode automatically and restarts writers on completion/failure unless the caller explicitly owns the following maintenance phase.
+
+`backup.sh` without `--quiesce` is intentionally marked `CONSISTENCY_MODE=online-db-first`. Because PostgreSQL is dumped before the object mirror while writers can continue changing both systems, that online copy **must not** be used to claim a strict cross-DB/Object RPO. Running online copies more frequently can reduce operational loss in some failures, but their frequency does not redefine `DD_BACKUP_INTERVAL_HOURS` or `DD_RPO_HOURS`.
 
 Each backup set contains:
 
@@ -206,15 +208,15 @@ Each backup set contains:
 
 Secret files are intentionally **not** copied into ordinary backup sets. Keep an independent encrypted/secret-manager backup of the files listed in `secrets/README.md`; a DR restore without those credentials cannot recreate the original cryptographic identity/integrations.
 
-A backup is only accepted after `verify-backup.sh` validates every checksum and `pg_restore --list` can parse the dump. Retention runs only after the new backup passes verification.
+A backup is only accepted after `verify-backup.sh` strictly parses the data-only manifest, validates every checksum, and confirms `pg_restore --list` can parse the dump. The manifest is never sourced as shell code: unknown/duplicate keys, shell syntax, invalid IDs/timestamps/schema metadata, or other malformed fields make verification and restore fail closed. Retention runs only after the new backup passes verification.
 
-A simple default six-hour cron schedule is:
+The default six-hour **formal DR recovery-point** cron schedule is:
 
 ```cron
-15 */6 * * * cd /opt/dd/infra/prod && /usr/bin/bash scripts/backup.sh >> /var/log/dd-backup.log 2>&1
+15 */6 * * * cd /opt/dd/infra/prod && /usr/bin/bash scripts/backup.sh --quiesce >> /var/log/dd-backup.log 2>&1
 ```
 
-If you change the schedule, update `DD_BACKUP_INTERVAL_HOURS` to match reality; do not claim an RPO based only on a variable in `.env`.
+If you change this quiesced schedule, update `DD_BACKUP_INTERVAL_HOURS` to match the actual successful DR recovery-point cadence. Do not claim an RPO from `.env`, from an online-only backup schedule, or from a failed/unchecked cron run.
 
 ## 8. Restore
 

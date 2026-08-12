@@ -16,6 +16,7 @@ Required generated secrets:
 - `livekit_api_key`
 - `livekit_api_secret`
 - `auth_token_secret`
+- `admin_security_secret` — independent Admin session/CSRF/security key; never reuse or fall back to `auth_token_secret`
 - `email_code_pepper`
 
 Required operator-supplied TURN/TLS certificate files:

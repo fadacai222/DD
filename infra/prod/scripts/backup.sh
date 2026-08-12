@@ -54,8 +54,10 @@ service_is_running postgres || fail "postgres must be running before backup"
 wait_service_healthy postgres 30
 
 if [[ "$quiesce" == "true" ]]; then
-  log "quiescing API/Worker for a cross-system recovery point"
+  log "quiescing API/Worker for a cross-system DR recovery point"
   compose_with_storage stop -t 45 api worker >/dev/null
+else
+  log "ONLINE SUPPLEMENTARY COPY: writers remain active; this run does not establish a strict cross-DB/Object RPO"
 fi
 
 log "dumping PostgreSQL to $backup_id"
@@ -88,19 +90,19 @@ consistency_mode="online-db-first"
 if [[ "$quiesce" == "true" ]]; then consistency_mode="quiesced"; fi
 
 {
-  printf 'BACKUP_FORMAT_VERSION=%q\n' "1"
-  printf 'BACKUP_ID=%q\n' "$backup_id"
-  printf 'CREATED_AT_UTC=%q\n' "$timestamp"
-  printf 'RELEASE_VERSION=%q\n' "${DD_RELEASE_VERSION:-unknown}"
-  printf 'IMAGE_TAG=%q\n' "${DD_IMAGE_TAG:-unknown}"
-  printf 'DB_NAME=%q\n' "${DD_POSTGRES_DB:-dd}"
-  printf 'MEDIA_BUCKET=%q\n' "${DD_MEDIA_S3_BUCKET:-dd-media}"
-  printf 'OBJECT_STORAGE_MODE=%q\n' "${DD_OBJECT_STORAGE_MODE:-minio}"
-  printf 'OBJECT_FILE_COUNT=%q\n' "$object_count"
-  printf 'SCHEMA_MIGRATION_MAX=%q\n' "$schema_max"
-  printf 'CONSISTENCY_MODE=%q\n' "$consistency_mode"
-  printf 'RPO_HOURS=%q\n' "${DD_RPO_HOURS:-6}"
-  printf 'RTO_HOURS=%q\n' "${DD_RTO_HOURS:-4}"
+  printf 'BACKUP_FORMAT_VERSION=%s\n' "1"
+  printf 'BACKUP_ID=%s\n' "$backup_id"
+  printf 'CREATED_AT_UTC=%s\n' "$timestamp"
+  printf 'RELEASE_VERSION=%s\n' "${DD_RELEASE_VERSION:-unknown}"
+  printf 'IMAGE_TAG=%s\n' "${DD_IMAGE_TAG:-unknown}"
+  printf 'DB_NAME=%s\n' "${DD_POSTGRES_DB:-dd}"
+  printf 'MEDIA_BUCKET=%s\n' "${DD_MEDIA_S3_BUCKET:-dd-media}"
+  printf 'OBJECT_STORAGE_MODE=%s\n' "${DD_OBJECT_STORAGE_MODE:-minio}"
+  printf 'OBJECT_FILE_COUNT=%s\n' "$object_count"
+  printf 'SCHEMA_MIGRATION_MAX=%s\n' "$schema_max"
+  printf 'CONSISTENCY_MODE=%s\n' "$consistency_mode"
+  printf 'RPO_HOURS=%s\n' "${DD_RPO_HOURS:-6}"
+  printf 'RTO_HOURS=%s\n' "${DD_RTO_HOURS:-4}"
 } > "$backup_dir/manifest.env"
 
 (

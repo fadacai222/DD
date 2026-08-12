@@ -161,16 +161,21 @@ handle_upgrade_failure() {
     elif [[ "$restore_on_failure" == "true" ]]; then
       old_after_state="INCOMPATIBLE"
       rollback_mode="RESTORE_PREUPGRADE_BACKUP"
-      # shellcheck disable=SC1090
-      source "$backup_path/manifest.env"
-      log "previous release rejects the newer schema; restoring verified pre-upgrade recovery point (no migrate down)"
-      "$SCRIPT_DIR/restore.sh" --backup "$backup_path" --confirm "RESTORE:${DD_API_DOMAIN}:${BACKUP_ID}" --failed-upgrade-recovery
-      restore_code=$?
-      if [[ "$restore_code" -eq 0 ]]; then
-        write_evidence "FAILED_RESTORED_PREUPGRADE_BACKUP"
+      if load_backup_manifest "$backup_path/manifest.env"; then
+        log "previous release rejects the newer schema; restoring verified pre-upgrade recovery point (no migrate down)"
+        "$SCRIPT_DIR/restore.sh" --backup "$backup_path" --confirm "RESTORE:${DD_API_DOMAIN}:${BACKUP_ID}" --failed-upgrade-recovery
+        restore_code=$?
+        if [[ "$restore_code" -eq 0 ]]; then
+          write_evidence "FAILED_RESTORED_PREUPGRADE_BACKUP"
+        else
+          compose_with_storage stop -t 45 api worker livekit caddy tls-mux >/dev/null 2>&1
+          write_evidence "FAILED_RESTORE_FAILED_SERVICES_STOPPED"
+        fi
       else
+        rollback_mode="BLOCKED_INVALID_BACKUP_MANIFEST"
         compose_with_storage stop -t 45 api worker livekit caddy tls-mux >/dev/null 2>&1
-        write_evidence "FAILED_RESTORE_FAILED_SERVICES_STOPPED"
+        write_evidence "FAILED_INVALID_BACKUP_MANIFEST_SERVICES_STOPPED"
+        log "pre-upgrade backup manifest failed strict parsing; automatic restore is blocked"
       fi
     else
       old_after_state="INCOMPATIBLE"
@@ -178,9 +183,13 @@ handle_upgrade_failure() {
       compose_with_storage stop -t 45 api worker livekit caddy tls-mux >/dev/null 2>&1
       write_evidence "FAILED_SERVICES_STOPPED"
       log "previous release rejects the newer schema; old app is intentionally NOT restarted"
-      # shellcheck disable=SC1090
-      source "$backup_path/manifest.env"
-      log "recovery command: $SCRIPT_DIR/restore.sh --backup '$backup_path' --confirm 'RESTORE:${DD_API_DOMAIN}:${BACKUP_ID}' --failed-upgrade-recovery"
+      if load_backup_manifest "$backup_path/manifest.env"; then
+        log "recovery command: $SCRIPT_DIR/restore.sh --backup '$backup_path' --confirm 'RESTORE:${DD_API_DOMAIN}:${BACKUP_ID}' --failed-upgrade-recovery"
+      else
+        rollback_mode="BLOCKED_INVALID_BACKUP_MANIFEST"
+        write_evidence "FAILED_INVALID_BACKUP_MANIFEST_SERVICES_STOPPED"
+        log "pre-upgrade backup manifest failed strict parsing; no restore command will be emitted"
+      fi
     fi
   else
     write_evidence "FAILED_BEFORE_QUIESCE"
