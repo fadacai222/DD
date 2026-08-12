@@ -42,6 +42,110 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('expired group QR shows an actionable expiry message', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(
+      redeemError: const QrApiException(
+        statusCode: 410,
+        code: 'QR_EXPIRED',
+        message: 'expired',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/group?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pump();
+
+    expect(find.text('这个二维码已经过期，请重新生成。'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('revoked group QR maps QR_NOT_FOUND to invalid credential', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(
+      redeemError: const QrApiException(
+        statusCode: 404,
+        code: 'QR_NOT_FOUND',
+        message: 'not found',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/group?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pump();
+
+    expect(find.text('二维码凭证不存在或已经失效。'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('login QR scans and confirms the presented device', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final gateway = _FakeQrGateway(supportLogin: true);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: QrScannerPage(
+          origin: Uri.parse('https://chat.example.invalid'),
+          accessToken: 'token',
+          onUnauthorized: () async => 'token',
+          gateway: gateway,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('qr-scan-manual-input')),
+      'dd://qr/v1/login?instance=https%3A%2F%2Fchat.example.invalid&nonce=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    await tester.tap(find.byKey(const Key('qr-scan-manual-submit')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('确认登录 DD？'), findsOneWidget);
+    await tester.tap(find.text('确认登录'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.scanCalls, 1);
+    expect(gateway.confirmCalls, 1);
+    debugDefaultTargetPlatformOverride = null;
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('foreign-instance payload is rejected before server action', (
     tester,
   ) async {
@@ -74,7 +178,13 @@ void main() {
 }
 
 final class _FakeQrGateway implements QrGateway {
+  _FakeQrGateway({this.redeemError, this.supportLogin = false});
+
+  final QrApiException? redeemError;
+  final bool supportLogin;
   int redeemCalls = 0;
+  int scanCalls = 0;
+  int confirmCalls = 0;
 
   @override
   Future<GroupInfo> redeemGroupInvite({
@@ -83,6 +193,8 @@ final class _FakeQrGateway implements QrGateway {
     required String nonce,
   }) async {
     redeemCalls++;
+    final error = redeemError;
+    if (error != null) throw error;
     throw UnimplementedError();
   }
 
@@ -91,7 +203,19 @@ final class _FakeQrGateway implements QrGateway {
     required Uri origin,
     required String accessToken,
     required String nonce,
-  }) => throw UnimplementedError();
+  }) async {
+    scanCalls++;
+    if (!supportLogin) throw UnimplementedError();
+    return QrLoginState(
+      status: 'SCANNED',
+      device: const AuthDeviceInput(
+        name: 'DD Windows',
+        platform: 'WINDOWS',
+        appVersion: '1.0.0',
+      ),
+      expiresAt: DateTime.utc(2026, 8, 13),
+    );
+  }
 
   @override
   Future<QrLoginState> confirmLogin({
@@ -99,7 +223,19 @@ final class _FakeQrGateway implements QrGateway {
     required String accessToken,
     required String nonce,
     required bool approved,
-  }) => throw UnimplementedError();
+  }) async {
+    confirmCalls++;
+    if (!supportLogin) throw UnimplementedError();
+    return QrLoginState(
+      status: approved ? 'CONFIRMED' : 'REJECTED',
+      device: const AuthDeviceInput(
+        name: 'DD Windows',
+        platform: 'WINDOWS',
+        appVersion: '1.0.0',
+      ),
+      expiresAt: DateTime.utc(2026, 8, 13),
+    );
+  }
 
   @override
   Future<GroupQrInviteData> createGroupInvite({

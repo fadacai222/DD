@@ -1,10 +1,11 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/media/chat_image_processor.dart';
+import '../../../core/media/dd_file_picker.dart';
 import '../../../theme/app_theme.dart';
 import '../../contacts/data/contacts_api_client.dart';
 import '../../contacts/domain/contact_models.dart';
@@ -75,7 +76,10 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('发表朋友圈', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+        title: const Text(
+          '发表朋友圈',
+          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
         centerTitle: true,
         actions: [
           Padding(
@@ -97,7 +101,10 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
               child: _busy
                   ? const SizedBox.square(
                       dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
                     )
                   : const Text('发表'),
             ),
@@ -114,7 +121,13 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
                 borderRadius: BorderRadius.circular(10),
                 child: Padding(
                   padding: const EdgeInsets.all(10),
-                  child: Text(_error!, style: const TextStyle(color: DdColors.danger, fontSize: 12)),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(
+                      color: DdColors.danger,
+                      fontSize: 12,
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -145,7 +158,9 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
             _mediaComposer(),
             if (_busy && (_images.isNotEmpty || _video != null)) ...[
               const SizedBox(height: 10),
-              LinearProgressIndicator(value: _progress <= 0 ? null : _progress.clamp(0, 1)),
+              LinearProgressIndicator(
+                value: _progress <= 0 ? null : _progress.clamp(0, 1),
+              ),
             ],
             const SizedBox(height: 22),
             const Divider(height: 1),
@@ -163,7 +178,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
               padding: EdgeInsets.only(top: 14),
               child: Text(
                 '朋友圈媒体会先上传到当前 DD 实例的私有对象存储；服务端按好友关系、黑名单和本条可见范围重新鉴权。',
-                style: TextStyle(fontSize: 11, height: 1.5, color: DdColors.textTertiary),
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.5,
+                  color: DdColors.textTertiary,
+                ),
               ),
             ),
           ],
@@ -192,7 +211,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
                   child: CircleAvatar(
                     radius: 24,
                     backgroundColor: Color(0x99000000),
-                    child: Icon(Icons.play_arrow_rounded, size: 34, color: Colors.white),
+                    child: Icon(
+                      Icons.play_arrow_rounded,
+                      size: 34,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
                 Positioned(
@@ -208,7 +231,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
                         color: Colors.black.withValues(alpha: 0.62),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.close_rounded, size: 17, color: Colors.white),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 17,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
                 ),
@@ -221,10 +248,16 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 3,
+                      ),
                       child: Text(
                         _durationLabel(video.durationMs),
-                        style: const TextStyle(fontSize: 11, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -233,7 +266,10 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
             ),
           ),
           const SizedBox(height: 8),
-          const Text('视频朋友圈每条支持 1 个视频', style: TextStyle(fontSize: 11, color: DdColors.textTertiary)),
+          const Text(
+            '视频朋友圈每条支持 1 个视频',
+            style: TextStyle(fontSize: 11, color: DdColors.textTertiary),
+          ),
         ],
       );
     }
@@ -274,7 +310,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
               key: const Key('moment-publish-add-media'),
               onTap: _busy ? null : () => unawaited(_pickImages()),
               child: const Center(
-                child: Icon(Icons.add_rounded, size: 34, color: DdColors.textSecondary),
+                child: Icon(
+                  Icons.add_rounded,
+                  size: 34,
+                  color: DdColors.textSecondary,
+                ),
               ),
             ),
           );
@@ -285,14 +325,20 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(4),
-              child: Image.memory(item.bytes, fit: BoxFit.cover, gaplessPlayback: true),
+              child: Image.memory(
+                item.bytes,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+              ),
             ),
             Positioned(
               right: 4,
               top: 4,
               child: InkWell(
                 key: Key('moment-publish-remove-$index'),
-                onTap: _busy ? null : () => setState(() => _images.removeAt(index)),
+                onTap: _busy
+                    ? null
+                    : () => setState(() => _images.removeAt(index)),
                 child: Container(
                   width: 24,
                   height: 24,
@@ -300,7 +346,11 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
                     color: Colors.black.withValues(alpha: 0.58),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.close_rounded, size: 16, color: Colors.white),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ),
@@ -317,7 +367,18 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
       extensions: ['jpg', 'jpeg', 'png', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
     );
-    final files = await openFiles(acceptedTypeGroups: const [imageGroup]);
+    late final List<XFile> files;
+    try {
+      files = await ddOpenFiles(
+        acceptedTypeGroups: const [imageGroup],
+        source: DdFilePickerSource.photos,
+        maxFiles: 9 - _images.length,
+        maxBytes: maxChatImageSourceBytes,
+      );
+    } on PlatformException catch (error) {
+      _handlePhotoPickerError(error);
+      return;
+    }
     if (files.isEmpty || !mounted) return;
     setState(() {
       _error = null;
@@ -326,6 +387,13 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
     try {
       final remaining = 9 - _images.length;
       for (final file in files.take(remaining)) {
+        final length = await file.length();
+        if (length <= 0) throw const FormatException('不能发表空图片。');
+        if (length > maxChatImageSourceBytes) {
+          throw FormatException(
+            '${file.name.isEmpty ? '图片' : file.name} 超过 96 MiB。',
+          );
+        }
         final bytes = await file.readAsBytes();
         final processed = await processChatImage(bytes);
         if (!mounted) return;
@@ -348,11 +416,27 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
     const videoGroup = XTypeGroup(
       label: '视频',
       extensions: ['mp4', 'webm', 'mov', 'mkv'],
-      mimeTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska'],
+      mimeTypes: [
+        'video/mp4',
+        'video/webm',
+        'video/quicktime',
+        'video/x-matroska',
+      ],
     );
-    final file = await openFile(acceptedTypeGroups: const [videoGroup]);
-    if (file == null || !mounted) return;
-    final length = await file.length();
+    XFile? file;
+    try {
+      file = await ddOpenFile(
+        acceptedTypeGroups: const [videoGroup],
+        source: DdFilePickerSource.photos,
+        maxBytes: 2 * 1024 * 1024 * 1024,
+      );
+    } on PlatformException catch (error) {
+      _handlePhotoPickerError(error);
+      return;
+    }
+    final selectedFile = file;
+    if (selectedFile == null || !mounted) return;
+    final length = await selectedFile.length();
     if (!mounted) return;
     if (length <= 0) {
       setState(() => _error = '不能发表空视频。');
@@ -362,7 +446,7 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
       setState(() => _error = '视频超过 2 GiB，当前实例拒绝上传。');
       return;
     }
-    final mimeType = _videoMimeType(file.name);
+    final mimeType = _videoMimeType(selectedFile.name);
     if (mimeType == null) {
       setState(() => _error = '当前只支持 MP4、WebM、MOV、MKV 视频。');
       return;
@@ -372,12 +456,14 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
       _error = null;
     });
     try {
-      final metadata = await const VideoMediaProbe().probeFile(file);
+      final metadata = await const VideoMediaProbe().probeFile(selectedFile);
       if (!mounted) return;
       setState(() {
         _video = _SelectedMomentVideo(
-          file: file,
-          fileName: file.name.isEmpty ? 'moment-video.mp4' : file.name,
+          file: selectedFile,
+          fileName: selectedFile.name.isEmpty
+              ? 'moment-video.mp4'
+              : selectedFile.name,
           mimeType: mimeType,
           sizeBytes: length,
           posterJpeg: metadata.posterJpeg,
@@ -409,6 +495,24 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 
+  void _handlePhotoPickerError(PlatformException error) {
+    if (!mounted) return;
+    final message = error.message ?? '读取所选媒体失败。';
+    setState(() => _error = message);
+    if (!isDdPhotoLibraryPermissionError(error)) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        action: SnackBarAction(
+          label: '去设置',
+          onPressed: () => unawaited(ddOpenFilePickerAppSettings()),
+        ),
+      ),
+    );
+  }
+
   Future<void> _chooseVisibility() async {
     final choice = await showModalBottomSheet<String>(
       context: context,
@@ -417,9 +521,19 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 8),
-          _visibilityTile(sheetContext, 'ALL_CONTACTS', '公开给所有联系人', Icons.public_rounded),
+          _visibilityTile(
+            sheetContext,
+            'ALL_CONTACTS',
+            '公开给所有联系人',
+            Icons.public_rounded,
+          ),
           _visibilityTile(sheetContext, 'PRIVATE', '部分可见', Icons.group_rounded),
-          _visibilityTile(sheetContext, 'EXCLUDE', '不给谁看', Icons.visibility_off_outlined),
+          _visibilityTile(
+            sheetContext,
+            'EXCLUDE',
+            '不给谁看',
+            Icons.visibility_off_outlined,
+          ),
           const SizedBox(height: 8),
         ],
       ),
@@ -438,18 +552,29 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
           ? _visibilityContacts.map((item) => item.user.id).toSet()
           : const <String>{},
     );
-    if (selected == null || !mounted || (choice == 'PRIVATE' && selected.isEmpty)) return;
+    if (selected == null ||
+        !mounted ||
+        (choice == 'PRIVATE' && selected.isEmpty)) {
+      return;
+    }
     setState(() {
       _visibility = choice;
       _visibilityContacts = selected;
     });
   }
 
-  Widget _visibilityTile(BuildContext sheetContext, String value, String label, IconData icon) {
+  Widget _visibilityTile(
+    BuildContext sheetContext,
+    String value,
+    String label,
+    IconData icon,
+  ) {
     return ListTile(
       leading: Icon(icon),
       title: Text(label),
-      trailing: _visibility == value ? const Icon(Icons.check_rounded, color: DdColors.green) : null,
+      trailing: _visibility == value
+          ? const Icon(Icons.check_rounded, color: DdColors.green)
+          : null,
       onTap: () => Navigator.pop(sheetContext, value),
     );
   }
@@ -460,7 +585,8 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
   }) async {
     try {
       final page = await _authorized(
-        (token) => _contacts.listContacts(origin: widget.origin, accessToken: token),
+        (token) =>
+            _contacts.listContacts(origin: widget.origin, accessToken: token),
       );
       if (!mounted) return null;
       return Navigator.of(context).push<List<ContactItem>>(
@@ -539,7 +665,9 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
           text: _text.text.trim(),
           mediaIds: mediaIds,
           visibility: _visibility,
-          visibilityUserIds: _visibilityContacts.map((item) => item.user.id).toList(growable: false),
+          visibilityUserIds: _visibilityContacts
+              .map((item) => item.user.id)
+              .toList(growable: false),
         ),
       );
       if (!mounted) return;
@@ -575,8 +703,14 @@ class _MomentPublishPageState extends State<MomentPublishPage> {
 
   String _visibilityLabel() {
     return switch (_visibility) {
-      'PRIVATE' => _visibilityContacts.isEmpty ? '部分可见' : '部分可见 · ${_visibilityContacts.length} 人',
-      'EXCLUDE' => _visibilityContacts.isEmpty ? '不给谁看' : '不给 ${_visibilityContacts.length} 人看',
+      'PRIVATE' =>
+        _visibilityContacts.isEmpty
+            ? '部分可见'
+            : '部分可见 · ${_visibilityContacts.length} 人',
+      'EXCLUDE' =>
+        _visibilityContacts.isEmpty
+            ? '不给谁看'
+            : '不给 ${_visibilityContacts.length} 人看',
       _ => '所有联系人',
     };
   }
@@ -624,7 +758,8 @@ class _MomentContactPickerPage extends StatefulWidget {
   final Set<String> initialIds;
 
   @override
-  State<_MomentContactPickerPage> createState() => _MomentContactPickerPageState();
+  State<_MomentContactPickerPage> createState() =>
+      _MomentContactPickerPageState();
 }
 
 class _MomentContactPickerPageState extends State<_MomentContactPickerPage> {
@@ -634,13 +769,18 @@ class _MomentContactPickerPageState extends State<_MomentContactPickerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+        title: Text(
+          widget.title,
+          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        ),
         centerTitle: true,
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(
               context,
-              widget.contacts.where((item) => _selected.contains(item.user.id)).toList(growable: false),
+              widget.contacts
+                  .where((item) => _selected.contains(item.user.id))
+                  .toList(growable: false),
             ),
             child: Text('完成(${_selected.length})'),
           ),
@@ -652,7 +792,9 @@ class _MomentContactPickerPageState extends State<_MomentContactPickerPage> {
           final item = widget.contacts[index];
           return CheckboxListTile(
             value: _selected.contains(item.user.id),
-            title: Text(item.remark.isEmpty ? item.user.displayName : item.remark),
+            title: Text(
+              item.remark.isEmpty ? item.user.displayName : item.remark,
+            ),
             subtitle: Text('@${item.user.handle}'),
             onChanged: (value) => setState(() {
               if (value == true) {

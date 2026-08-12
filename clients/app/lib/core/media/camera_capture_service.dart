@@ -16,7 +16,9 @@ final class CameraCaptureService implements CameraCaptureGateway {
   final TargetPlatform _platform;
 
   @override
-  bool get isSupported => !kIsWeb && _platform == TargetPlatform.android;
+  bool get isSupported =>
+      !kIsWeb &&
+      (_platform == TargetPlatform.android || _platform == TargetPlatform.iOS);
 
   @override
   Future<XFile?> capturePhoto() async {
