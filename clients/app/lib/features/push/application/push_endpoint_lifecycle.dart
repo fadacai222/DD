@@ -121,6 +121,16 @@ final class PushEndpointLifecycle {
     _generation++;
   });
 
+  /// Drops only local ownership after the server has already authoritatively
+  /// revoked the device/session. This must never be used as a substitute for a
+  /// failed normal endpoint DELETE while the session is still valid.
+  Future<void> abandonSessionAfterAuthoritativeRevocation() =>
+      _serialized(() async {
+        _session = null;
+        _registeredProvider = null;
+        _generation++;
+      });
+
   Future<void> _deleteRegisteredEndpoint(PushEndpointSession session) async {
     final provider = _registeredProvider;
     if (provider == null) return;

@@ -1254,6 +1254,8 @@ class _MainShellPageState extends State<MainShellPage>
           session: widget.session,
           onPushPreferencesChanged:
               _pushRegistrationService.handlePreferencesChanged,
+          onCurrentDeviceAuthoritativelyRevoked: _pushRegistrationService
+              .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation,
         ),
       ),
     );

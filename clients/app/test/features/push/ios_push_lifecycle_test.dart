@@ -285,6 +285,71 @@ void main() {
         'delete:access-a:FCM',
       ]);
     });
+
+    test('authoritative abandon clears a failed stale lease without network retry', () async {
+      final generationA = await lifecycle.activateSession(
+        PushEndpointSession(
+          origin: origin,
+          accessToken: 'access-a',
+          userId: 'user-a',
+          deviceId: 'device-a',
+        ),
+      );
+      await lifecycle.registerEndpoint(
+        generation: generationA,
+        endpoint: const PushEndpointRegistration(
+          provider: 'FCM',
+          endpoint: 'token-a',
+          appId: 'firebase-project',
+          environment: 'PRODUCTION',
+        ),
+      );
+      gateway.deleteError = StateError('old access token is revoked');
+
+      await expectLater(lifecycle.deactivateSession(), throwsStateError);
+      expect(lifecycle.session?.userId, 'user-a');
+      expect(lifecycle.generation, generationA);
+
+      final operationsBeforeAbandon = List<String>.from(gateway.operations);
+      await lifecycle.abandonSessionAfterAuthoritativeRevocation();
+      expect(gateway.operations, operationsBeforeAbandon);
+      expect(lifecycle.session, isNull);
+      expect(lifecycle.generation, generationA + 1);
+
+      await lifecycle.registerEndpoint(
+        generation: generationA,
+        endpoint: const PushEndpointRegistration(
+          provider: 'FCM',
+          endpoint: 'late-token-a',
+          appId: 'firebase-project',
+          environment: 'PRODUCTION',
+        ),
+      );
+      gateway.deleteError = null;
+      final generationB = await lifecycle.activateSession(
+        PushEndpointSession(
+          origin: origin,
+          accessToken: 'access-b',
+          userId: 'user-b',
+          deviceId: 'device-b',
+        ),
+      );
+      await lifecycle.registerEndpoint(
+        generation: generationB,
+        endpoint: const PushEndpointRegistration(
+          provider: 'FCM',
+          endpoint: 'token-b',
+          appId: 'firebase-project',
+          environment: 'PRODUCTION',
+        ),
+      );
+
+      expect(gateway.operations.last, 'register:access-b:FCM:token-b');
+      expect(
+        gateway.operations,
+        isNot(contains('register:access-a:FCM:late-token-a')),
+      );
+    });
   });
 }
 
@@ -292,6 +357,7 @@ final class _FakePushEndpointGateway implements PushEndpointGateway {
   final List<String> operations = <String>[];
   final List<PushEndpointRegistration> registered = <PushEndpointRegistration>[];
   final List<String> registerUsers = <String>[];
+  Object? deleteError;
 
   @override
   Future<void> deleteEndpoint({
@@ -300,6 +366,8 @@ final class _FakePushEndpointGateway implements PushEndpointGateway {
     required String provider,
   }) async {
     operations.add('delete:$accessToken:$provider');
+    final error = deleteError;
+    if (error != null) throw error;
   }
 
   @override

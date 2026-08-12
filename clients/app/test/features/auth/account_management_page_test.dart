@@ -135,6 +135,45 @@ void main() {
     },
   );
 
+  testWidgets(
+    'successful current-device revoke runs authoritative push abandon before exit',
+    (tester) async {
+      var authoritativeAbandonCalls = 0;
+      final gateway = _AccountGateway()
+        ..devices = [
+          AccountDevice(
+            id: 'd1',
+            name: 'Windows',
+            platform: 'WINDOWS',
+            appVersion: 'dev',
+            createdAt: DateTime.utc(2026, 8, 9),
+            lastSeenAt: DateTime.utc(2026, 8, 13),
+            current: true,
+            revoked: false,
+          ),
+        ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AccountManagementPage(
+            gateway: gateway,
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            session: _session(),
+            onCurrentDeviceAuthoritativelyRevoked: () async {
+              authoritativeAbandonCalls++;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(TextButton, '退出'));
+      await tester.pumpAndSettle();
+
+      expect(gateway.revokeDeviceCalls, 1);
+      expect(authoritativeAbandonCalls, 1);
+    },
+  );
+
   testWidgets('account settings no longer exposes profile editing fields', (
     tester,
   ) async {
@@ -172,6 +211,7 @@ final class _AccountGateway implements AuthGateway {
   AccountMe me = _me();
   List<AccountDevice> devices = const [];
   int clearRevokedCalls = 0;
+  int revokeDeviceCalls = 0;
 
   @override
   Future<AccountMe> getMe({
@@ -295,7 +335,9 @@ final class _AccountGateway implements AuthGateway {
     required Uri origin,
     required String accessToken,
     required String deviceId,
-  }) async {}
+  }) async {
+    revokeDeviceCalls++;
+  }
   @override
   Future<int> clearRevokedDevices({
     required Uri origin,

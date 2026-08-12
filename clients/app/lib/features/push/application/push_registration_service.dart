@@ -38,7 +38,20 @@ Future<void> ddFirebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
 }
 
-final class PushRegistrationService {
+abstract interface class PushAccountLeaseController {
+  Future<void> start({
+    required Uri origin,
+    required String accessToken,
+    required String userId,
+    required String deviceId,
+  });
+
+  Future<void> releaseCurrentEndpoint();
+
+  Future<void> abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
+}
+
+final class PushRegistrationService implements PushAccountLeaseController {
   PushRegistrationService({
     PushApiClient? apiClient,
     PushMessagingAdapter? messaging,
@@ -150,6 +163,7 @@ final class PushRegistrationService {
     }
   }
 
+  @override
   Future<void> start({
     required Uri origin,
     required String accessToken,
@@ -170,6 +184,7 @@ final class PushRegistrationService {
       _userId = userId.trim();
       _sessionGeneration = generation;
       await _ensureRuntime();
+      await _bindTokenRefreshForGeneration(generation);
       await _reconcile(allowPermissionPrompt: true);
       await _consumeInitialMessage();
     } catch (error, stackTrace) {
@@ -269,13 +284,28 @@ final class PushRegistrationService {
   /// Releases the current account's endpoint before account switch/logout.
   /// If this fails, the lifecycle intentionally retains ownership state so a
   /// later activation can retry instead of silently binding the token to B.
+  @override
   Future<void> releaseCurrentEndpoint() async {
     await _endpointLifecycle.deactivateSession();
+    await _cancelTokenRefreshBinding();
+    _clearActiveLeaseState();
+  }
+
+  /// Local-only escape hatch for a session/device the server has already
+  /// revoked. Callers must not use this for ordinary network/API failures.
+  @override
+  Future<void> abandonCurrentEndpointLeaseAfterAuthoritativeRevocation() async {
+    await _endpointLifecycle.abandonSessionAfterAuthoritativeRevocation();
+    await _cancelTokenRefreshBinding();
+    _clearActiveLeaseState();
+  }
+
+  void _clearActiveLeaseState() {
     _origin = null;
     _accessToken = null;
     _userId = null;
-    _sessionGeneration = _endpointLifecycle.generation;
     _preferences = null;
+    _sessionGeneration = _endpointLifecycle.generation;
   }
 
   Future<void> _ensureRuntime() async {
@@ -289,10 +319,6 @@ final class PushRegistrationService {
     }
 
     if (_isIos && _useDirectApns) {
-      _nativeTokenSubscription ??= _iosNative.apnsTokenRefresh.listen(
-        (token) => unawaited(_registerDirectApnsToken(token)),
-        onError: (_) {},
-      );
       _nativeOpenedSubscription ??= _iosNative.notificationTaps.listen(
         _emitOpened,
         onError: (_) {},
@@ -324,19 +350,37 @@ final class PushRegistrationService {
 
   void _bindMessagingStreams() {
     if (!_messagingReady) return;
-    _tokenSubscription ??= _messaging.tokenRefresh.listen((token) {
-      if (_useDirectApns) {
-        unawaited(_registerCurrentTokens(_sessionGeneration));
-      } else {
-        unawaited(_registerFcmToken(token, _sessionGeneration));
-      }
-    });
     _foregroundSubscription ??= _messaging.foregroundMessages.listen(
       _handleForegroundMessage,
     );
     _openedSubscription ??= _messaging.openedMessages.listen(
       (message) => _emitOpened(_mergedMessageData(message)),
     );
+  }
+
+  Future<void> _bindTokenRefreshForGeneration(int generation) async {
+    await _cancelTokenRefreshBinding();
+    if (_useDirectApns) {
+      _nativeTokenSubscription = _iosNative.apnsTokenRefresh.listen(
+        (token) => unawaited(
+          _registerDirectApnsToken(token, generation: generation),
+        ),
+        onError: (_) {},
+      );
+      return;
+    }
+    await _ensureMessaging();
+    _tokenSubscription = _messaging.tokenRefresh.listen(
+      (token) => unawaited(_registerFcmToken(token, generation)),
+      onError: (_) {},
+    );
+  }
+
+  Future<void> _cancelTokenRefreshBinding() async {
+    await _tokenSubscription?.cancel();
+    await _nativeTokenSubscription?.cancel();
+    _tokenSubscription = null;
+    _nativeTokenSubscription = null;
   }
 
   Future<void> _consumeInitialMessage() async {

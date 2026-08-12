@@ -21,12 +21,14 @@ class AccountManagementPage extends StatefulWidget {
     required this.origin,
     required this.session,
     this.onPushPreferencesChanged,
+    this.onCurrentDeviceAuthoritativelyRevoked,
   });
 
   final AuthGateway gateway;
   final Uri origin;
   final AuthSession session;
   final Future<void> Function(PushPreferences preferences)? onPushPreferencesChanged;
+  final Future<void> Function()? onCurrentDeviceAuthoritativelyRevoked;
 
   @override
   State<AccountManagementPage> createState() => _AccountManagementPageState();
@@ -741,6 +743,9 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       accessToken: _accessToken,
       deviceId: device.id,
     );
+    if (device.current) {
+      await widget.onCurrentDeviceAuthoritativelyRevoked?.call();
+    }
     if (!mounted) return;
     if (device.current) {
       Navigator.of(context).pop(true);

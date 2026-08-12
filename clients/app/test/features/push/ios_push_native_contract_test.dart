@@ -43,13 +43,17 @@ void main() {
     expect(authApi, contains("TargetPlatform.android => 'ANDROID'"));
   });
 
-  test('AI1-owned public iOS files are still required to wire the service', () {
+  test('native Push service keeps the shared registrar extension contract', () {
+    final service = File(
+      'ios/Runner/Services/PushNotificationService.swift',
+    ).readAsStringSync();
     final registrar = File(
       'ios/Runner/Services/NativeServiceRegistrar.swift',
     ).readAsStringSync();
-    final appDelegate = File('ios/Runner/AppDelegate.swift').readAsStringSync();
 
-    expect(registrar, isNot(contains('PushNotificationService.self')));
-    expect(appDelegate, isNot(contains('PushNotificationService.shared')));
+    expect(service, contains('DDNativeService'));
+    expect(service, contains('static let pluginKey'));
+    expect(registrar, contains('protocol DDNativeService'));
+    expect(registrar, contains('register<Service: DDNativeService>'));
   });
 }
