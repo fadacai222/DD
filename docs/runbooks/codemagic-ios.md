@@ -1,6 +1,6 @@
 # Codemagic iOS 云构建 / 签名 / TestFlight
 
-> 当前状态：`U30 LOCAL-AUTO-VERIFIED / CONFIGURED / SECRET-HUMAN-REQUIRED / CLOUD-PENDING`（2026-08-13）
+> 当前状态：`U30 LOCAL-AUTO-VERIFIED / CODEMAGIC-FIRST-RUN / CLOUD-RETRY-PENDING / SECRET-HUMAN-REQUIRED`（2026-08-13）
 
 仓库根目录 `codemagic.yaml` 提供两个独立工作流。`ios-unsigned-validation` 不需要任何 Apple Secret，使用 Flutter 3.44.9、Xcode 26.6 和 Mac mini M2 执行依赖解析、静态分析、Flutter 测试、`flutter build ios --release --no-codesign`，并用 `xcodebuild archive ... CODE_SIGNING_ALLOWED=NO` 验证 Release archive 工程结构；`ios-signed-release` 只用于正式 tag，由 U25 GitHub Release DAG 通过 Codemagic API 触发并生成 `DD-vX.Y.Z-ios-arm64.ipa`。
 
@@ -8,14 +8,14 @@
 
 `ios-unsigned-validation` 保留为安全的手动/云端编译验证：
 
-1. 将仓库发布到受控的 GitHub、GitLab 或 Bitbucket 私有仓库；当前本地仓库尚未配置 Git 远端。
+1. 当前受控私有远端为 `fadacai222/DD`，默认分支 `master`；Codemagic 已能拉取该仓库。
 2. 登录 Codemagic，选择 **Add application**，授权只访问目标私有仓库。
 3. 选择该仓库和 Flutter 项目类型，让 Codemagic 从仓库根目录读取 `codemagic.yaml`。
 4. 手动运行 **DD iOS unsigned validation**。
 5. 云端顺序应为：`flutter pub get` → `dart analyze --fatal-infos` → `flutter test` → `flutter build ios --release --no-codesign` → unsigned `xcodebuild archive`。
 6. 只有上述 Release compile + archive 都成功后，才可把 iOS Release 工程编译写为 `AUTO-VERIFIED`；这仍不等于签名/安装/TestFlight/真机通过。
 
-它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。只有 Codemagic macOS 日志真实成功后，才能把该次云编译标记为 `AUTO-VERIFIED`；当前仍是 `CLOUD-PENDING`。
+它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 第一次真实 Mac mini M2 云构建已启动，并在 `Analyze Flutter client` 阶段暴露真实环境差异：Xcode/SwiftPM 生成的 `build/ios/SourcePackages/livekit_client-2.10.0/...` 被根级 `dart analyze --fatal-infos` 当作应用源码扫描，第三方包的 info 级诊断导致退出码 3。修复仅在 `analysis_options.yaml` 排除生成目录 `build/**`，不降低 DD 自有源码 lint 严格度，也不修改 LiveKit 或业务功能。该修复仍需下一次 Codemagic 重跑验证；在 Release compile + archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
 
 ## 2. Codemagic signing contract
 
