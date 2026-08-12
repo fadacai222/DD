@@ -1,6 +1,6 @@
 # Codemagic iOS 云构建 / 签名 / TestFlight
 
-> 当前状态：`CONFIGURED / SECRET-HUMAN-REQUIRED / CLOUD-PENDING`（2026-08-12）
+> 当前状态：`U30 LOCAL-AUTO-VERIFIED / CONFIGURED / SECRET-HUMAN-REQUIRED / CLOUD-PENDING`（2026-08-13）
 
 仓库根目录 `codemagic.yaml` 提供两个独立工作流。`ios-unsigned-validation` 不需要任何 Apple Secret，使用 Flutter 3.44.9、Xcode 26.6 和 Mac mini M2 执行依赖解析、静态分析、Flutter 测试、`flutter build ios --release --no-codesign`，并用 `xcodebuild archive ... CODE_SIGNING_ALLOWED=NO` 验证 Release archive 工程结构；`ios-signed-release` 只用于正式 tag，由 U25 GitHub Release DAG 通过 Codemagic API 触发并生成 `DD-vX.Y.Z-ios-arm64.ipa`。
 

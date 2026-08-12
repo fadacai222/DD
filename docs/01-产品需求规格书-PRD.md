@@ -25,7 +25,7 @@ DD 是一个可自托管、多端、面向真实日常使用的即时通讯产�
 
 ### 普通用户
 
-注册、登录、维护资料、添加联系人、聊天、发媒体、通话、群聊、朋友圈与二维码；后续增加完整后台 Push 与 E2EE。
+注册、登录、维护资料、添加联系人、聊天、发媒体、通话、群聊、朋友圈、二维码与后台 Push。Production E2EE 已明确移出 V1，只保留后续重新立项空间。
 
 ### 群主/管理员
 
@@ -33,7 +33,7 @@ DD 是一个可自托管、多端、面向真实日常使用的即时通讯产�
 
 ### 实例管理员
 
-未来维护注册策略、用户状态、举报、审计、容量、邮件、对象存储、RTC 等实例配置。
+通过独立 Admin 身份体系维护用户治理、举报、审计等实例管理能力；Admin TOTP MFA、RBAC、CSRF 和 Governance 已进入正式代码。容量、邮件、对象存储、RTC 等运维信息继续由 Admin/运维接口与生产监控体系逐步收口。
 
 ### 部署者
 
@@ -166,9 +166,9 @@ DD 是一个可自托管、多端、面向真实日常使用的即时通讯产�
 - 客户端可压缩普通手机大图，不要求用户手工缩图。
 - 服务端仍必须限制最终载荷和像素，防内存 DoS。
 
-### FR-USER-005 数据权利
+### FR-USER-005 数据权利（IMPLEMENTED + AUTO-VERIFIED）
 
-未来支持：数据导出、注销、删除窗口和状态可见。
+当前已实现数据导出申请/状态/短时授权下载/过期，以及账号注销申请、冷静期、取消、执行/失败状态、Token/Device/Push 撤销、共享数据匿名化与对象存储清理生命周期。真实用户产品流程仍需生产/真人验收。
 
 ---
 
@@ -480,9 +480,9 @@ reserve
 
 ### FR-NOTIFY-003 真正离线 Push
 
-当前本地通知只在进程仍能收到实时事件时有效。P10 已进入实现阶段：`000022_push.up.sql` 已定义用户通知偏好、设备 Push endpoint 与 durable push job，但 Service/API/Worker/provider/client token 注册尚未形成闭环。
+P10 已形成正式离线 Push 主链：用户通知偏好、设备 endpoint、durable push job、Service/API/Worker、FCM/APNs/UnifiedPush provider 与 Flutter token lifecycle 均已实现并自动验证。Push 仍只负责提醒/唤醒，业务事实由 Sync/API 获取；真实 Android/iPhone delivery/click 继续属于真人设备验收。
 
-最终必须实现：
+正式能力包括：
 
 - Android FCM；
 - 可选 UnifiedPush；
@@ -573,7 +573,7 @@ TIMEOUT
 
 ---
 
-## 4.15 管理后台（PLANNED）
+## 4.15 管理后台（IMPLEMENTED + AUTO-VERIFIED / HUMAN-PENDING）
 
 - 管理员认证 + 强制 MFA。
 - RBAC。
@@ -585,11 +585,11 @@ TIMEOUT
 - 容量与系统指标。
 - 数据导出/注销状态。
 
-当前 `admin/` 只有 React/Vite 工程壳与基础实例页，不能当作上述能力已完成。
+当前已落地独立 Admin identity/session、独立 `ADMIN_SECURITY_SECRET`、TOTP MFA、Recovery Code、RBAC、CSRF、用户治理、举报与审计；普通用户 Bearer Token 不能进入 Admin API。真实生产管理员初始化、恢复码保管和完整运营流程仍需真人验收。
 
 ---
 
-## 4.16 E2EE（PLANNED）
+## 4.16 E2EE（OUT-OF-SCOPE FOR V1）
 
 - 不自研加密协议。
 - 设备级身份密钥。
@@ -599,7 +599,7 @@ TIMEOUT
 - 安全码/设备验证。
 - E2EE 开启后重新设计搜索、举报、备份、通知预览边界。
 
-未经互操作测试、安全向量与独立评审，UI 不得显示“端到端加密已保障”。
+V1 明确不提供 Production E2EE；现有 `crypto/e2ee_poc` 仅是历史技术 PoC。未来若重新立项，仍必须满足上述协议、多设备、附件、互操作与独立安全评审要求；未经这些证据，UI 不得显示“端到端加密已保障”。
 
 ---
 

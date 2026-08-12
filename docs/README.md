@@ -1,6 +1,6 @@
 # DD 文档中心｜开发唯一入口
 
-> 更新时间：2026-08-12（需求0812 继续收口：新增真多账号管理、重排“我的/隐私与设备”设置层级、发现页表情管理入口、消息 HTTP/HTTPS 蓝色链接 + 安全预览 + 系统浏览器打开，并补齐 Windows 全局 Esc 返回上一层；同时保留 Telegram Sticker Pack 动态/视频格式、Android 大视频流式选择、Push/朋友圈等既有修复；真人待复测）
+> 更新时间：2026-08-13（U30 iOS 五支线总集成 + 全仓 Markdown 状态复核；历史真人验收仍按原状态保留）
 >
 > 适用仓库：`C:\Users\admin\Desktop\复刻微信`
 >
@@ -40,9 +40,9 @@
 
 ---
 
-## 3. 2026-08-12 当前一句话状态
+## 3. 2026-08-13 当前一句话状态
 
-DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-12 本轮已重新通过 ASCII 短路径 `dart analyze --fatal-infos`（0 issue）、Flutter 全量测试 361 PASS / 5 SKIP（真实视频样本环境变量未提供）和服务端 `go test ./...`；此前 `MainShellPage` 缺少 `StickerPanelResult` 可见类型导致的 analyzer `KNOWN-FAILURE` 已修复。U25 正式 Release provenance 代码链也已补齐：SemVer/tag/changelog、exact-SHA CI+Secret Scan、Web/Android/Windows/iOS/Server artifact、SHA-256、SPDX SBOM、Trivy、Sigstore/GitHub Attestation、原生 production signing Secret contract、Environment approval 与 rollback retention。iOS signed release 已纳入统一 DAG，但真实 Apple/Codemagic Secret 与云端 signed/TestFlight 运行仍是 `SECRET/HUMAN/CLOUD-PENDING`。**这仍不等于产品 release-green**：真实 Android/Windows/iOS 生产签名 Secret、GitHub Environment reviewer、真实设备/视觉/公网网络等仍需项目所有者或真人环境验收。
+DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 五条并行支线已经在独立总集成 worktree 合流：iOS 15.0 Platform Foundation、Push/APNs/Auth lease、Media/File/Camera/QR、LiveKit/CallKit/Audio 和 Release/Codemagic 已完成公共 Xcode Sources/`NativeServiceRegistrar`/AppDelegate 接线。本地总门禁为 `dart analyze --fatal-infos` 0 issue、iOS/Push/Media/QR/Calls 46/46、Flutter 447 PASS / 5 SKIP、Go test/vet PASS、PostgreSQL 18.4 的 33 migrations + Auth/Push integration PASS、Release/native scan pipeline 与 full-history Secret Scan PASS。**这仍不等于产品 release-green**：真实 macOS/Xcode compile/archive、Apple/Firebase Secret、APNs/TestFlight/iPhone/iPad，以及 Android/Windows 历史真人回归、公网网络、生产签名与 Environment reviewer 仍需项目所有者或真人环境验收。
 
 当前功能主体：
 
@@ -55,7 +55,7 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-12 本轮�
 - **P5 Sticker/Media 本轮收口**：自定义 Sticker 支持 PNG/WebP/GIF/MP4/WebM（单项 ≤64 MiB），从 Telegram Pack/已收到消息加入个人库时同时允许 TGS；Telegram Pack Relay 现完整覆盖静态 WebP/PNG、动态 TGS 与视频 WebM，TGS 由 Flutter Lottie gzip decoder 循环渲染，WebM 复用静音循环视频 Sticker 播放链；失败/取消/重试上传会立即释放 reservation；2026-08-12 TG 表情包整包分享进一步改为正式 `STICKER_PACK` 消息：服务端强制取该包排序第一项作为 PRIMARY 预览媒体并生成 `dd://stickers/telegram/...` 导入元数据，接收方即使尚未添加该包也能看到真实首个表情缩略图，转发后仍保留缩略图与导入能力；同时保留面板 4 秒静默账号同步和真实 16 MiB GIF 流式回归，并修复“视频自定义表情刚上传可播、关闭再打开候选格永久转圈”的 BottomSheet 入场可见性回归。视频 Sticker 现不再只依赖临时签名 URL：首次加载会进入 DD 的 `VideoFileCache` 持久缓存，聊天气泡、候选格和分享预览跨面板复用本地文件；缓存受统一容量预算/LRU 和 30 天年龄约束。地址解析/播放器打开超过 15 秒则进入可重试失败态并记录客户端日志，不再无限转圈。
 - **需求0812 性能/稳定性收口**：性能页提供节能模式、减少动画、视频自动预览与硬件加速视频解码；本轮已把 `外观 / 聊天背景 / 媒体与缓存 / 性能 / 传输中心` 从内层设置迁移到“我的”外层，并把原“账号、隐私与设备”收敛为“隐私与设备”。2026-08-12 Android 真机再次复现大视频闪退后，ADB Logcat 已把根因定位到文件选择返回阶段 Java 堆 OOM：约 128 MiB / 503 MiB 样本分别触发同量级整块内存申请，而进程堆增长上限约 256 MiB。聊天相册、文件和自定义表情 Android 选择入口现改为 DD 原生 `ACTION_OPEN_DOCUMENT`，在后台以 64 KiB 缓冲流式复制到 App cache，仅向 Dart 返回路径/元数据；后续继续使用原生缩放 poster + `uploadStream`，不再在选择阶段把整文件 materialize 成 `byte[]`。新增大文件选择合同测试通过、相关 Dart analyzer 0 issue，仓库标准 Android Debug APK 已重新构建成功；状态为 `FIXED-PENDING-RETEST`，仍需真人用同一 100 MiB/500 MiB 级样本复测。Telegram 表情包分享计时器用例已改为有界 pump，`text_chat_page_test.dart` 当前 39/39 全绿。
 - **需求0812 账号/表情/链接新增**：删除独立“刷新登录会话 / 切换账号”入口，新增“账号管理”；Native 客户端按 `origin + userId` 在安全存储中保存最多 8 个独立 Refresh Token 槽位，已有有效会话可直接切换，失效槽位回落密码登录，“添加账号”进入登录页但不撤销原账号。发现页“更多能力”替换为“表情”，复用现有自定义 Sticker + Telegram Pack 管理链。文本消息中的 HTTP/HTTPS URL 现为蓝色可点击实体，每条消息首链接可加载服务端 `/api/v1/link-preview` 元数据卡，点击文字或卡片交给系统外部浏览器/处理器；服务端预览强制鉴权并拦截私网/回环/链路本地/危险端口/不安全重定向，限制 5 秒、512 KiB HTML。Windows 窗口层新增全局 `Esc` 返回上一层：局部 Escape 处理优先，未被消费时根 Navigator `maybePop`，主导航根层不退出/不缩托盘。Native 多账号、链接 UI/客户端和服务器均有自动回归；Web 不持久化多份 Refresh Token，因此直接切换会话仍按 Web 安全模型回落重新认证。
-- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 与 P13 U20-U25 Production Self-host/Release 主链已完成代码闭环。P13 剩余的是 `SECRET/HUMAN-PENDING`：真实原生签名证书与 GitHub production approval policy、公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等；P14 已生成 iOS Runner，并配置 Codemagic 无签名 compile validation、正式 signed IPA/App Store Connect 上传合同以及 U25 Release 集成；但尚未产生真实 macOS 云编译、Apple 签名/TestFlight processing 或真机验收证据，正式交付仍未完成。
+- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 与 P13 U20-U25 Production Self-host/Release 主链已完成代码闭环。P13 剩余的是 `SECRET/HUMAN-PENDING`：真实原生签名证书与 GitHub production approval policy、公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等；P14 iOS U30 已完成本地总集成与自动门禁，含 iOS 15.0 Runner、Push/Auth lease、Media/QR、Calls/CallKit 和 native service 公共接线；下一步是 Codemagic/macOS Xcode、Apple/Firebase Secret、App Store Connect/TestFlight 与真实 iPhone/iPad。macOS U31 仍为 `PLANNED`。
 
 当前不能宣称 Stable 1.0，也不能把“今晚能运行开发环境”写成“商业上线完成”。
 
@@ -154,11 +154,11 @@ POST   /api/v1/qr-login/consume
 
 ---
 
-## 6. 2026-08-11 自动门禁事实
+## 6. 当前自动门禁事实（更新至 2026-08-13）
 
 ### Server
 
-2026-08-12 总集成当前 `go test ./...`、`go vet ./...` 已全量通过；Admin/Data Rights/Moments/QR/Push 均在包含 `000031/000032/000033` 的 PostgreSQL 18.4 最终 schema 上真实运行通过，QR `000021` 与 Moment Activity `000028` migration roundtrip 通过，未以 SKIP 冒充数据库实测。OpenAPI runtime 合同与 Redocly `recommended-strict` 全绿；U06 full-history Gitleaks 在 Git worktree 中真实验证 61/61 commits，Git fatal/0 commits 假绿已被阻断。
+`go test ./...`、`go vet ./...` 当前全量通过；Admin/Data Rights/Moments/QR/Push 均已有真实 PostgreSQL 18.4 integration 证据。U30 总集成又在 33 migrations 的当前 schema 上实跑 Auth 与 Push lifecycle PASS；Flutter analyzer 0 issue、iOS/Push/Media/QR/Calls 定向 46/46、Flutter 全量 447 PASS / 5 SKIP。OpenAPI/runtime、Release/native scan 与 YAML 门禁全绿；最终 U30 integration HEAD 的 full-history Gitleaks 在 Git worktree 中真实验证 96/96 commits，Git fatal/0 commits 假绿和 injected credential detector self-test 均被验证。
 
 ### P6 Group
 
@@ -255,6 +255,7 @@ Push 的设备级退出项仍是：真实 Android 设备安装后取得 FCM toke
 | `15-当前实现状态与开发路线.md` | **每轮开发必读：真实状态、阻断、下一步。** |
 | `16-2026-08-11-全量文档同步记录.md` | 2026-08-11 从 P5/R16 旧视角追平到 P6-P10 的历史同步记录。 |
 | `17-2026-08-12-代码事实同步记录.md` | 2026-08-12 再次按当前 worktree 清理 P9/P10/Sticker/性能/CI 等文档漂移。 |
+| `18-2026-08-13-U30总集成与全量文档同步记录.md` | 2026-08-13 U30 iOS 总集成、自动证据与全仓 Markdown 漂移清理记录。 |
 | `decisions/*.md` | 已接受/废弃架构决策；P9/P10 新增 ADR-010/ADR-011。 |
 
 ---
@@ -264,11 +265,12 @@ Push 的设备级退出项仍是：真实 Android 设备安装后取得 FCM toke
 当前不再从 P6 重新开始。开发主线是：
 
 ```text
-完成 P9 真人扫码/跨设备验收
-→ 完成 P10 Push
-→ 配置 U25 production signing Secret / GitHub Environment reviewer policy
+Stop-the-line 修复当前真人回归新问题
+→ U30 iOS Codemagic/Xcode + Apple/Firebase Secret + TestFlight/iPhone 验收
+→ 配置 U25 Android/Windows/iOS production signing Secret / GitHub Environment reviewer policy
 → P13 公网 TURN / DR / Observability 真人生产验收
-→ P14 iOS/macOS 产品交付
+→ U31 macOS 正式客户端
+→ U16 普通用户 MFA / U17 Passkey（非当前 V1 主链阻断）
 ```
 
 P6/P7/P8 同时保留真人多端/弱网/规模验收债务，但不能把已实现模块重新写回 `PLANNED`。

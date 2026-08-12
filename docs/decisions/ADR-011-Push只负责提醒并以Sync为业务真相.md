@@ -2,7 +2,7 @@
 
 ## 状态
 
-Accepted（P10 implementation in progress）
+Accepted（P10 implemented；真实 provider/device delivery 仍 HUMAN-PENDING）
 
 ## 日期
 
@@ -104,18 +104,18 @@ Push consumer 放 `server/cmd/worker` 或后续独立 Worker deployment，不阻
 
 ## 当前实现状态
 
-截至 2026-08-11：
+截至 2026-08-13，决策已经完整落入正式主链：
 
 ```text
-000022_push.up.sql exists
-000022_push.down.sql exists
-Push domain/API missing
-Push Worker consumer missing
-FCM/APNs/UnifiedPush adapter missing
-Flutter token registration missing
+000022_push + 后续 Push migrations
+Push domain/API implemented
+Durable Push Worker implemented
+FCM/APNs/UnifiedPush providers implemented
+Flutter Android/iOS token + preference lifecycle implemented
+U08 provider operations / metrics / invalid-endpoint lifecycle implemented
 ```
 
-up/down migration 已配对，但真实 PostgreSQL roundtrip、Push domain/API/Worker/provider/client token registration 仍未完成。因此架构决策已接受，P10 产品能力仍为 `IN-PROGRESS`。
+PostgreSQL Push lifecycle/worker integration、provider mock/retry/invalid-token 与 U30 iOS Push/Auth lease 均已有自动证据。当前剩余的是 Android/iPhone 真实 provider delivery/click、credential rotation 和生产 Secret/设备验收，不再把 P10 写回 `IN-PROGRESS`。
 
 ## 与 E2EE
 
