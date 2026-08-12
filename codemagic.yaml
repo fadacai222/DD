@@ -131,17 +131,20 @@ workflows:
       - name: Capture iOS dependency evidence
         script: |
           set -euo pipefail
-          mkdir -p release ios-dependency-evidence
-          dart pub deps --json > "ios-dependency-evidence/dart-pub-deps.json"
-          cp pubspec.lock "ios-dependency-evidence/pubspec.lock"
-          find ios -type f \( -name Package.swift -o -name Package.resolved -o -name Podfile.lock \) -print | sort > ios-dependency-evidence/files.txt
+          rm -rf ios-dependency-evidence
+          mkdir -p release ios-dependency-evidence/dart ios-dependency-evidence/native
+          dart pub deps --json > "ios-dependency-evidence/dart/dart-pub-deps.json"
+          cp pubspec.lock "ios-dependency-evidence/dart/pubspec.lock"
+          find ios -type f \( -name Package.swift -o -name Package.resolved -o -name Podfile.lock \) -print | sort > ios-dependency-evidence/native-files.txt
           while IFS= read -r file; do
             [ -n "$file" ] || continue
             test -s "$file" || { echo "iOS native dependency manifest is empty: $file" >&2; exit 1; }
-            dest="ios-dependency-evidence/${file//\//__}"
+            dest="ios-dependency-evidence/native/$file"
+            mkdir -p "$(dirname "$dest")"
             cp "$file" "$dest"
-          done < ios-dependency-evidence/files.txt
-          test -s ios-dependency-evidence/files.txt || { echo 'no iOS native dependency manifest was generated' >&2; exit 1; }
+          done < ios-dependency-evidence/native-files.txt
+          python ../../scripts/release/ios_native_scan_validator.py evidence \
+            --root ios-dependency-evidence/native
           ditto -c -k --sequesterRsrc --keepParent ios-dependency-evidence "release/DD-${DD_RELEASE_TAG}-ios-native-deps.zip"
           test -s "release/DD-${DD_RELEASE_TAG}-ios-native-deps.zip" || { echo 'iOS native dependency evidence archive is empty' >&2; exit 1; }
       - name: Scan resolved iOS dependencies before App Store Connect upload
@@ -183,18 +186,26 @@ workflows:
           tar -xzf "$TOOL_ROOT/$TRIVY_ARCHIVE" -C "$TOOL_ROOT" trivy
           test -x "$TOOL_ROOT/trivy" || { echo 'pinned Trivy binary is unavailable' >&2; exit 1; }
 
-          "$TOOL_ROOT/syft" scan dir:ios-dependency-evidence \
+          python ../../scripts/release/ios_native_scan_validator.py evidence \
+            --root ios-dependency-evidence/native
+          "$TOOL_ROOT/syft" scan dir:ios-dependency-evidence/native \
             --output "spdx-json=release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json"
           test -s "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json" || { echo 'Codemagic resolved iOS SPDX SBOM is missing or empty' >&2; exit 1; }
+          python ../../scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.spdx.json"
           "$TOOL_ROOT/trivy" fs \
             --scanners vuln \
+            --pkg-types library \
+            --list-all-pkgs \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             --no-progress \
             --format json \
             --output "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json" \
-            ios-dependency-evidence
+            ios-dependency-evidence/native
           test -s "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json" || { echo 'Codemagic resolved iOS Trivy report is missing or empty' >&2; exit 1; }
+          python ../../scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${DD_RELEASE_TAG}-ios-codemagic-resolved.trivy.json"
     artifacts:
       - clients/app/release/DD-*-ios-arm64.ipa
       - clients/app/release/DD-*-ios-native-deps.zip

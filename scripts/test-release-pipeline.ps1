@@ -6,6 +6,7 @@ $WorkflowPath = Join-Path $Root '.github/workflows/release.yml'
 $ContractPath = Join-Path $Root 'scripts/release/release_contract.py'
 $RetentionPath = Join-Path $Root 'release/retention-policy.json'
 $CodemagicPath = Join-Path $Root 'codemagic.yaml'
+$IosNativeValidatorTestPath = Join-Path $Root 'scripts/release/test_ios_native_scan_validator.py'
 
 function Assert-True {
     param(
@@ -62,9 +63,9 @@ $Codemagic = Get-Content -LiteralPath $CodemagicPath -Raw -Encoding UTF8
 $ReleaseTestRoot = Join-Path $Root 'scripts/release'
 Push-Location $ReleaseTestRoot
 try {
-    & python -m unittest -v test_release_contract.py
+    & python -m unittest -v test_release_contract.py test_ios_native_scan_validator.py
     if ($LASTEXITCODE -ne 0) {
-        throw "Release contract unit tests failed with exit code $LASTEXITCODE."
+        throw "Release/native scan contract unit tests failed with exit code $LASTEXITCODE."
     }
 }
 finally {
@@ -106,6 +107,12 @@ Assert-Match $Codemagic "TRIVY_CHECKSUMS_SHA256='[0-9a-f]{64}'" 'Codemagic iOS T
 Assert-Match $Codemagic 'shasum -a 256 -c' 'Codemagic iOS scanner downloads must be checksum-verified.'
 Assert-Match $Codemagic '--severity HIGH,CRITICAL' 'Codemagic resolved iOS native dependency scan must gate HIGH/CRITICAL findings.'
 Assert-Match $Codemagic '--exit-code 1' 'Codemagic resolved iOS native dependency scan must fail closed.'
+Assert-Match $Codemagic '--list-all-pkgs' 'Codemagic Trivy native scan must explicitly list all detected packages.'
+Assert-Match $Codemagic 'ios-dependency-evidence/native/\$file' 'Codemagic native evidence must preserve each original relative path/basename.'
+Assert-True ($Codemagic -notmatch '\$\{file//\\//__\}') 'Codemagic native evidence must not flatten lockfile paths.'
+Assert-Match $Codemagic 'ios_native_scan_validator\.py evidence' 'Codemagic must fail closed when no resolved native lockfile exists.'
+Assert-Match $Codemagic 'ios_native_scan_validator\.py trivy' 'Codemagic must validate native Trivy target/package recognition.'
+Assert-Match $Codemagic 'ios_native_scan_validator\.py spdx' 'Codemagic must validate non-empty native SPDX packages.'
 Assert-Match $Codemagic 'ios-codemagic-resolved\.spdx\.json' 'Codemagic resolved iOS SPDX SBOM artifact is missing.'
 Assert-Match $Codemagic 'ios-codemagic-resolved\.trivy\.json' 'Codemagic resolved iOS Trivy report artifact is missing.'
 $IosScanIndex = $Codemagic.IndexOf('- name: Scan resolved iOS dependencies before App Store Connect upload')
@@ -118,6 +125,11 @@ Assert-Match $Workflow 'ios-codemagic-resolved\.spdx\.json' 'Codemagic pre-publi
 Assert-Match $Workflow 'ios-codemagic-resolved\.trivy\.json' 'Codemagic pre-publish iOS Trivy report must enter the GitHub release bundle.'
 Assert-Match $Workflow 'ios-github-verified\.spdx\.json' 'GitHub-verified iOS SPDX SBOM is missing.'
 Assert-Match $Workflow 'ios-github-verified\.trivy\.json' 'GitHub-verified iOS Trivy report is missing.'
+Assert-Match $Workflow '--list-all-pkgs' 'GitHub iOS secondary Trivy scan must explicitly list all detected packages.'
+Assert-Match $Workflow 'ios-dependency-evidence/native' 'GitHub iOS secondary scan must target native-only evidence.'
+Assert-Match $Workflow 'ios_native_scan_validator\.py evidence' 'GitHub iOS secondary validation must require resolved native lockfiles.'
+Assert-Match $Workflow 'ios_native_scan_validator\.py trivy' 'GitHub iOS secondary validation must verify Trivy native packages.'
+Assert-Match $Workflow 'ios_native_scan_validator\.py spdx' 'GitHub iOS secondary validation must verify SPDX packages.'
 Assert-Match $Workflow '\$signtool\.FullName verify' 'Windows Authenticode verification is missing.'
 Assert-Match $Workflow 'apksigner.*verify' 'Android APK signature verification is missing.'
 Assert-Match $Workflow '--severity HIGH,CRITICAL' 'HIGH/CRITICAL vulnerability gate is missing.'

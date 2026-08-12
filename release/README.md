@@ -80,7 +80,7 @@ DD_CODEMAGIC_APP_ID
 
 The workflow writes decoded JKS/PFX material only to the hosted runner temporary directory. Nothing is written to the repository. Missing signing material, malformed fingerprints, or signer mismatch is a hard failure. Formal Android builds explicitly set `DD_ANDROID_REQUIRE_PROD_SIGNING=true`; therefore the debug signing fallback retained for ordinary CI smoke builds cannot be used by the formal release job.
 
-iOS uses Codemagic workflow `ios-signed-release`. Apple integration `DD_APP_STORE_CONNECT` holds the App Store Connect API key and obtains the App Store distribution certificate/provisioning profile; protected Codemagic variable group `dd_ios_release` must provide `DD_IOS_BUNDLE_ID` and `DD_IOS_TEAM_ID`. GitHub never receives `.p8`, `.p12`, `.mobileprovision`, Apple private keys, certificate passwords, or Apple ID passwords. Before Codemagic reaches `publishing.app_store_connect`, it captures the actually resolved Dart/SPM/CocoaPods dependency evidence, installs fixed-version Syft/Trivy release binaries only after verifying pinned SHA-256 checksum manifests, generates a non-empty SPDX SBOM, and runs Trivy with `HIGH,CRITICAL --exit-code 1`. Missing scanners/evidence/reports, checksum mismatch, download failure, or a HIGH/CRITICAL finding fails the build before Apple upload. Codemagic also verifies `codesign`, embedded provisioning identity, Bundle ID, Team ID and Flutter version/build metadata before exposing the IPA. GitHub independently repeats Syft/Trivy against the downloaded evidence as a second gate.
+iOS uses Codemagic workflow `ios-signed-release`. Apple integration `DD_APP_STORE_CONNECT` holds the App Store Connect API key and obtains the App Store distribution certificate/provisioning profile; protected Codemagic variable group `dd_ios_release` must provide `DD_IOS_BUNDLE_ID` and `DD_IOS_TEAM_ID`. GitHub never receives `.p8`, `.p12`, `.mobileprovision`, Apple private keys, certificate passwords, or Apple ID passwords. Before Codemagic reaches `publishing.app_store_connect`, it separates Dart evidence from native evidence, preserves each native file's original relative path/basename, and requires at least one non-empty scanner-supported resolved lockfile (`Package.resolved` or `Podfile.lock`). Fixed-version Syft/Trivy binaries are installed only after pinned SHA-256 checksum verification. Syft scans only the native evidence and its SPDX JSON must contain at least one package; Trivy scans only the native evidence with `--list-all-pkgs`, `HIGH,CRITICAL --exit-code 1`, and its JSON must contain a `Package.resolved`/`Podfile.lock` target with at least one detected package. Empty/native-unrecognized reports fail before Apple upload. Codemagic also verifies `codesign`, embedded provisioning identity, Bundle ID, Team ID and Flutter version/build metadata before exposing the IPA. GitHub independently repeats the same native-lockfile, Trivy-target/package, and SPDX-package validation against the downloaded evidence as a second gate.
 
 ### `production-release`
 
@@ -106,7 +106,6 @@ DD-vX.Y.Z-ios-codemagic-resolved.spdx.json
 DD-vX.Y.Z-ios-codemagic-resolved.trivy.json
 DD-vX.Y.Z-ios-github-verified.spdx.json
 DD-vX.Y.Z-ios-github-verified.trivy.json
-DD-vX.Y.Z-ios-native-deps.zip
 DD-vX.Y.Z-ios-native-deps.zip
 DD-vX.Y.Z-android-arm64-v8a.apk
 DD-vX.Y.Z-android-armeabi-v7a.apk

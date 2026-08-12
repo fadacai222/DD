@@ -519,6 +519,10 @@ jobs:
           set -euo pipefail
           test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.spdx.json" || { echo 'Codemagic pre-publish iOS SBOM is missing or empty' >&2; exit 1; }
           test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.trivy.json" || { echo 'Codemagic pre-publish iOS Trivy report is missing or empty' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.spdx.json"
+          python scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-codemagic-resolved.trivy.json"
 
       - name: Independently rescan Codemagic-resolved iOS dependency evidence
         shell: bash
@@ -526,26 +530,34 @@ jobs:
           set -euo pipefail
           mkdir -p ios-sbom-input
           unzip -q "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-native-deps.zip" -d ios-sbom-input
+          NATIVE_ROOT="$GITHUB_WORKSPACE/ios-sbom-input/ios-dependency-evidence/native"
+          python scripts/release/ios_native_scan_validator.py evidence --root "$NATIVE_ROOT"
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE/ios-sbom-input:/src:ro" \
+            --volume "$NATIVE_ROOT:/src:ro" \
             --volume "$GITHUB_WORKSPACE/release:/out" \
             "$TRIVY_IMAGE" \
             fs \
             --scanners vuln \
+            --pkg-types library \
+            --list-all-pkgs \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             --no-progress \
             --format json \
             --output "/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" \
             /src
+          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" || { echo 'GitHub-verified iOS Trivy report was not generated' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py trivy \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json"
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE/ios-sbom-input:/src:ro" \
+            --volume "$NATIVE_ROOT:/src:ro" \
             --volume "$GITHUB_WORKSPACE/release:/out" \
             "$SYFT_IMAGE" \
             scan dir:/src \
             --output "spdx-json=/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json"
-          test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.trivy.json" || { echo 'GitHub-verified iOS Trivy report was not generated' >&2; exit 1; }
           test -s "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json" || { echo 'GitHub-verified iOS SPDX SBOM was not generated' >&2; exit 1; }
+          python scripts/release/ios_native_scan_validator.py spdx \
+            --report "release/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-ios-github-verified.spdx.json"
 
       - name: Upload signed iOS artifact and SBOM evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
