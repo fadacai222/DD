@@ -22,7 +22,11 @@ workflows:
       - name: Resolve Flutter dependencies
         script: flutter pub get
       - name: Analyze Flutter client
-        script: dart analyze --fatal-infos
+        script: |
+          set -euo pipefail
+          dart analyze --fatal-infos lib
+          dart analyze --fatal-infos test
+          dart analyze --fatal-infos tool
       - name: Run Flutter tests
         script: flutter test
       - name: Install CocoaPods dependencies when present
@@ -83,7 +87,11 @@ workflows:
       - name: Resolve Flutter dependencies
         script: flutter pub get
       - name: Analyze Flutter client
-        script: dart analyze --fatal-infos
+        script: |
+          set -euo pipefail
+          dart analyze --fatal-infos lib
+          dart analyze --fatal-infos test
+          dart analyze --fatal-infos tool
       - name: Run Flutter tests
         script: flutter test
       - name: Fetch App Store signing files from Codemagic Apple integration

@@ -12,10 +12,10 @@
 2. 登录 Codemagic，选择 **Add application**，授权只访问目标私有仓库。
 3. 选择该仓库和 Flutter 项目类型，让 Codemagic 从仓库根目录读取 `codemagic.yaml`。
 4. 手动运行 **DD iOS unsigned validation**。
-5. 云端顺序应为：`flutter pub get` → `dart analyze --fatal-infos` → `flutter test` → `flutter build ios --release --no-codesign` → unsigned `xcodebuild archive`。
+5. 云端顺序应为：`flutter pub get` → 仅对 DD 自有 `lib/`、`test/`、`tool/` 依次执行 `dart analyze --fatal-infos` → `flutter test` → `flutter build ios --release --no-codesign` → unsigned `xcodebuild archive`。
 6. 只有上述 Release compile + archive 都成功后，才可把 iOS Release 工程编译写为 `AUTO-VERIFIED`；这仍不等于签名/安装/TestFlight/真机通过。
 
-它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 第一次真实 Mac mini M2 云构建已启动，并在 `Analyze Flutter client` 阶段暴露真实环境差异：Xcode/SwiftPM 生成的 `build/ios/SourcePackages/livekit_client-2.10.0/...` 被根级 `dart analyze --fatal-infos` 当作应用源码扫描，第三方包的 info 级诊断导致退出码 3。修复仅在 `analysis_options.yaml` 排除生成目录 `build/**`，不降低 DD 自有源码 lint 严格度，也不修改 LiveKit 或业务功能。该修复仍需下一次 Codemagic 重跑验证；在 Release compile + archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
+它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 前两次真实 Mac mini M2 云构建都在进入 Xcode compile 前暴露 analyzer 输入边界问题：Xcode/SwiftPM 生成的 `build/ios/SourcePackages/firebase_messaging-16.5.0/...` 与 `livekit_client-2.10.0/...` 被根级 `dart analyze --fatal-infos` 当作应用源码扫描，产生第三方 example/test 缺失依赖以及 lint 诊断。仅在根 `analysis_options.yaml` 配置 `exclude: build/**` 在该嵌套 package 场景下并不足以可靠阻止扫描，因此 Codemagic 两个 iOS workflow 现改为显式只分析 DD 自有 `lib/`、`test/`、`tool/` 三个源码根；`build/**` exclude 继续作为防御性配置。该修复不降低 DD 自有源码 lint 严格度，也不修改 Firebase/LiveKit 或业务功能，仍需下一次 Codemagic 重跑验证；在 Release compile + archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
 
 ## 2. Codemagic signing contract
 
