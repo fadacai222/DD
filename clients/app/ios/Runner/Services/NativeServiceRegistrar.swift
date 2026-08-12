@@ -8,6 +8,11 @@ protocol DDNativeService {
 enum NativeServiceRegistrar {
   static func register(with registry: FlutterPluginRegistry) {
     register(NativeRouteService.self, with: registry)
+    register(PushNotificationService.self, with: registry)
+    register(FilePickerService.self, with: registry)
+    register(CameraCaptureService.self, with: registry)
+    register(MediaExportService.self, with: registry)
+    register(CallPlatformService.self, with: registry)
   }
 
   private static func register<Service: DDNativeService>(

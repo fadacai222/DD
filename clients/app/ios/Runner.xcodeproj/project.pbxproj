@@ -14,6 +14,11 @@
 		7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */; };
 		DD30A0012F00000100000001 /* NativeServiceRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0012F00000100000001 /* NativeServiceRegistrar.swift */; };
 		DD30A0022F00000100000002 /* NativeRouteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0022F00000100000002 /* NativeRouteService.swift */; };
+		DD30A0042F00000100000004 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0042F00000100000004 /* PushNotificationService.swift */; };
+		DD30A0052F00000100000005 /* CameraCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0052F00000100000005 /* CameraCaptureService.swift */; };
+		DD30A0062F00000100000006 /* FilePickerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0062F00000100000006 /* FilePickerService.swift */; };
+		DD30A0072F00000100000007 /* MediaExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0072F00000100000007 /* MediaExportService.swift */; };
+		DD30A0082F00000100000008 /* CallPlatformService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD30F0082F00000100000008 /* CallPlatformService.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
@@ -64,6 +69,11 @@
 		DD30F0012F00000100000001 /* NativeServiceRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeServiceRegistrar.swift; sourceTree = "<group>"; };
 		DD30F0022F00000100000002 /* NativeRouteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeRouteService.swift; sourceTree = "<group>"; };
 		DD30F0032F00000100000003 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		DD30F0042F00000100000004 /* PushNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationService.swift; sourceTree = "<group>"; };
+		DD30F0052F00000100000005 /* CameraCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCaptureService.swift; sourceTree = "<group>"; };
+		DD30F0062F00000100000006 /* FilePickerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePickerService.swift; sourceTree = "<group>"; };
+		DD30F0072F00000100000007 /* MediaExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaExportService.swift; sourceTree = "<group>"; };
+		DD30F0082F00000100000008 /* CallPlatformService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallPlatformService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -122,6 +132,11 @@
 			children = (
 				DD30F0012F00000100000001 /* NativeServiceRegistrar.swift */,
 				DD30F0022F00000100000002 /* NativeRouteService.swift */,
+				DD30F0042F00000100000004 /* PushNotificationService.swift */,
+				DD30F0052F00000100000005 /* CameraCaptureService.swift */,
+				DD30F0062F00000100000006 /* FilePickerService.swift */,
+				DD30F0072F00000100000007 /* MediaExportService.swift */,
+				DD30F0082F00000100000008 /* CallPlatformService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -302,6 +317,11 @@
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				DD30A0012F00000100000001 /* NativeServiceRegistrar.swift in Sources */,
 				DD30A0022F00000100000002 /* NativeRouteService.swift in Sources */,
+				DD30A0042F00000100000004 /* PushNotificationService.swift in Sources */,
+				DD30A0052F00000100000005 /* CameraCaptureService.swift in Sources */,
+				DD30A0062F00000100000006 /* FilePickerService.swift in Sources */,
+				DD30A0072F00000100000007 /* MediaExportService.swift in Sources */,
+				DD30A0082F00000100000008 /* CallPlatformService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

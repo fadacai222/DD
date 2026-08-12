@@ -29,7 +29,7 @@ Codemagic Team integrations 中创建名为 `DD_APP_STORE_CONNECT` 的 Apple Dev
 - Universal Links / Associated Domains 当前未声明：现有 DD 路由先使用 `dd://` custom scheme；在正式 HTTPS 域名、AASA 文件和 Developer Portal Associated Domains 能力齐备前，不伪造 production entitlement。
 - `Runner.entitlements` 只保留 Push capability 结构，`aps-environment` 由 Debug/Profile=`development`、Release=`production` 的 build setting 注入。该值只有与 Apple Developer Portal 中启用 Push 的 App ID + 匹配 provisioning profile 一起签名时才有效。
 - Keychain 使用 `flutter_secure_storage` 默认 iOS Keychain access group；当前没有跨 App/Extension 共享需求，因此不添加额外 `keychain-access-groups` entitlement，避免无必要扩大签名能力。
-- `Runner/Services/NativeServiceRegistrar.swift` 是公共 native service 注册入口；后续 Push/Media/Call service 通过小型独立 service 接入，避免继续膨胀 `AppDelegate`。
+- `Runner/Services/NativeServiceRegistrar.swift` 是公共 native service 注册入口；U30 总集成已注册 `PushNotificationService`、`FilePickerService`、`CameraCaptureService`、`MediaExportService`、`CallPlatformService`，并将对应 Swift 文件加入 Runner Sources，避免继续膨胀 `AppDelegate`。
 - `NativeRouteService` 提供 native → Flutter 路由事件入口和启动期有界 pending queue；当前只接 custom URL lifecycle，后续 Push service 可调用 notification ingress，不在 foundation 中实现 APNs token lifecycle。
 
 ## Firebase / Apple HUMAN-REQUIRED
@@ -37,7 +37,7 @@ Codemagic Team integrations 中创建名为 `DD_APP_STORE_CONNECT` 的 Apple Dev
 - 仓库当前没有正式 iOS `GoogleService-Info.plist`。若 iOS 继续使用 FCM provider，项目 owner 必须从对应 Firebase iOS App（Bundle ID 必须是 `org.openimx.client`）下载正式 client config，并以受控方式提供；不得伪造或提交 Admin service account。
 - Apple Developer Portal 必须为 `org.openimx.client` 创建/确认 App ID 并启用 Push Notifications；真实 Team ID、development/distribution certificate、Provisioning Profile、App Store Connect API Key 均属于 `SECRET/HUMAN-REQUIRED`，不得提交仓库。
 - Associated Domains 只有在正式 Universal Links 域名 + AASA 已部署后才启用。
-- Windows 本机不能执行 Xcode/iOS 编译；当前只能验证工程文本合同、plist/entitlements XML、Dart analyze/test。Swift 编译、archive、codesign、安装、权限弹窗、Keychain 真机行为、APNs/FCM delivery 必须来自 macOS/Codemagic/真实 iPhone/iPad。
+- `AppDelegate` 已接 APNs registration success/failure、foreground `willPresent` 与 notification response tap，并继续调用 `FlutterAppDelegate` 的 `super` 链以保留 FlutterFire/Firebase Messaging delegate；Windows 本机不能执行 Xcode/iOS 编译，因此 Swift 编译、archive、codesign、安装、权限弹窗、Keychain 真机行为、APNs/FCM delivery 必须来自 macOS/Codemagic/真实 iPhone/iPad。
 
 Codemagic protected variable group 固定命名：
 

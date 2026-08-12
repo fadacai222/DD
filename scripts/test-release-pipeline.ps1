@@ -86,7 +86,7 @@ Assert-Match $Workflow '(?m)^  build-ios:' 'Formal release DAG must contain buil
 Assert-Match $Workflow 'DD_CODEMAGIC_API_TOKEN' 'Codemagic API token contract is missing.'
 Assert-Match $Workflow 'DD_CODEMAGIC_APP_ID' 'Codemagic application identity contract is missing.'
 Assert-Match $Codemagic '(?m)^  ios-unsigned-validation:' 'Unsigned iOS compile-validation workflow is missing.'
-Assert-Match $Codemagic 'flutter build ios --debug --no-codesign' 'Unsigned iOS validation must perform a real no-codesign compile.'
+Assert-Match $Codemagic 'flutter build ios --release --no-codesign' 'Unsigned iOS validation must perform a real Release no-codesign compile.'
 Assert-Match $Codemagic '(?m)^  ios-signed-release:' 'Signed iOS release workflow is missing.'
 Assert-Match $Codemagic 'app_store_connect:\s*DD_APP_STORE_CONNECT' 'Codemagic Apple integration contract is missing.'
 Assert-Match $Codemagic '- dd_ios_release' 'Codemagic protected iOS release variable group is missing.'
