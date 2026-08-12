@@ -148,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\update-android-client.ps1
 - Flutter analyze/test/Web Release/Android Release
 - Windows Release + real-engine MP4 poster smoke
 - Web/Android/Windows artifact upload
-- 独立 Secret Scan：完整 Git 历史 Gitleaks + 受控 allowlist + detector self-test
+- 独立 Secret Scan：完整 Git 历史 Gitleaks + 普通 checkout / linked worktree Git metadata 支持 + commit-count 防假绿 + 受控 allowlist + detector self-test
 
 本地可直接运行同一套 Secret Scan：
 
