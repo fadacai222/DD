@@ -54,7 +54,20 @@ function Invoke-ExpectedFailure {
 }
 
 $Workflow = Get-Content -LiteralPath $WorkflowPath -Raw -Encoding UTF8
+$Contract = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8
 $Retention = Get-Content -LiteralPath $RetentionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$ReleaseTestRoot = Join-Path $Root 'scripts/release'
+Push-Location $ReleaseTestRoot
+try {
+    & python -m unittest -v test_release_contract.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "Release contract unit tests failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    Pop-Location
+}
 
 Assert-Match $Workflow '(?ms)^on:\s*\r?\n\s+push:\s*\r?\n\s+tags:\s*\r?\n\s+- ''v\*''' 'Formal release must be tag-triggered by v*.'
 Assert-True ($Workflow -notmatch '(?m)^\s*workflow_dispatch\s*:') 'Formal release must not expose a non-tag workflow_dispatch publication path.'
@@ -78,7 +91,10 @@ Assert-Match $Workflow 'actions/attest@[0-9a-f]{40}' 'GitHub build provenance at
 Assert-Match $Workflow 'gh release create' 'GitHub Release publication step is missing.'
 Assert-Match $Workflow '--verify-tag' 'GitHub Release must verify the existing Git tag.'
 Assert-Match $Workflow 'retention-days:\s*90' 'Rollback-capable Actions artifact retention must be 90 days.'
-Assert-Match $Workflow 'previous formal release .* has no retained rollback assets' 'Previous GitHub Release asset retention guard is missing.'
+Assert-True ($Workflow -notmatch 'releases/latest') 'Previous release resolution must not use GitHub /releases/latest because it ignores prereleases.'
+Assert-Match $Workflow 'gh api --paginate --slurp' 'Previous release resolution must enumerate all published GitHub Releases, including prereleases.'
+Assert-Match $Workflow 'release_contract\.py previous-release' 'Previous release selection must use the tested SemVer release resolver.'
+Assert-Match $Contract 'previous formal release .* has no retained rollback assets' 'Previous GitHub Release asset retention guard is missing.'
 Assert-Match $Workflow 'previous rollback image is missing' 'Previous GHCR rollback image retention guard is missing.'
 Assert-Match $Workflow 'server-\$\{component\}-linux-amd64' 'Versioned linux/amd64 server artifacts are missing.'
 Assert-Match $Workflow 'windows-x64\.zip' 'Versioned Windows x64 artifact is missing.'

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "actionsArtifactRetentionDays": 90,
   "minimumFormalReleasesToRetain": 2,
-  "githubReleaseAssets": "retain until explicit owner deletion; never auto-prune the current or immediately previous formal release",
-  "containerImages": "immutable SemVer tags; retain the current and immediately previous formal release for api/worker/migrate",
+  "githubReleaseAssets": "retain until explicit owner deletion; never auto-prune the current or immediately previous published DD SemVer release, including prereleases",
+  "containerImages": "immutable SemVer tags; retain the current and immediately previous published DD SemVer release, including prereleases, for api/worker/migrate",
   "rollback": {
     "application": "reuse the previous formal version artifacts/images only after the U23 compatibility gate accepts the newer schema",
     "database": "if the previous application rejects the newer schema, restore the verified pre-upgrade backup and then restart the previous release",

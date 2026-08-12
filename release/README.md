@@ -144,7 +144,7 @@ A consumer should verify, in this order:
 
 ## Rollback retention and U23 compatibility
 
-`retention-policy.json` requires at least the current and immediately previous formal release to remain available. Actions build evidence is retained for 90 days; GitHub Release assets and immutable versioned GHCR image tags are not automatically pruned by this workflow.
+`retention-policy.json` requires at least the current and immediately previous formal release to remain available. The previous formal release is resolved from all published GitHub Releases, including prereleases; drafts and non-DD/non-SemVer tags are ignored, and the most recently published valid release before the pending tag is selected. This means `v0.5.0-rc.2` correctly retains/verifies `v0.5.0-rc.1`, while a following `v0.5.0` retains/verifies `v0.5.0-rc.2`. Actions build evidence is retained for 90 days; GitHub Release assets and immutable versioned GHCR image tags are not automatically pruned by this workflow.
 
 Rollback follows U23 and never invents a database down migration:
 

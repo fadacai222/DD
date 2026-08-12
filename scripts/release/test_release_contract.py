@@ -10,6 +10,23 @@ import verify_github_gates
 
 
 class ReleaseContractTests(unittest.TestCase):
+    @staticmethod
+    def _release(
+        tag: str,
+        published_at: str,
+        *,
+        draft: bool = False,
+        prerelease: bool = False,
+        asset_count: int = 1,
+    ) -> dict[str, object]:
+        return {
+            "tag_name": tag,
+            "published_at": published_at,
+            "draft": draft,
+            "prerelease": prerelease,
+            "assets": [{"name": f"asset-{index}"} for index in range(asset_count)],
+        }
+
     def test_semver_rejects_build_metadata_and_non_version_tags(self) -> None:
         self.assertEqual(release_contract.version_from_tag("v1.2.3"), "1.2.3")
         self.assertEqual(release_contract.version_from_tag("v1.2.3-rc.1"), "1.2.3-rc.1")
@@ -29,6 +46,69 @@ class ReleaseContractTests(unittest.TestCase):
             artifact.write_bytes(b"tampered")
             with self.assertRaises(release_contract.ReleaseContractError):
                 release_contract.verify_checksums(root, manifest)
+
+    def test_previous_formal_release_stable_to_stable(self) -> None:
+        releases = [
+            self._release("v0.4.0", "2026-08-10T10:00:00Z"),
+            self._release("v0.4.1", "2026-08-11T10:00:00Z"),
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0")
+        self.assertEqual(previous["tag"], "v0.4.1")
+
+    def test_previous_formal_release_stable_to_rc1(self) -> None:
+        releases = [self._release("v0.4.1", "2026-08-11T10:00:00Z")]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0-rc.1")
+        self.assertEqual(previous["tag"], "v0.4.1")
+
+    def test_previous_formal_release_rc1_to_rc2(self) -> None:
+        releases = [
+            [self._release("v0.5.0-rc.1", "2026-08-12T08:00:00Z", prerelease=True)],
+            [self._release("v0.4.1", "2026-08-11T10:00:00Z")],
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0-rc.2")
+        self.assertEqual(previous["tag"], "v0.5.0-rc.1")
+
+    def test_previous_formal_release_rc2_to_stable(self) -> None:
+        releases = [
+            self._release("v0.5.0-rc.2", "2026-08-12T09:00:00Z", prerelease=True),
+            self._release("v0.5.0-rc.1", "2026-08-12T08:00:00Z", prerelease=True),
+            self._release("v0.4.1", "2026-08-11T10:00:00Z"),
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0")
+        self.assertEqual(previous["tag"], "v0.5.0-rc.2")
+
+    def test_previous_formal_release_ignores_draft(self) -> None:
+        releases = [
+            self._release("v0.5.0-rc.2", "2026-08-12T09:00:00Z", draft=True, prerelease=True),
+            self._release("v0.5.0-rc.1", "2026-08-12T08:00:00Z", prerelease=True),
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0")
+        self.assertEqual(previous["tag"], "v0.5.0-rc.1")
+
+    def test_previous_formal_release_ignores_unrelated_and_non_semver(self) -> None:
+        releases = [
+            self._release("nightly", "2026-08-12T11:00:00Z"),
+            self._release("release-0.5.0", "2026-08-12T10:00:00Z"),
+            self._release("v0.5", "2026-08-12T09:00:00Z"),
+            self._release("v0.4.1", "2026-08-11T10:00:00Z"),
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0")
+        self.assertEqual(previous["tag"], "v0.4.1")
+
+    def test_previous_formal_release_none_when_no_formal_release_exists(self) -> None:
+        releases = [
+            self._release("nightly", "2026-08-12T11:00:00Z"),
+            self._release("v0.5.0-rc.1", "2026-08-12T10:00:00Z", draft=True, prerelease=True),
+        ]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0-rc.1")
+        self.assertEqual(previous["tag"], "NONE")
+        self.assertEqual(previous["assetCount"], 0)
+
+    def test_previous_formal_release_without_assets_is_rejected(self) -> None:
+        releases = [self._release("v0.4.1", "2026-08-11T10:00:00Z", asset_count=0)]
+        previous = release_contract.resolve_previous_formal_release(releases, "v0.5.0")
+        with self.assertRaises(release_contract.ReleaseContractError):
+            release_contract.ensure_previous_release_assets(previous)
 
 
 class UpstreamGateTests(unittest.TestCase):

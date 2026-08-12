@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -67,6 +68,88 @@ def version_from_tag(tag: str) -> str:
     if tag != f"v{version}":
         raise ReleaseContractError("release tag/version mapping is not canonical")
     return version
+
+
+def _flatten_release_pages(payload: object) -> list[dict[str, object]]:
+    if not isinstance(payload, list):
+        raise ReleaseContractError("GitHub releases payload must be a JSON array")
+    releases: list[dict[str, object]] = []
+    for item in payload:
+        if isinstance(item, list):
+            releases.extend(_flatten_release_pages(item))
+        elif isinstance(item, dict):
+            releases.append(item)
+        else:
+            raise ReleaseContractError("GitHub releases payload contains a non-object entry")
+    return releases
+
+
+def _published_at(value: object, tag: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ReleaseContractError(f"published formal release {tag} has no published_at timestamp")
+    rendered = value.strip()
+    if rendered.endswith("Z"):
+        rendered = rendered[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(rendered)
+    except ValueError as exc:
+        raise ReleaseContractError(
+            f"published formal release {tag} has invalid published_at timestamp: {value!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise ReleaseContractError(
+            f"published formal release {tag} published_at timestamp must include timezone"
+        )
+    return parsed
+
+
+def resolve_previous_formal_release(
+    releases_payload: object,
+    current_tag: str,
+) -> dict[str, object]:
+    version_from_tag(current_tag)
+    candidates: list[tuple[datetime, str, int, str]] = []
+    for release in _flatten_release_pages(releases_payload):
+        if release.get("draft") is True:
+            continue
+        tag = release.get("tag_name")
+        if not isinstance(tag, str) or tag == current_tag:
+            continue
+        try:
+            version_from_tag(tag)
+        except ReleaseContractError:
+            continue
+        published_raw = release.get("published_at")
+        if published_raw in (None, ""):
+            continue
+        published_at = _published_at(published_raw, tag)
+        assets = release.get("assets")
+        if not isinstance(assets, list):
+            raise ReleaseContractError(
+                f"published formal release {tag} has invalid assets metadata"
+            )
+        candidates.append((published_at, tag, len(assets), str(published_raw)))
+
+    if not candidates:
+        return {"tag": "NONE", "assetCount": 0, "publishedAt": None}
+
+    _, tag, asset_count, published_raw = max(candidates, key=lambda item: item[0])
+    return {
+        "tag": tag,
+        "assetCount": asset_count,
+        "publishedAt": published_raw,
+    }
+
+
+def ensure_previous_release_assets(previous: dict[str, object]) -> None:
+    tag = previous.get("tag")
+    if tag == "NONE":
+        return
+    asset_count = previous.get("assetCount")
+    if not isinstance(asset_count, int) or asset_count <= 0:
+        raise ReleaseContractError(
+            f"previous formal release {tag} has no retained rollback assets"
+        )
 
 
 def ensure_clean(repo: Path) -> None:
@@ -346,6 +429,20 @@ def command_validate(args: argparse.Namespace) -> None:
     print(json.dumps(outputs, sort_keys=True))
 
 
+def command_previous_release(args: argparse.Namespace) -> None:
+    payload = json.loads(Path(args.releases_json).read_text(encoding="utf-8"))
+    previous = resolve_previous_formal_release(payload, args.current_tag)
+    ensure_previous_release_assets(previous)
+    outputs = {
+        "previous_release": previous["tag"],
+        "previous_asset_count": previous["assetCount"],
+        "previous_published_at": previous["publishedAt"] or "NONE",
+    }
+    if args.github_output:
+        write_github_outputs(Path(args.github_output), outputs)
+    print(json.dumps(previous, sort_keys=True))
+
+
 def command_checksums(args: argparse.Namespace) -> None:
     count = write_checksums(Path(args.root), Path(args.output))
     print(f"checksummed {count} release files")
@@ -391,6 +488,12 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--changelog", default="CHANGELOG.md")
     validate.add_argument("--github-output", default="")
     validate.set_defaults(func=command_validate)
+
+    previous = sub.add_parser("previous-release")
+    previous.add_argument("--releases-json", required=True)
+    previous.add_argument("--current-tag", required=True)
+    previous.add_argument("--github-output", default="")
+    previous.set_defaults(func=command_previous_release)
 
     checksums = sub.add_parser("checksums")
     checksums.add_argument("--root", required=True)
