@@ -121,15 +121,20 @@ func (provider *FCMProvider) Send(ctx context.Context, delivery Delivery) (Provi
 	// Android must stay data-only so DD can render MessagingStyle, the sender
 	// avatar and its own notification icon. Apple still receives an alert when
 	// FCM is used as the iOS transport via the APNS-specific payload.
-	if visible {
+	if visible || delivery.BadgeOnly {
+		aps := map[string]any{"badge": delivery.Badge}
+		priority := "5"
+		if visible {
+			aps["alert"] = map[string]string{"title": delivery.Title, "body": delivery.Body}
+			aps["sound"] = "default"
+			priority = "10"
+		}
+		if delivery.ConversationID != "" {
+			aps["thread-id"] = delivery.ConversationID
+		}
 		message["apns"] = map[string]any{
-			"headers": map[string]string{"apns-priority": "10"},
-			"payload": map[string]any{
-				"aps": map[string]any{
-					"alert": map[string]string{"title": delivery.Title, "body": delivery.Body},
-					"sound": "default",
-				},
-			},
+			"headers": map[string]string{"apns-priority": priority},
+			"payload": map[string]any{"aps": aps},
 		}
 	}
 	body, err := json.Marshal(map[string]any{"message": message})

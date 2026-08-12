@@ -57,6 +57,8 @@ type Delivery struct {
 	Data           map[string]string
 	CollapseKey    string
 	HighPriority   bool
+	Badge          int
+	BadgeOnly      bool
 }
 
 type ProviderResult struct {

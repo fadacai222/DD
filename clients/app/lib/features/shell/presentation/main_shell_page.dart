@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -48,6 +48,7 @@ import '../../moments/application/moment_activity_controller.dart';
 import '../../moments/data/moments_api_client.dart';
 import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
+import '../../push/application/push_navigation_intent.dart';
 import '../../push/application/push_registration_service.dart';
 import '../../qrcode/presentation/my_qr_page.dart';
 import '../../qrcode/presentation/qr_scanner_page.dart';
@@ -92,12 +93,14 @@ class _MainShellPageState extends State<MainShellPage>
   late final CallDebugController _callMediaController;
   late final TwoPartyCallController _callController;
   late final PushRegistrationService _pushRegistrationService;
+  Object? _pushCallbackOwner;
   late final MomentsApiClient _momentsApi;
   late final MomentActivityController _momentActivityController;
   late final Future<bool> _callStartup;
   bool _callRouteOpen = false;
   int _avatarRevision = 0;
   bool _avatarBusy = false;
+  bool _notificationPreviewEnabled = true;
   OverlayEntry? _messageBanner;
   Timer? _messageBannerTimer;
 
@@ -114,9 +117,11 @@ class _MainShellPageState extends State<MainShellPage>
       onUnauthorized: widget.onRefreshSession,
     );
     unawaited(MediaCacheBudgetStore.shared(widget.session.user.id).load());
+    unawaited(_refreshNotificationPreviewPreference());
     _notificationService = AppNotificationService.shared;
     unawaited(_notificationService.initialize(requestPermission: false));
-    _pushRegistrationService = PushRegistrationService(
+    _pushRegistrationService = PushRegistrationService.shared;
+    _pushCallbackOwner = _pushRegistrationService.bindCallbacks(
       onNotificationOpened: _handlePushNotificationOpened,
       onNotificationReceived: _handlePushNotificationReceived,
     );
@@ -124,6 +129,8 @@ class _MainShellPageState extends State<MainShellPage>
       _pushRegistrationService.start(
         origin: widget.origin,
         accessToken: widget.session.tokens.accessToken,
+        userId: widget.session.user.id,
+        deviceId: widget.session.device.id,
       ),
     );
     _incomingMessageSubscription = _messagingCoordinator.incomingMessages
@@ -136,6 +143,8 @@ class _MainShellPageState extends State<MainShellPage>
       accessToken: widget.session.tokens.accessToken,
       gateway: _momentsApi,
     );
+    _messagingCoordinator.addListener(_syncNotificationBadge);
+    _momentActivityController.addListener(_syncNotificationBadge);
     _eventAvailableReasonSubscription = _messagingCoordinator
         .eventAvailableReasons
         .listen(_momentActivityController.handleRealtimeReason);
@@ -168,6 +177,8 @@ class _MainShellPageState extends State<MainShellPage>
         _pushRegistrationService.updateSession(
           origin: widget.origin,
           accessToken: nextToken,
+          userId: widget.session.user.id,
+          deviceId: widget.session.device.id,
         ),
       );
     }
@@ -178,6 +189,8 @@ class _MainShellPageState extends State<MainShellPage>
     _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
       unawaited(_momentActivityController.refresh());
+      unawaited(_pushRegistrationService.onAppResumed());
+      _syncNotificationBadge();
     }
   }
 
@@ -190,6 +203,8 @@ class _MainShellPageState extends State<MainShellPage>
     _messageBannerTimer?.cancel();
     _messageBanner?.remove();
     _messageBanner = null;
+    _messagingCoordinator.removeListener(_syncNotificationBadge);
+    _momentActivityController.removeListener(_syncNotificationBadge);
     _messagingCoordinator.dispose();
     _momentActivityController.dispose();
     _momentsApi.close();
@@ -197,7 +212,11 @@ class _MainShellPageState extends State<MainShellPage>
     _callController.removeListener(_handleCallState);
     _callController.dispose();
     _callMediaController.dispose();
-    unawaited(_pushRegistrationService.dispose());
+    final pushCallbackOwner = _pushCallbackOwner;
+    if (pushCallbackOwner != null) {
+      _pushRegistrationService.unbindCallbacks(pushCallbackOwner);
+    }
+    _pushCallbackOwner = null;
     super.dispose();
   }
 
@@ -296,18 +315,68 @@ class _MainShellPageState extends State<MainShellPage>
   }
 
   void _handlePushNotificationReceived(Map<String, dynamic> data) {
-    final eventType = data['eventType']?.toString().trim().toUpperCase() ?? '';
-    if (eventType.startsWith('MOMENT_')) {
+    final intent = PushNavigationIntent.fromData(
+      data,
+      currentUserId: widget.session.user.id,
+    );
+    if (intent.target == PushNavigationTarget.ignored) return;
+    if (intent.target == PushNavigationTarget.moments) {
       unawaited(_momentActivityController.refresh());
+      return;
+    }
+    if (intent.target == PushNavigationTarget.conversation) {
+      // Foreground iOS system presentation is suppressed; Sync/realtime remains
+      // the single app-visible truth path and avoids a duplicate local banner.
+      unawaited(_messagingCoordinator.syncNow());
     }
   }
 
   void _handlePushNotificationOpened(Map<String, dynamic> data) {
-    final conversationId = data['conversationId']?.toString().trim() ?? '';
-    if (conversationId.isEmpty || !mounted) return;
-    setState(() => _index = 0);
-    unawaited(_messagingCoordinator.syncNow());
-    _conversationsController.openConversation(conversationId);
+    unawaited(_routePushNotification(data));
+  }
+
+  Future<void> _routePushNotification(Map<String, dynamic> data) async {
+    final intent = PushNavigationIntent.fromData(
+      data,
+      currentUserId: widget.session.user.id,
+    );
+    if (!mounted || intent.target == PushNavigationTarget.ignored) return;
+
+    switch (intent.target) {
+      case PushNavigationTarget.conversation:
+        setState(() => _index = 0);
+        await _messagingCoordinator.syncNow();
+        if (!mounted) return;
+        final conversation = await _messagingCoordinator.resolveConversation(
+          intent.conversationId,
+        );
+        if (!mounted) return;
+        if (conversation == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('通知对应的会话已不存在或当前账号无权访问。')),
+          );
+          return;
+        }
+        _conversationsController.openConversation(conversation.id);
+      case PushNavigationTarget.moments:
+        setState(() => _index = 2);
+        await _momentActivityController.refresh();
+        if (!mounted) return;
+        await _openMoments();
+      case PushNavigationTarget.generic:
+        setState(() => _index = 0);
+        await _messagingCoordinator.syncNow();
+      case PushNavigationTarget.ignored:
+        return;
+    }
+  }
+
+  void _syncNotificationBadge() {
+    if (!mounted) return;
+    final count =
+        _messagingCoordinator.totalUnreadCount +
+        _momentActivityController.unreadCount;
+    unawaited(_pushRegistrationService.setBadgeCount(count));
   }
 
   void _selectMainSection(int value) {
@@ -415,10 +484,21 @@ class _MainShellPageState extends State<MainShellPage>
         _index == 0 &&
         _messagingCoordinator.activeConversationId == notice.conversationId;
     if (alreadyReading) return;
+    final appIsForeground = _lifecycleState == AppLifecycleState.resumed;
+    final iosSystemOwnsBackgroundMessageNotification =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS && !appIsForeground;
+    if (iosSystemOwnsBackgroundMessageNotification) {
+      // APNs/FCM owns the background/killed system notification on iOS. Do not
+      // add a second local notification or a second app-side sound.
+      return;
+    }
     unawaited(AppSoundService.shared.playMessageNotification());
 
-    if (_lifecycleState == AppLifecycleState.resumed) {
-      _showIncomingMessageBanner(notice);
+    if (appIsForeground) {
+      _showIncomingMessageBanner(
+        notice,
+        hidePreview: !_notificationPreviewEnabled,
+      );
       return;
     }
 
@@ -464,16 +544,23 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
-  void _showIncomingMessageBanner(IncomingMessageNotice notice) {
+  void _showIncomingMessageBanner(
+    IncomingMessageNotice notice, {
+    required bool hidePreview,
+  }) {
     if (!mounted) return;
     _messageBannerTimer?.cancel();
     _messageBanner?.remove();
     final overlay = Overlay.of(context);
     final topInset = MediaQuery.paddingOf(context).top;
-    final preview = notice.preview.trim().isEmpty
+    final preview = hidePreview
+        ? '你收到了一条新消息'
+        : notice.preview.trim().isEmpty
         ? '新消息'
         : notice.preview.trim();
-    final title = notice.mentionedCurrentUser
+    final title = hidePreview
+        ? 'DD'
+        : notice.mentionedCurrentUser
         ? '${notice.senderName} 提到了你'
         : notice.senderName;
     _messageBanner = OverlayEntry(
@@ -1141,6 +1228,23 @@ class _MainShellPageState extends State<MainShellPage>
     );
   }
 
+  Future<void> _refreshNotificationPreviewPreference() async {
+    try {
+      final me = await widget.authGateway.getMe(
+        origin: widget.origin,
+        accessToken: widget.session.tokens.accessToken,
+      );
+      if (!mounted) return;
+      setState(
+        () => _notificationPreviewEnabled =
+            me.privacy.notificationPreviewEnabled,
+      );
+    } catch (_) {
+      // Keep the last known/default privacy value. The authenticated settings
+      // screen and the next successful refresh will reconcile it.
+    }
+  }
+
   Future<void> _openAccountManagement() async {
     final logout = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
@@ -1148,12 +1252,16 @@ class _MainShellPageState extends State<MainShellPage>
           gateway: widget.authGateway,
           origin: widget.origin,
           session: widget.session,
+          onPushPreferencesChanged:
+              _pushRegistrationService.handlePreferencesChanged,
         ),
       ),
     );
     if (logout == true && mounted) {
       await widget.onLogout();
+      return;
     }
+    await _refreshNotificationPreviewPreference();
   }
 }
 

@@ -81,13 +81,17 @@ func (provider *APNSProvider) Send(ctx context.Context, delivery Delivery) (Prov
 	if strings.EqualFold(delivery.Environment, "SANDBOX") {
 		host = "https://api.sandbox.push.apple.com"
 	}
+	aps := map[string]any{"badge": delivery.Badge}
+	if !delivery.BadgeOnly {
+		aps["alert"] = map[string]string{"title": delivery.Title, "body": delivery.Body}
+		aps["sound"] = "default"
+	}
+	if delivery.ConversationID != "" {
+		aps["thread-id"] = delivery.ConversationID
+	}
 	payload := map[string]any{
-		"aps": map[string]any{
-			"alert":     map[string]string{"title": delivery.Title, "body": delivery.Body},
-			"sound":     "default",
-			"thread-id": delivery.ConversationID,
-		},
-		"dd": delivery.Data,
+		"aps": aps,
+		"dd":  delivery.Data,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -101,7 +105,7 @@ func (provider *APNSProvider) Send(ctx context.Context, delivery Delivery) (Prov
 	request.Header.Set("authorization", "bearer "+token)
 	request.Header.Set("apns-topic", provider.bundleID)
 	request.Header.Set("apns-push-type", "alert")
-	if delivery.HighPriority {
+	if delivery.HighPriority && !delivery.BadgeOnly {
 		request.Header.Set("apns-priority", "10")
 	} else {
 		request.Header.Set("apns-priority", "5")

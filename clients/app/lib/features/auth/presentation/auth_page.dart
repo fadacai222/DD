@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../theme/app_theme.dart';
+import '../../push/application/push_registration_service.dart';
 import '../../shell/presentation/main_shell_page.dart';
 import '../data/auth_api_client.dart';
 import '../data/auth_session_vault.dart';
@@ -861,7 +862,7 @@ class _AuthPageState extends State<AuthPage>
     );
     if (!mounted || action == null) return;
     if (action == 'add-account') {
-      _startAddingAccount();
+      await _startAddingAccount();
       return;
     }
     if (action is LoginHistoryEntry) {
@@ -869,7 +870,16 @@ class _AuthPageState extends State<AuthPage>
     }
   }
 
-  void _startAddingAccount() {
+  Future<void> _startAddingAccount() async {
+    try {
+      await PushRegistrationService.shared.releaseCurrentEndpoint();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('暂时无法暂停当前账号 Push，请重试：${_friendlyError(error)}')),
+      );
+      return;
+    }
     _refreshTimer?.cancel();
     _password.clear();
     _email.clear();
@@ -905,6 +915,8 @@ class _AuthPageState extends State<AuthPage>
         origin: stored.origin,
         refreshToken: stored.refreshToken,
       );
+      if (!mounted) return;
+      await PushRegistrationService.shared.releaseCurrentEndpoint();
       if (!mounted) return;
       _refreshTimer?.cancel();
       _origin.text = stored.origin.toString();
@@ -968,6 +980,12 @@ class _AuthPageState extends State<AuthPage>
     _refreshTimer?.cancel();
     final current = _session;
     if (current != null) {
+      try {
+        await PushRegistrationService.shared.releaseCurrentEndpoint();
+      } catch (_) {
+        // Device revocation below remains the authoritative delivery stop if
+        // endpoint cleanup is temporarily unavailable.
+      }
       try {
         await _gateway.revokeDevice(
           origin: _validatedOrigin(),

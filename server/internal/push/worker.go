@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,13 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 	if suppressed {
 		return service.dropJob(ctx, tx, job.ID, "SUPPRESSED", now)
 	}
+	applyPreviewPrivacy(&baseDelivery, previewMode)
+	badge, err := service.notificationBadgeCount(ctx, tx, job.RecipientUserID)
+	if err != nil {
+		return service.deferJob(ctx, tx, job, err, now)
+	}
+	baseDelivery.Badge = badge
+	baseDelivery.Data["badge"] = strconv.Itoa(badge)
 
 	rows, err := tx.Query(ctx, `
 		SELECT e.id,e.provider,e.endpoint,e.app_id,e.environment,e.failure_count
@@ -224,7 +232,11 @@ func (service *Service) dispatchOneJob(ctx context.Context, providers Providers)
 }
 
 func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJob, previewMode string, now time.Time) (Delivery, bool, error) {
-	data := map[string]string{"eventType": job.EventType}
+	data := map[string]string{
+		"eventType":       job.EventType,
+		"recipientUserId": job.RecipientUserID.String(),
+		"previewMode":     normalizePreviewMode(previewMode),
+	}
 	if job.ResourceID != nil {
 		data["resourceId"] = job.ResourceID.String()
 	}
@@ -262,16 +274,21 @@ func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJo
 			return Delivery{}, false, errors.New("message push job missing resource id")
 		}
 		var senderID uuid.UUID
-		var senderName, messageType string
+		var senderName, messageType, conversationType, groupName string
 		var content []byte
 		var mutedUntil *time.Time
 		if err := tx.QueryRow(ctx, `
-			SELECT m.sender_user_id,u.display_name,m.type,m.content_json,cm.muted_until
+			SELECT m.sender_user_id,
+			       COALESCE(NULLIF(gmp.nickname,''),u.display_name),
+			       m.type,m.content_json,cm.muted_until,c.type,COALESCE(g.name,'')
 			FROM messages m
 			JOIN users u ON u.id=m.sender_user_id
+			JOIN conversations c ON c.id=m.conversation_id
 			JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$2 AND cm.status='ACTIVE'
+			LEFT JOIN groups g ON g.conversation_id=m.conversation_id AND g.status='ACTIVE'
+			LEFT JOIN group_member_profiles gmp ON gmp.conversation_id=m.conversation_id AND gmp.user_id=m.sender_user_id
 			WHERE m.id=$1 AND m.deleted_at IS NULL
-		`, *job.ResourceID, job.RecipientUserID).Scan(&senderID, &senderName, &messageType, &content, &mutedUntil); errors.Is(err, pgx.ErrNoRows) {
+		`, *job.ResourceID, job.RecipientUserID).Scan(&senderID, &senderName, &messageType, &content, &mutedUntil, &conversationType, &groupName); errors.Is(err, pgx.ErrNoRows) {
 			return delivery, true, nil
 		} else if err != nil {
 			return Delivery{}, false, fmt.Errorf("load message push preview: %w", err)
@@ -280,11 +297,19 @@ func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJo
 			return delivery, true, nil
 		}
 		if mutedUntil != nil && mutedUntil.After(now) {
-			return delivery, true, nil
+			delivery.BadgeOnly = true
+			delivery.Data["badgeOnly"] = "1"
+			return delivery, false, nil
 		}
-		delivery.Data["senderUserId"] = senderID.String()
+		delivery.Data["conversationType"] = conversationType
 		delivery.Title, delivery.Body = renderPreview(previewMode, senderName, messageType, content)
 		if normalizePreviewMode(previewMode) != PreviewHidden {
+			delivery.Data["senderUserId"] = senderID.String()
+			delivery.Data["senderName"] = senderName
+			if strings.EqualFold(conversationType, "GROUP") {
+				delivery.Data["conversationTitle"] = groupName
+				delivery.Title, delivery.Body = renderGroupPreview(previewMode, groupName, senderName, messageType, content)
+			}
 			if avatarURL := SignedAvatarURL(
 				service.publicBaseURL,
 				service.avatarTokenSecret,
@@ -351,6 +376,73 @@ func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJo
 		delivery.Body = "你有新的动态"
 		return delivery, false, nil
 	}
+}
+
+func (service *Service) notificationBadgeCount(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (int, error) {
+	var count int64
+	if err := tx.QueryRow(ctx, `
+		SELECT
+		  COALESCE((
+		    SELECT SUM(GREATEST(c.last_sequence-cm.last_read_sequence,0))
+		    FROM conversation_members cm
+		    JOIN conversations c ON c.id=cm.conversation_id
+		    WHERE cm.user_id=$1
+		      AND cm.status='ACTIVE'
+		      AND (cm.hidden_through_sequence IS NULL OR c.last_sequence>cm.hidden_through_sequence)
+		  ),0)
+		  +
+		  COALESCE((
+		    SELECT count(*)
+		    FROM moment_activity_notifications
+		    WHERE recipient_user_id=$1 AND read_at IS NULL
+		  ),0)
+	`, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("load notification badge count: %w", err)
+	}
+	if count < 0 {
+		return 0, nil
+	}
+	const maxSystemBadge = int64(2_147_483_647)
+	if count > maxSystemBadge {
+		count = maxSystemBadge
+	}
+	return int(count), nil
+}
+
+func applyPreviewPrivacy(delivery *Delivery, mode string) {
+	if delivery == nil || normalizePreviewMode(mode) != PreviewHidden {
+		return
+	}
+	delete(delivery.Data, "senderUserId")
+	delete(delivery.Data, "senderName")
+	delete(delivery.Data, "avatarUrl")
+	delete(delivery.Data, "conversationTitle")
+	if delivery.BadgeOnly {
+		delivery.Title = ""
+		delivery.Body = ""
+		return
+	}
+	delivery.Title = "DD"
+	delivery.Body = "你收到了一条新消息"
+}
+
+func renderGroupPreview(mode, groupName, senderName, messageType string, content []byte) (string, string) {
+	if normalizePreviewMode(mode) == PreviewHidden {
+		return "DD", "你收到了一条新消息"
+	}
+	title := strings.TrimSpace(groupName)
+	if title == "" {
+		title = "群聊"
+	}
+	sender := strings.TrimSpace(senderName)
+	if sender == "" {
+		sender = "群成员"
+	}
+	_, body := renderPreview(mode, sender, messageType, content)
+	if normalizePreviewMode(mode) == PreviewFull {
+		return title, sender + ": " + body
+	}
+	return title, sender + " 发来一条新消息"
 }
 
 func renderPreview(mode, senderName, messageType string, content []byte) (string, string) {

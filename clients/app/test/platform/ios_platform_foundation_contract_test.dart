@@ -10,6 +10,9 @@ void main() {
     final pushRegistration = File(
       'lib/features/push/application/push_registration_service.dart',
     ).readAsStringSync();
+    final pushMessagingAdapter = File(
+      'lib/features/push/application/push_messaging_adapter.dart',
+    ).readAsStringSync();
 
     for (final key in const [
       'NSCameraUsageDescription',
@@ -24,7 +27,12 @@ void main() {
     expect(info, contains('<string>remote-notification</string>'));
     expect(info, contains('<string>dd</string>'));
     expect(info, isNot(contains('NSBluetoothAlwaysUsageDescription')));
-    expect(pushRegistration, contains('requestPermission(alert: true, badge: true, sound: true)'));
+    expect(pushRegistration, contains('requestNotificationPermission'));
+    expect(pushRegistration, contains('NotificationAuthorizationState'));
+    expect(pushMessagingAdapter, contains('requestPermission('));
+    expect(pushMessagingAdapter, contains('alert: true'));
+    expect(pushMessagingAdapter, contains('badge: true'));
+    expect(pushMessagingAdapter, contains('sound: true'));
 
     expect(entitlements, contains('<key>aps-environment</key>'));
     expect(entitlements, contains(r'$(DD_APS_ENVIRONMENT)'));

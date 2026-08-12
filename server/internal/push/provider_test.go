@@ -39,6 +39,48 @@ func TestRenderPreviewHonorsPrivacyModes(t *testing.T) {
 	}
 }
 
+func TestApplyPreviewPrivacyStripsIdentityAcrossEventTypes(t *testing.T) {
+	delivery := Delivery{
+		Title: "Alice",
+		Body:  "正在邀请你视频通话",
+		Data: map[string]string{
+			"senderUserId":      "user-a",
+			"senderName":        "Alice",
+			"avatarUrl":         "https://example.test/avatar",
+			"conversationTitle": "Secret Group",
+			"conversationId":    "conversation-1",
+		},
+	}
+	applyPreviewPrivacy(&delivery, PreviewHidden)
+	if delivery.Title != "DD" || delivery.Body != "你收到了一条新消息" {
+		t.Fatalf("hidden delivery=(%q,%q)", delivery.Title, delivery.Body)
+	}
+	for _, key := range []string{"senderUserId", "senderName", "avatarUrl", "conversationTitle"} {
+		if _, ok := delivery.Data[key]; ok {
+			t.Fatalf("hidden delivery leaked %s in data=%#v", key, delivery.Data)
+		}
+	}
+	if delivery.Data["conversationId"] != "conversation-1" {
+		t.Fatalf("hidden delivery lost safe routing identity=%#v", delivery.Data)
+	}
+}
+
+func TestRenderGroupPreviewHonorsPrivacyModes(t *testing.T) {
+	content := []byte(`{"text":"今晚十点见"}`)
+	title, body := renderGroupPreview(PreviewFull, "项目群", "Alice", "TEXT", content)
+	if title != "项目群" || body != "Alice: 今晚十点见" {
+		t.Fatalf("full group preview=(%q,%q)", title, body)
+	}
+	title, body = renderGroupPreview(PreviewSenderOnly, "项目群", "Alice", "TEXT", content)
+	if title != "项目群" || body != "Alice 发来一条新消息" {
+		t.Fatalf("sender-only group preview=(%q,%q)", title, body)
+	}
+	title, body = renderGroupPreview(PreviewHidden, "Secret Group", "Secret Sender", "TEXT", content)
+	if title != "DD" || body != "你收到了一条新消息" {
+		t.Fatalf("hidden group preview leaked identity=(%q,%q)", title, body)
+	}
+}
+
 func TestMessageTypeLabelNeverLeaksProtocolTags(t *testing.T) {
 	tests := map[string]string{
 		"IMAGE":        "图片",
@@ -134,7 +176,11 @@ func TestFCMProviderUsesOAuthAndHTTPV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delivery := Delivery{Endpoint: "device-token", Title: "Alice", Body: "hello", Data: map[string]string{"eventType": "MESSAGE_CREATED"}}
+	delivery := Delivery{
+		Endpoint: "device-token", Title: "Alice", Body: "hello",
+		ConversationID: "conversation-1", Badge: 42,
+		Data: map[string]string{"eventType": "MESSAGE_CREATED", "recipientUserId": "user-a"},
+	}
 	for range 2 {
 		if _, err := provider.Send(context.Background(), delivery); err != nil {
 			t.Fatal(err)
@@ -164,6 +210,27 @@ func TestFCMProviderUsesOAuthAndHTTPV1(t *testing.T) {
 	if alert["title"] != "Alice" || alert["body"] != "hello" {
 		t.Fatalf("APNS alert=%#v", alert)
 	}
+	if aps["badge"] != float64(42) || aps["thread-id"] != "conversation-1" {
+		t.Fatalf("FCM APNS badge/thread=%#v", aps)
+	}
+
+	delivery.Title = ""
+	delivery.Body = ""
+	delivery.Badge = 43
+	delivery.BadgeOnly = true
+	if _, err := provider.Send(context.Background(), delivery); err != nil {
+		t.Fatalf("badge-only send: %v", err)
+	}
+	apns, _ = sentMessage["apns"].(map[string]any)
+	payload, _ = apns["payload"].(map[string]any)
+	aps, _ = payload["aps"].(map[string]any)
+	if aps["badge"] != float64(43) || aps["alert"] != nil || aps["sound"] != nil {
+		t.Fatalf("FCM APNS badge-only payload must stay silent: %#v", aps)
+	}
+	headers, _ := apns["headers"].(map[string]any)
+	if headers["apns-priority"] != "5" {
+		t.Fatalf("FCM APNS badge-only priority=%#v", headers)
+	}
 }
 
 func TestAPNSProviderUsesTokenHeadersAndInvalidatesGoneDevice(t *testing.T) {
@@ -177,6 +244,8 @@ func TestAPNSProviderUsesTokenHeadersAndInvalidatesGoneDevice(t *testing.T) {
 	}
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}))
 	status := http.StatusOK
+	var sentPayload map[string]any
+	var sentPriority string
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/3/device/apns-token" {
 			t.Fatalf("path=%s", request.URL.Path)
@@ -186,6 +255,14 @@ func TestAPNSProviderUsesTokenHeadersAndInvalidatesGoneDevice(t *testing.T) {
 		}
 		if request.Header.Get("apns-topic") != "org.openimx.client" || request.Header.Get("apns-push-type") != "alert" {
 			t.Fatalf("apns headers=%v", request.Header)
+		}
+		sentPriority = request.Header.Get("apns-priority")
+		requestBody, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err := json.Unmarshal(requestBody, &sentPayload); err != nil {
+			t.Fatalf("decode APNS payload: %v body=%s", err, requestBody)
 		}
 		body := ""
 		if status == http.StatusGone {
@@ -200,10 +277,35 @@ func TestAPNSProviderUsesTokenHeadersAndInvalidatesGoneDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delivery := Delivery{Endpoint: "apns-token", Environment: "PRODUCTION", Title: "DD", Body: "hello", HighPriority: true}
+	delivery := Delivery{
+		Endpoint: "apns-token", Environment: "PRODUCTION", Title: "DD", Body: "hello",
+		ConversationID: "conversation-2", HighPriority: true, Badge: 100,
+		Data: map[string]string{"recipientUserId": "user-a"},
+	}
 	if result, err := provider.Send(context.Background(), delivery); err != nil || result.MessageID != "id-1" {
 		t.Fatalf("success result=%+v err=%v", result, err)
 	}
+	aps, _ := sentPayload["aps"].(map[string]any)
+	dd, _ := sentPayload["dd"].(map[string]any)
+	if aps["badge"] != float64(100) || aps["thread-id"] != "conversation-2" {
+		t.Fatalf("APNS badge/thread=%#v", aps)
+	}
+	if dd["recipientUserId"] != "user-a" {
+		t.Fatalf("APNS DD payload lost account identity=%#v", dd)
+	}
+
+	delivery.Title = ""
+	delivery.Body = ""
+	delivery.Badge = 101
+	delivery.BadgeOnly = true
+	if _, err := provider.Send(context.Background(), delivery); err != nil {
+		t.Fatalf("APNS badge-only send: %v", err)
+	}
+	aps, _ = sentPayload["aps"].(map[string]any)
+	if aps["badge"] != float64(101) || aps["alert"] != nil || aps["sound"] != nil || sentPriority != "5" {
+		t.Fatalf("APNS badge-only must stay silent priority=%q aps=%#v", sentPriority, aps)
+	}
+
 	status = http.StatusGone
 	result, err := provider.Send(context.Background(), delivery)
 	if err == nil || !result.InvalidToken {
