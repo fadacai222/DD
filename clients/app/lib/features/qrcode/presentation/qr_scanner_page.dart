@@ -93,19 +93,26 @@ class _QrScannerPageState extends State<QrScannerPage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_manualCameraLifecycle ||
-        !_scannerController.value.hasCameraPermission) {
-      return;
-    }
+    if (!_manualCameraLifecycle) return;
+
+    final scannerState = _scannerController.value;
     switch (state) {
       case AppLifecycleState.resumed:
+        // A denied permission is cached in MobileScannerState. Always retry on
+        // resume so returning from iOS Settings can re-read system permission.
         unawaited(_startIosScanner());
       case AppLifecycleState.inactive:
-        unawaited(_scannerController.stop());
+        // The first system permission dialog itself makes the app inactive.
+        // Do not stop an uninitialized/denied scanner while that dialog is up.
+        if (scannerState.hasCameraPermission || scannerState.isRunning) {
+          unawaited(_scannerController.stop());
+        }
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
-        return;
+        if (scannerState.isRunning) {
+          unawaited(_scannerController.stop());
+        }
     }
   }
 
@@ -212,6 +219,7 @@ class _QrScannerPageState extends State<QrScannerPage>
         MobileScanner(
           key: const Key('dd-mobile-scanner'),
           controller: _scannerController,
+          useAppLifecycleState: !_manualCameraLifecycle,
           onDetect: (capture) {
             if (_processing) return;
             for (final barcode in capture.barcodes) {
@@ -222,16 +230,7 @@ class _QrScannerPageState extends State<QrScannerPage>
               }
             }
           },
-          errorBuilder: (context, error) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(26),
-              child: Text(
-                '摄像头无法启动：${error.errorCode.name}\n\n可以使用下方“粘贴二维码内容”。',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70),
-              ),
-            ),
-          ),
+          errorBuilder: (context, error) => _cameraErrorView(error),
         ),
         IgnorePointer(
           child: Center(
@@ -254,6 +253,46 @@ class _QrScannerPageState extends State<QrScannerPage>
           ),
       ],
     );
+  }
+
+  Widget _cameraErrorView(MobileScannerException error) {
+    final permissionDenied =
+        _manualCameraLifecycle &&
+        error.errorCode == MobileScannerErrorCode.permissionDenied;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(26),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '摄像头无法启动：${error.errorCode.name}\n\n可以使用下方“粘贴二维码内容”。',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            if (permissionDenied) ...[
+              const SizedBox(height: 12),
+              TextButton.icon(
+                key: const Key('qr-camera-open-settings'),
+                onPressed: () => unawaited(_openCameraSettings()),
+                icon: const Icon(Icons.settings_outlined),
+                label: const Text('去设置'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openCameraSettings() async {
+    try {
+      await ddOpenFilePickerAppSettings();
+    } on PlatformException catch (error) {
+      if (mounted) setState(() => _error = error.message ?? '无法打开系统设置。');
+    } catch (_) {
+      if (mounted) setState(() => _error = '无法打开系统设置。');
+    }
   }
 
   Widget _desktopFallback() {

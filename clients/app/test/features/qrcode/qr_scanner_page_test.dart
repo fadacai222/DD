@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/auth/data/auth_api_client.dart';
 import 'package:im_client/features/auth/domain/auth_session.dart';
 import 'package:im_client/features/groups/domain/group_models.dart';
 import 'package:im_client/features/qrcode/data/qr_api_client.dart';
 import 'package:im_client/features/qrcode/presentation/qr_scanner_page.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 void main() {
   testWidgets('Windows scanner uses explicit manual payload fallback', (
@@ -146,6 +150,119 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'iOS denied camera shows Settings recovery and resumed restarts after grant',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final originalPlatform = MobileScannerPlatform.instance;
+      final scannerPlatform = _FakeMobileScannerPlatform(
+        permissionGranted: false,
+      );
+      MobileScannerPlatform.instance = scannerPlatform;
+      const settingsChannel = MethodChannel('dd/file_picker');
+      var settingsCalls = 0;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        settingsChannel,
+        (call) async {
+          if (call.method == 'openAppSettings') settingsCalls++;
+          return null;
+        },
+      );
+      addTearDown(() async {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          settingsChannel,
+          null,
+        );
+        MobileScannerPlatform.instance = originalPlatform;
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScannerPage(
+            origin: Uri.parse('https://chat.example.invalid'),
+            accessToken: 'token',
+            onUnauthorized: () async => 'token',
+            gateway: _FakeQrGateway(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(scannerPlatform.startCalls, 1);
+      expect(
+        scannerPlatform.lastStartOptions?.detectionSpeed,
+        DetectionSpeed.noDuplicates,
+      );
+      expect(find.text('去设置'), findsOneWidget);
+      expect(find.byKey(const Key('qr-scan-paste')), findsOneWidget);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(scannerPlatform.stopCalls, 0);
+
+      await tester.tap(find.text('去设置'));
+      await tester.pump();
+      expect(settingsCalls, 1);
+
+      scannerPlatform.permissionGranted = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump();
+
+      expect(scannerPlatform.startCalls, 2);
+      expect(find.text('去设置'), findsNothing);
+      debugDefaultTargetPlatformOverride = null;
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'iOS resumed retries cached denial once without inactive stop or retry loop',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final originalPlatform = MobileScannerPlatform.instance;
+      final scannerPlatform = _FakeMobileScannerPlatform(
+        permissionGranted: false,
+      );
+      MobileScannerPlatform.instance = scannerPlatform;
+      addTearDown(() {
+        MobileScannerPlatform.instance = originalPlatform;
+        debugDefaultTargetPlatformOverride = null;
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: QrScannerPage(
+            origin: Uri.parse('https://chat.example.invalid'),
+            accessToken: 'token',
+            onUnauthorized: () async => 'token',
+            gateway: _FakeQrGateway(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(scannerPlatform.startCalls, 1);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(scannerPlatform.stopCalls, 0);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(scannerPlatform.startCalls, 2);
+      expect(scannerPlatform.stopCalls, 0);
+      expect(find.text('去设置'), findsOneWidget);
+      expect(find.byKey(const Key('qr-scan-paste')), findsOneWidget);
+      debugDefaultTargetPlatformOverride = null;
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('foreign-instance payload is rejected before server action', (
     tester,
   ) async {
@@ -175,6 +292,53 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
     expect(tester.takeException(), isNull);
   });
+}
+
+final class _FakeMobileScannerPlatform extends MobileScannerPlatform {
+  _FakeMobileScannerPlatform({required this.permissionGranted});
+
+  bool permissionGranted;
+  int startCalls = 0;
+  int stopCalls = 0;
+  StartOptions? lastStartOptions;
+
+  @override
+  Stream<BarcodeCapture?> get barcodesStream =>
+      const Stream<BarcodeCapture?>.empty();
+
+  @override
+  Stream<TorchState> get torchStateStream => const Stream<TorchState>.empty();
+
+  @override
+  Stream<double> get zoomScaleStateStream => const Stream<double>.empty();
+
+  @override
+  Future<MobileScannerViewAttributes> start(StartOptions startOptions) async {
+    startCalls++;
+    lastStartOptions = startOptions;
+    if (!permissionGranted) {
+      throw const MobileScannerException(
+        errorCode: MobileScannerErrorCode.permissionDenied,
+      );
+    }
+    return const MobileScannerViewAttributes(
+      cameraDirection: CameraFacing.back,
+      currentTorchMode: TorchState.unavailable,
+      size: Size(200, 200),
+      numberOfCameras: 1,
+    );
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+
+  @override
+  Widget buildCameraView() => const SizedBox.square(dimension: 100);
+
+  @override
+  Future<void> dispose() async {}
 }
 
 final class _FakeQrGateway implements QrGateway {
