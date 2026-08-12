@@ -13,6 +13,9 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+*.p8
+*.p12
+*.mobileprovision
 # Firebase client config is intentionally versioned for Android builds.
 # Firebase Admin service-account credentials are server secrets and must never enter Git.
 *firebase-adminsdk*.json

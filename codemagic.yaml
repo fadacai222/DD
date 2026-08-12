@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://codemagic.io/codemagic-schema.json
+
+workflows:
+  ios-unsigned-validation:
+    name: DD iOS unsigned validation
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    working_directory: clients/app
+    environment:
+      flutter: "3.44.9"
+      xcode: "26.6"
+      cocoapods: default
+    cache:
+      cache_paths:
+        - ~/.pub-cache
+    scripts:
+      - name: Show toolchain versions
+        script: |
+          flutter --version
+          xcodebuild -version
+      - name: Resolve Flutter dependencies
+        script: flutter pub get
+      - name: Analyze Flutter client
+        script: dart analyze --fatal-infos
+      - name: Run Flutter tests
+        script: flutter test
+      - name: Install CocoaPods dependencies when present
+        script: find ios -name "Podfile" -execdir pod install \;
+      - name: Build unsigned iOS app
+        script: flutter build ios --debug --no-codesign
+    artifacts:
+      - clients/app/build/ios/iphoneos/*.app
+      - /tmp/xcodebuild_logs/*.log
