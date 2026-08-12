@@ -204,7 +204,7 @@ function Invoke-GitleaksHistoryScan {
             --env 'GIT_WORK_TREE=/repo' `
             $Image `
             git `
-            --log-opts '--all HEAD' `
+            --log-opts '--all HEAD --diff-merges=first-parent' `
             --config /repo/.gitleaks.toml `
             --redact `
             --no-banner `
