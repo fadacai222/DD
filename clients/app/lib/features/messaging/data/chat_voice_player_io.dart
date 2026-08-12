@@ -10,33 +10,7 @@ import 'voice_playback_source.dart';
 
 final class ChatVoicePlayer {
   ChatVoicePlayer({bool Function()? callActive})
-    : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive) {
-    if (!Platform.isWindows) {
-      final player = ap.AudioPlayer();
-      _audioPlayer = player;
-      _subscriptions.add(
-        player.onPlayerStateChanged.listen((state) {
-          final playing = state == ap.PlayerState.playing;
-          _isPlaying = playing;
-          if (!_playingController.isClosed) _playingController.add(playing);
-          if (state == ap.PlayerState.completed &&
-              !_completedController.isClosed) {
-            _completedController.add(null);
-          }
-        }),
-      );
-      _subscriptions.add(
-        player.onPositionChanged.listen((value) {
-          if (!_positionController.isClosed) _positionController.add(value);
-        }),
-      );
-      _subscriptions.add(
-        player.onDurationChanged.listen((value) {
-          if (!_durationController.isClosed) _durationController.add(value);
-        }),
-      );
-    }
-  }
+    : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive);
 
   final bool Function() _callActive;
   mk.Player? _mediaKitPlayer;
@@ -57,6 +31,35 @@ final class ChatVoicePlayer {
   Stream<void> get completed => _completedController.stream;
   Stream<Duration> get position => _positionController.stream;
   Stream<Duration> get duration => _durationController.stream;
+
+  ap.AudioPlayer _ensureAudioPlayer() {
+    final existing = _audioPlayer;
+    if (existing != null) return existing;
+    final player = ap.AudioPlayer();
+    _audioPlayer = player;
+    _subscriptions.add(
+      player.onPlayerStateChanged.listen((state) {
+        final playing = state == ap.PlayerState.playing;
+        _isPlaying = playing;
+        if (!_playingController.isClosed) _playingController.add(playing);
+        if (state == ap.PlayerState.completed &&
+            !_completedController.isClosed) {
+          _completedController.add(null);
+        }
+      }),
+    );
+    _subscriptions.add(
+      player.onPositionChanged.listen((value) {
+        if (!_positionController.isClosed) _positionController.add(value);
+      }),
+    );
+    _subscriptions.add(
+      player.onDurationChanged.listen((value) {
+        if (!_durationController.isClosed) _durationController.add(value);
+      }),
+    );
+    return player;
+  }
 
   mk.Player _ensureMediaKitPlayer() {
     final existing = _mediaKitPlayer;
@@ -117,7 +120,7 @@ final class ChatVoicePlayer {
       return;
     }
 
-    final audio = _audioPlayer!;
+    final audio = _ensureAudioPlayer();
     await audio.stop();
     await audio.setPlaybackRate(rate);
     final source = await createVoicePlaybackSource(

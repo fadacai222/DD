@@ -15,7 +15,7 @@
 5. 云端顺序应为：`flutter pub get` → 仅对 DD 自有 `lib/`、`test/`、`tool/` 依次执行 `dart analyze --fatal-infos` → `flutter test` → `flutter build ios --release --no-codesign` → unsigned `xcodebuild archive`。
 6. 只有上述 Release compile + archive 都成功后，才可把 iOS Release 工程编译写为 `AUTO-VERIFIED`；这仍不等于签名/安装/TestFlight/真机通过。
 
-它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 前两次真实 Mac mini M2 云构建都在进入 Xcode compile 前暴露 analyzer 输入边界问题：Xcode/SwiftPM 生成的 `build/ios/SourcePackages/firebase_messaging-16.5.0/...` 与 `livekit_client-2.10.0/...` 被根级 `dart analyze --fatal-infos` 当作应用源码扫描，产生第三方 example/test 缺失依赖以及 lint 诊断。仅在根 `analysis_options.yaml` 配置 `exclude: build/**` 在该嵌套 package 场景下并不足以可靠阻止扫描，因此 Codemagic 两个 iOS workflow 现改为显式只分析 DD 自有 `lib/`、`test/`、`tool/` 三个源码根；`build/**` exclude 继续作为防御性配置。该修复不降低 DD 自有源码 lint 严格度，也不修改 Firebase/LiveKit 或业务功能，仍需下一次 Codemagic 重跑验证；在 Release compile + archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
+它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 前两次真实 Mac mini M2 云构建在 Xcode compile 前暴露 analyzer 输入边界问题：Xcode/SwiftPM 生成的 `build/ios/SourcePackages/firebase_messaging-16.5.0/...` 与 `livekit_client-2.10.0/...` 被根级 `dart analyze --fatal-infos` 当作应用源码扫描。两个 iOS workflow 随后改为显式只分析 DD 自有 `lib/`、`test/`、`tool/` 三个源码根；第三次云构建已证明 analyzer 门禁通过，但 `flutter test` 在 macOS 上继续暴露 `ChatVoicePlayer` 构造期过早创建 `audioplayers.AudioPlayer`：测试只验证“通话占用时拒绝播放/恢复”，却在进入通话保护前先触发未初始化的 `ServicesBinding` / platform channel，并最终超时。当前 `ChatVoicePlayer` 已改为惰性创建非 Windows 音频后端，只有通过通话占用检查并真正开始播放时才初始化插件；本地定向测试 2/2、相关 analyzer 及 Flutter 全量 448 PASS / 5 SKIP / 0 FAIL。该修复仍需下一次 Codemagic 重跑验证；在 Release compile + archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
 
 ## 2. Codemagic signing contract
 
