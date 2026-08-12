@@ -1,0 +1,20 @@
+import Flutter
+
+protocol DDNativeService {
+  static var pluginKey: String { get }
+  static func register(with registrar: FlutterPluginRegistrar)
+}
+
+enum NativeServiceRegistrar {
+  static func register(with registry: FlutterPluginRegistry) {
+    register(NativeRouteService.self, with: registry)
+  }
+
+  private static func register<Service: DDNativeService>(
+    _ service: Service.Type,
+    with registry: FlutterPluginRegistry
+  ) {
+    let registrar = registry.registrar(forPlugin: Service.pluginKey)
+    Service.register(with: registrar)
+  }
+}
