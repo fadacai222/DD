@@ -25,6 +25,10 @@ Thumbs.db
 server/bin/
 server/coverage.out
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Node / frontend
 node_modules/
 dist/

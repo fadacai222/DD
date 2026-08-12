@@ -1,0 +1,818 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Default-deny. Every job declares only the permissions it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_COMMIT: 6b182d2c7585eba26d4edce0f97630effd256c33 # Flutter 3.44.9
+  TRIVY_IMAGE: aquasec/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c # 0.73.0
+  SYFT_IMAGE: anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 # 1.51.0
+
+jobs:
+  verify-source-and-upstream-gates:
+    name: Verify release tag and upstream gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.contract.outputs.version }}
+      tag: ${{ steps.contract.outputs.tag }}
+      sha: ${{ steps.contract.outputs.sha }}
+      commit_count: ${{ steps.contract.outputs.commit_count }}
+      commit_date: ${{ steps.contract.outputs.commit_date }}
+      source_date_epoch: ${{ steps.contract.outputs.source_date_epoch }}
+      previous_release: ${{ steps.previous.outputs.previous_release }}
+    steps:
+      - name: Checkout exact tagged commit with full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate formal tag, clean source, current master, and changelog
+        id: contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py validate \
+            --repo . \
+            --tag "$GITHUB_REF_NAME" \
+            --changelog CHANGELOG.md \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Verify exact-SHA CI and full-history Secret Scan succeeded on master push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-gate-evidence
+          python scripts/release/verify_github_gates.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --branch master \
+            --workflow ci.yml \
+            --workflow secret-scan.yml \
+            --output "release-gate-evidence/DD-${{ steps.contract.outputs.tag }}-upstream-gates.json"
+
+      - name: Resolve previous formal release for rollback evidence
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+          if [ -z "$previous" ]; then
+            previous="NONE"
+          else
+            asset_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.assets | length')"
+            if ! printf '%s' "$asset_count" | grep -Eq '^[1-9][0-9]*$'; then
+              echo "previous formal release $previous has no retained rollback assets" >&2
+              exit 1
+            fi
+          fi
+          if [ "$previous" = "$GITHUB_REF_NAME" ]; then
+            echo "latest published release unexpectedly equals the tag being built" >&2
+            exit 1
+          fi
+          echo "previous_release=$previous" >> "$GITHUB_OUTPUT"
+
+      - name: Upload upstream gate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ steps.contract.outputs.tag }}-upstream-gates
+          path: release-gate-evidence/DD-${{ steps.contract.outputs.tag }}-upstream-gates.json
+          if-no-files-found: error
+          retention-days: 90
+
+  dependency-vulnerability-scan:
+    name: Dependency vulnerability gate
+    needs: verify-source-and-upstream-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan repository dependencies for HIGH/CRITICAL vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-security
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/src:ro" \
+            --volume "$GITHUB_WORKSPACE/release-security:/out" \
+            "$TRIVY_IMAGE" \
+            fs \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            --format json \
+            --output "/out/DD-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-dependencies.trivy.json" \
+            /src
+
+      - name: Upload dependency vulnerability report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-dependency-security
+          path: release-security/*.trivy.json
+          if-no-files-found: error
+          retention-days: 90
+
+  build-web:
+    name: Build Web release
+    needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install exact Flutter commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$HOME/flutter"
+          git -C "$HOME/flutter" fetch --depth 1 origin "$FLUTTER_COMMIT"
+          git -C "$HOME/flutter" checkout --detach "$FLUTTER_COMMIT"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve Flutter dependencies
+        working-directory: clients/app
+        run: flutter pub get
+
+      - name: Build Web release
+        working-directory: clients/app
+        env:
+          DD_RELEASE_VERSION: ${{ needs.verify-source-and-upstream-gates.outputs.version }}
+          DD_RELEASE_TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          DD_RELEASE_SHA: ${{ needs.verify-source-and-upstream-gates.outputs.sha }}
+          DD_RELEASE_COMMIT_COUNT: ${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build web --release
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = {
+              "schemaVersion": 1,
+              "releaseVersion": os.environ["DD_RELEASE_VERSION"],
+              "gitTag": os.environ["DD_RELEASE_TAG"],
+              "gitCommit": os.environ["DD_RELEASE_SHA"],
+              "gitCommitCount": int(os.environ["DD_RELEASE_COMMIT_COUNT"]),
+              "platform": "web-any",
+          }
+          Path("build/web/release-info.json").write_text(
+              json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Package deterministic Web archive
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.verify-source-and-upstream-gates.outputs.source_date_epoch }}
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          tar \
+            --sort=name \
+            --mtime="@$SOURCE_DATE_EPOCH" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf - \
+            -C clients/app/build/web . \
+            | gzip -n > "release/DD-${TAG}-web-any.tar.gz"
+
+      - name: Generate client dependency SBOM
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/clients/app:/src:ro" \
+            --volume "$GITHUB_WORKSPACE/release:/out" \
+            "$SYFT_IMAGE" \
+            scan dir:/src \
+            --output "spdx-json=/out/DD-${TAG}-client.spdx.json"
+
+      - name: Upload Web artifact and client SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-web
+          path: release/*
+          if-no-files-found: error
+          retention-days: 90
+
+  build-android:
+    name: Build and production-sign Android APKs
+    needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: release-signing
+    permissions:
+      contents: read
+    env:
+      DD_ANDROID_KEYSTORE_BASE64: ${{ secrets.DD_ANDROID_KEYSTORE_BASE64 }}
+      DD_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.DD_ANDROID_KEYSTORE_PASSWORD }}
+      DD_ANDROID_KEY_ALIAS: ${{ secrets.DD_ANDROID_KEY_ALIAS }}
+      DD_ANDROID_KEY_PASSWORD: ${{ secrets.DD_ANDROID_KEY_PASSWORD }}
+      DD_ANDROID_CERT_SHA256: ${{ vars.DD_ANDROID_CERT_SHA256 }}
+      DD_ANDROID_REQUIRE_PROD_SIGNING: 'true'
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require production Android signing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            DD_ANDROID_KEYSTORE_BASE64 \
+            DD_ANDROID_KEYSTORE_PASSWORD \
+            DD_ANDROID_KEY_ALIAS \
+            DD_ANDROID_KEY_PASSWORD \
+            DD_ANDROID_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "required release-signing Environment value is missing: $name" >&2
+              exit 1
+            fi
+          done
+          expected="$(printf '%s' "$DD_ANDROID_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo 'DD_ANDROID_CERT_SHA256 must be a 64-hex SHA-256 certificate digest' >&2
+            exit 1
+          fi
+
+      - name: Materialize Android keystore in runner temp
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'dd-android-release.jks'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:DD_ANDROID_KEYSTORE_BASE64))
+          "DD_ANDROID_KEYSTORE_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install exact Flutter commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git "$HOME/flutter"
+          git -C "$HOME/flutter" fetch --depth 1 origin "$FLUTTER_COMMIT"
+          git -C "$HOME/flutter" checkout --detach "$FLUTTER_COMMIT"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve Flutter dependencies
+        working-directory: clients/app
+        run: flutter pub get
+
+      - name: Build production-signed split APKs
+        working-directory: clients/app
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk \
+            --release \
+            --split-per-abi \
+            --build-name '${{ needs.verify-source-and-upstream-gates.outputs.version }}' \
+            --build-number '${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}'
+
+      - name: Verify Android signatures and certificate identity
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$apksigner" || { echo 'apksigner not found' >&2; exit 1; }
+          expected="$(printf '%s' "$DD_ANDROID_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          mkdir -p release
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            source="clients/app/build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            test -s "$source" || { echo "missing APK: $source" >&2; exit 1; }
+            "$apksigner" verify --verbose "$source"
+            actual="$("$apksigner" verify --print-certs "$source" | awk -F': ' '/Signer #1 certificate SHA-256 digest/{print tolower($2); exit}')"
+            if [ "$actual" != "$expected" ]; then
+              echo "Android signer digest mismatch for $abi" >&2
+              exit 1
+            fi
+            cp "$source" "release/DD-${TAG}-android-${abi}.apk"
+          done
+
+      - name: Upload signed Android artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-android
+          path: release/*.apk
+          if-no-files-found: error
+          retention-days: 90
+
+  build-windows:
+    name: Build and Authenticode-sign Windows x64
+    needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: release-signing
+    permissions:
+      contents: read
+    env:
+      DD_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.DD_WINDOWS_CODESIGN_PFX_BASE64 }}
+      DD_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.DD_WINDOWS_CODESIGN_PFX_PASSWORD }}
+      DD_WINDOWS_CERT_THUMBPRINT: ${{ vars.DD_WINDOWS_CERT_THUMBPRINT }}
+      DD_WINDOWS_TIMESTAMP_URL: ${{ vars.DD_WINDOWS_TIMESTAMP_URL }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require Windows production code-signing contract
+        shell: pwsh
+        run: |
+          $required = @(
+            'DD_WINDOWS_CODESIGN_PFX_BASE64',
+            'DD_WINDOWS_CODESIGN_PFX_PASSWORD',
+            'DD_WINDOWS_CERT_THUMBPRINT',
+            'DD_WINDOWS_TIMESTAMP_URL'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "required release-signing Environment value is missing: $name"
+            }
+          }
+          $thumbprint = ($env:DD_WINDOWS_CERT_THUMBPRINT -replace ':', '').ToUpperInvariant()
+          if ($thumbprint -notmatch '^[0-9A-F]{40}$') {
+            throw 'DD_WINDOWS_CERT_THUMBPRINT must be a 40-hex certificate thumbprint'
+          }
+          $uri = $null
+          if (-not [Uri]::TryCreate($env:DD_WINDOWS_TIMESTAMP_URL, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -ne 'https') {
+            throw 'DD_WINDOWS_TIMESTAMP_URL must be an absolute HTTPS RFC3161 timestamp URL'
+          }
+
+      - name: Materialize Windows signing certificate in runner temp
+        shell: pwsh
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'dd-windows-release.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:DD_WINDOWS_CODESIGN_PFX_BASE64))
+          $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $path,
+            $env:DD_WINDOWS_CODESIGN_PFX_PASSWORD,
+            $flags
+          )
+          $actual = $cert.Thumbprint.ToUpperInvariant()
+          $expected = ($env:DD_WINDOWS_CERT_THUMBPRINT -replace ':', '').ToUpperInvariant()
+          if ($actual -ne $expected) {
+            throw "Windows PFX certificate thumbprint mismatch: expected $expected, got $actual"
+          }
+          "DD_WINDOWS_PFX_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install exact Flutter commit
+        shell: pwsh
+        run: |
+          $flutterRoot = Join-Path $env:RUNNER_TEMP 'flutter'
+          git clone --filter=blob:none --no-checkout https://github.com/flutter/flutter.git $flutterRoot
+          git -C $flutterRoot fetch --depth 1 origin $env:FLUTTER_COMMIT
+          git -C $flutterRoot checkout --detach $env:FLUTTER_COMMIT
+          (Join-Path $flutterRoot 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Enable Windows desktop and resolve dependencies
+        working-directory: clients/app
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+
+      - name: Build Windows Release with deterministic version number
+        working-directory: clients/app
+        shell: pwsh
+        run: |
+          flutter build windows --release --no-pub `
+            --build-name '${{ needs.verify-source-and-upstream-gates.outputs.version }}' `
+            --build-number '${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}'
+
+      - name: Authenticode-sign and verify DD executable
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw 'Windows SDK signtool.exe not found' }
+          $exe = Resolve-Path 'clients/app/build/windows/x64/runner/Release/im_client.exe'
+          & $signtool.FullName sign `
+            /f $env:DD_WINDOWS_PFX_PATH `
+            /p $env:DD_WINDOWS_CODESIGN_PFX_PASSWORD `
+            /fd SHA256 `
+            /tr $env:DD_WINDOWS_TIMESTAMP_URL `
+            /td SHA256 `
+            $exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit code $LASTEXITCODE" }
+          & $signtool.FullName verify /pa /all /v $exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit code $LASTEXITCODE" }
+          $signature = Get-AuthenticodeSignature -FilePath $exe
+          if ($signature.Status -ne 'Valid') {
+            throw "Authenticode signature status is $($signature.Status)"
+          }
+          $actual = $signature.SignerCertificate.Thumbprint.ToUpperInvariant()
+          $expected = ($env:DD_WINDOWS_CERT_THUMBPRINT -replace ':', '').ToUpperInvariant()
+          if ($actual -ne $expected) { throw 'signed executable certificate thumbprint mismatch' }
+
+      - name: Add deterministic release metadata and package Windows x64
+        env:
+          DD_RELEASE_VERSION: ${{ needs.verify-source-and-upstream-gates.outputs.version }}
+          DD_RELEASE_TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          DD_RELEASE_SHA: ${{ needs.verify-source-and-upstream-gates.outputs.sha }}
+          DD_RELEASE_COMMIT_COUNT: ${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}
+        shell: pwsh
+        run: |
+          $releaseDir = Resolve-Path 'clients/app/build/windows/x64/runner/Release'
+          $info = [ordered]@{
+            schemaVersion = 1
+            releaseVersion = $env:DD_RELEASE_VERSION
+            gitTag = $env:DD_RELEASE_TAG
+            gitCommit = $env:DD_RELEASE_SHA
+            gitCommitCount = [int]$env:DD_RELEASE_COMMIT_COUNT
+            platform = 'windows-x64'
+          }
+          $info | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDir 'release-info.json') -Encoding UTF8
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath "release/DD-$env:DD_RELEASE_TAG-windows-x64.zip" -CompressionLevel Optimal
+
+      - name: Upload signed Windows artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-windows
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 90
+
+  build-server-images:
+    name: Build, scan, and SBOM server images
+    needs: [verify-source-and-upstream-gates, dependency-vulnerability-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build exact linux/amd64 server images
+        env:
+          VERSION: ${{ needs.verify-source-and-upstream-gates.outputs.version }}
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          SHA: ${{ needs.verify-source-and-upstream-gates.outputs.sha }}
+          BUILD_DATE: ${{ needs.verify-source-and-upstream-gates.outputs.commit_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for component in api worker migrate; do
+            local_image="dd-${component}:${SHA}"
+            docker buildx build \
+              --load \
+              --platform linux/amd64 \
+              --target "$component" \
+              --build-arg "VERSION=$VERSION" \
+              --build-arg "VCS_REF=$SHA" \
+              --build-arg "BUILD_DATE=$BUILD_DATE" \
+              --build-arg "SOURCE_URL=https://github.com/$GITHUB_REPOSITORY" \
+              --tag "$local_image" \
+              --file server/Dockerfile \
+              .
+            docker save --output "release/DD-${TAG}-server-${component}-linux-amd64.tar" "$local_image"
+          done
+
+      - name: Scan server images for HIGH/CRITICAL vulnerabilities
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for component in api worker migrate; do
+            image_tar="DD-${TAG}-server-${component}-linux-amd64.tar"
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE/release:/out" \
+              "$TRIVY_IMAGE" \
+              image \
+              --input "/out/$image_tar" \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --no-progress \
+              --format json \
+              --output "/out/DD-${TAG}-server-${component}-linux-amd64.trivy.json"
+          done
+
+      - name: Generate SPDX SBOMs from exact server image archives
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for component in api worker migrate; do
+            image_tar="DD-${TAG}-server-${component}-linux-amd64.tar"
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE/release:/out" \
+              "$SYFT_IMAGE" \
+              scan "docker-archive:/out/$image_tar" \
+              --output "spdx-json=/out/DD-${TAG}-server-${component}-linux-amd64.spdx.json"
+          done
+
+      - name: Upload server image archives, SBOMs, and scan reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-server
+          path: release/*
+          if-no-files-found: error
+          retention-days: 90
+
+  assemble-attest-and-sign:
+    name: Assemble checksums, SBOM/provenance, keyless signature, and attestation
+    needs:
+      - verify-source-and-upstream-gates
+      - dependency-vulnerability-scan
+      - build-web
+      - build-android
+      - build-windows
+      - build-server-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-*
+          path: release-bundle
+          merge-multiple: true
+
+      - name: Build deterministic release metadata and descriptive provenance
+        env:
+          VERSION: ${{ needs.verify-source-and-upstream-gates.outputs.version }}
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          SHA: ${{ needs.verify-source-and-upstream-gates.outputs.sha }}
+          COMMIT_DATE: ${{ needs.verify-source-and-upstream-gates.outputs.commit_date }}
+          COMMIT_COUNT: ${{ needs.verify-source-and-upstream-gates.outputs.commit_count }}
+          PREVIOUS_RELEASE: ${{ needs.verify-source-and-upstream-gates.outputs.previous_release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py metadata \
+            --root release-bundle \
+            --output "release-bundle/DD-${TAG}-release-metadata.json" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --commit "$SHA" \
+            --commit-date "$COMMIT_DATE" \
+            --commit-count "$COMMIT_COUNT" \
+            --previous-release "$PREVIOUS_RELEASE"
+          python scripts/release/release_contract.py provenance \
+            --root release-bundle \
+            --output "release-bundle/DD-${TAG}-provenance.json" \
+            --metadata "release-bundle/DD-${TAG}-release-metadata.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Generate and verify SHA-256 manifest
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py checksums \
+            --root release-bundle \
+            --output "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+          python scripts/release/release_contract.py verify-checksums \
+            --root release-bundle \
+            --manifest "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Keyless-sign checksum manifest with GitHub OIDC
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle "release-bundle/DD-${TAG}-SHA256SUMS.sigstore.json" \
+            "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+          cosign verify-blob \
+            --bundle "release-bundle/DD-${TAG}-SHA256SUMS.sigstore.json" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+
+      - name: Create GitHub signed build provenance for release files
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: 'release-bundle/*'
+
+      - name: Upload final rollback-capable release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-final-release
+          path: release-bundle/*
+          if-no-files-found: error
+          retention-days: 90
+
+  production-release:
+    name: Production approval, image publication, signing, and GitHub Release
+    needs:
+      - verify-source-and-upstream-gates
+      - assemble-attest-and-sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production-release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-verify clean source tag after production approval
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py validate \
+            --repo . \
+            --tag "$TAG" \
+            --changelog CHANGELOG.md
+
+      - name: Download final release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dd-${{ needs.verify-source-and-upstream-gates.outputs.tag }}-final-release
+          path: release-bundle
+
+      - name: Re-verify release checksums after approval
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/release_contract.py verify-checksums \
+            --root release-bundle \
+            --manifest "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: 'v3.1.3'
+
+      - name: Verify checksum Sigstore bundle again
+        env:
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle "release-bundle/DD-${TAG}-SHA256SUMS.sigstore.json" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "release-bundle/DD-${TAG}-SHA256SUMS.txt"
+
+      - name: Publish immutable versioned server images to GHCR
+        id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          SHA: ${{ needs.verify-source-and-upstream-gates.outputs.sha }}
+          PREVIOUS_RELEASE: ${{ needs.verify-source-and-upstream-gates.outputs.previous_release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          repo_lower="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          if [ "$PREVIOUS_RELEASE" != "NONE" ]; then
+            for component in api worker migrate; do
+              previous_image="ghcr.io/${repo_lower}-${component}:${PREVIOUS_RELEASE}"
+              docker manifest inspect "$previous_image" >/dev/null || {
+                echo "previous rollback image is missing: $previous_image" >&2
+                exit 1
+              }
+            done
+          fi
+          for component in api worker migrate; do
+            archive="release-bundle/DD-${TAG}-server-${component}-linux-amd64.tar"
+            docker load --input "$archive"
+            source_image="dd-${component}:${SHA}"
+            destination="ghcr.io/${repo_lower}-${component}:${TAG}"
+            docker tag "$source_image" "$destination"
+            docker push "$destination"
+            docker pull "$destination" >/dev/null
+            digest_ref="$(docker inspect --format='{{index .RepoDigests 0}}' "$destination")"
+            digest="${digest_ref##*@}"
+            if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "unable to resolve pushed digest for $component" >&2
+              exit 1
+            fi
+            cosign sign --yes "${destination%:*}@${digest}"
+            echo "${component}_name=${destination%:*}" >> "$GITHUB_OUTPUT"
+            echo "${component}_digest=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Attest API image provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ steps.images.outputs.api_name }}
+          subject-digest: ${{ steps.images.outputs.api_digest }}
+          push-to-registry: true
+
+      - name: Attest Worker image provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ steps.images.outputs.worker_name }}
+          subject-digest: ${{ steps.images.outputs.worker_digest }}
+          push-to-registry: true
+
+      - name: Attest migrate image provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ steps.images.outputs.migrate_name }}
+          subject-digest: ${{ steps.images.outputs.migrate_digest }}
+          push-to-registry: true
+
+      - name: Create immutable GitHub Release from verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify-source-and-upstream-gates.outputs.tag }}
+          VERSION: ${{ needs.verify-source-and-upstream-gates.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists; refusing silent overwrite" >&2
+            exit 1
+          fi
+          python - "$VERSION" > release-notes.md <<'PY'
+          import re, sys
+          from pathlib import Path
+          version = sys.argv[1]
+          text = Path('CHANGELOG.md').read_text(encoding='utf-8')
+          pattern = re.compile(
+              rf'^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\s*$\n(.*?)(?=^## \[|\Z)',
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit(f'CHANGELOG entry for {version} not found')
+          print(match.group(0).strip())
+          PY
+          prerelease_flag=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "DD $VERSION" \
+            --notes-file release-notes.md \
+            "${prerelease_flag[@]}" \
+            release-bundle/*
