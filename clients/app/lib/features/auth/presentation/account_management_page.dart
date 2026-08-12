@@ -816,6 +816,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
       origin: widget.origin,
       accessToken: _accessToken,
     );
+    await widget.onCurrentDeviceAuthoritativelyRevoked?.call();
     if (!mounted) return;
     Navigator.of(context).pop(true);
   });

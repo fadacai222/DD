@@ -288,6 +288,10 @@ func (s *server) requirePrincipal(response http.ResponseWriter, request *http.Re
 		return account.Principal{}, false
 	}
 	principal, err := s.auth.AuthenticateAccessToken(request.Context(), strings.TrimSpace(authorization[len(prefix):]))
+	if errors.Is(err, account.ErrDeviceSessionRevoked) {
+		writeAPIError(response, http.StatusUnauthorized, "DEVICE_SESSION_REVOKED", "Device session has been revoked")
+		return account.Principal{}, false
+	}
 	if err != nil {
 		writeAPIError(response, http.StatusUnauthorized, "UNAUTHORIZED", "Valid access token is required")
 		return account.Principal{}, false

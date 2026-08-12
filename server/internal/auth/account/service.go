@@ -479,6 +479,9 @@ func (service *Service) Refresh(ctx context.Context, rawRefreshToken string) (Au
 	if err != nil {
 		return AuthSession{}, fmt.Errorf("load refresh token: %w", err)
 	}
+	if deviceRevokedAt != nil {
+		return AuthSession{}, ErrDeviceSessionRevoked
+	}
 	if usedAt != nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE refresh_tokens
@@ -492,7 +495,7 @@ func (service *Service) Refresh(ctx context.Context, rawRefreshToken string) (Au
 		}
 		return AuthSession{}, ErrRefreshReuse
 	}
-	if revokedAt != nil || deviceRevokedAt != nil || !expiresAt.After(now) {
+	if revokedAt != nil || !expiresAt.After(now) {
 		return AuthSession{}, ErrInvalidRefreshToken
 	}
 

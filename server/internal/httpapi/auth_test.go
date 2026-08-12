@@ -20,6 +20,7 @@ type fakeAuthService struct {
 	refreshErr        error
 	loginResult       *account.AuthSession
 	refreshResult     *account.AuthSession
+	authenticateErr   error
 	lastEmail         string
 	lastRefresh       string
 	clearRevokedCount int64
@@ -54,6 +55,9 @@ func (fake *fakeAuthService) ResetPassword(_ context.Context, _ account.ResetPas
 	return nil
 }
 func (fake *fakeAuthService) AuthenticateAccessToken(_ context.Context, _ string) (account.Principal, error) {
+	if fake.authenticateErr != nil {
+		return account.Principal{}, fake.authenticateErr
+	}
 	return account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}, nil
 }
 func (fake *fakeAuthService) GetMe(_ context.Context, _ account.Principal) (account.Me, error) {
@@ -171,6 +175,41 @@ func TestAuthRefreshReuseReturnsExpiredSessionWithoutDetail(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(response.Body.String()), "reuse") {
 		t.Fatalf("response exposes refresh reuse detail: %s", response.Body.String())
+	}
+}
+
+func TestAuthRefreshRevokedDeviceReturnsAuthoritativeCode(t *testing.T) {
+	fake := &fakeAuthService{refreshErr: account.ErrDeviceSessionRevoked}
+	handler := NewHandler(Config{AuthService: fake})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/token/refresh", strings.NewReader(`{"refreshToken":"revoked-device-token"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"DEVICE_SESSION_REVOKED"`) {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAuthenticatedEndpointDistinguishesRevokedDeviceFromOrdinaryUnauthorized(t *testing.T) {
+	fake := &fakeAuthService{authenticateErr: account.ErrDeviceSessionRevoked}
+	handler := NewHandler(Config{AuthService: fake})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	request.Header.Set("Authorization", "Bearer revoked-device-access")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"DEVICE_SESSION_REVOKED"`) {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+
+	fake.authenticateErr = account.ErrUnauthorized
+	ordinary := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	ordinary.Header.Set("Authorization", "Bearer expired-access")
+	ordinaryResponse := httptest.NewRecorder()
+	handler.ServeHTTP(ordinaryResponse, ordinary)
+	if ordinaryResponse.Code != http.StatusUnauthorized || !strings.Contains(ordinaryResponse.Body.String(), `"code":"UNAUTHORIZED"`) {
+		t.Fatalf("ordinary status = %d body=%s", ordinaryResponse.Code, ordinaryResponse.Body.String())
 	}
 }
 

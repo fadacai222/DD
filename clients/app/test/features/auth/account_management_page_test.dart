@@ -174,6 +174,102 @@ void main() {
     },
   );
 
+  testWidgets('logoutAll success authoritatively abandons current push lease once', (
+    tester,
+  ) async {
+    var authoritativeAbandonCalls = 0;
+    final gateway = _AccountGateway();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AccountManagementPage(
+          gateway: gateway,
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          session: _session(),
+          onCurrentDeviceAuthoritativelyRevoked: () async {
+            authoritativeAbandonCalls++;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '退出全部设备'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.logoutAllCalls, 1);
+    expect(authoritativeAbandonCalls, 1);
+  });
+
+  testWidgets('logoutAll API failure never abandons current push lease', (
+    tester,
+  ) async {
+    var authoritativeAbandonCalls = 0;
+    final gateway = _AccountGateway()
+      ..logoutAllError = const AuthApiException(
+        statusCode: 503,
+        code: 'TEMPORARY',
+        message: 'temporary failure',
+      );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AccountManagementPage(
+          gateway: gateway,
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          session: _session(),
+          onCurrentDeviceAuthoritativelyRevoked: () async {
+            authoritativeAbandonCalls++;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '退出全部设备'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.logoutAllCalls, 1);
+    expect(authoritativeAbandonCalls, 0);
+    expect(find.textContaining('操作失败'), findsOneWidget);
+  });
+
+  testWidgets('remote-device revoke never abandons current push lease', (
+    tester,
+  ) async {
+    var authoritativeAbandonCalls = 0;
+    final gateway = _AccountGateway()
+      ..devices = [
+        AccountDevice(
+          id: 'd2',
+          name: 'Android',
+          platform: 'ANDROID',
+          appVersion: 'dev',
+          createdAt: DateTime.utc(2026, 8, 9),
+          lastSeenAt: DateTime.utc(2026, 8, 13),
+          current: false,
+          revoked: false,
+        ),
+      ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AccountManagementPage(
+          gateway: gateway,
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          session: _session(),
+          onCurrentDeviceAuthoritativelyRevoked: () async {
+            authoritativeAbandonCalls++;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, '远程退出'));
+    await tester.pumpAndSettle();
+
+    expect(gateway.revokeDeviceCalls, 1);
+    expect(authoritativeAbandonCalls, 0);
+  });
+
   testWidgets('account settings no longer exposes profile editing fields', (
     tester,
   ) async {
@@ -212,6 +308,9 @@ final class _AccountGateway implements AuthGateway {
   List<AccountDevice> devices = const [];
   int clearRevokedCalls = 0;
   int revokeDeviceCalls = 0;
+  int logoutAllCalls = 0;
+  Object? revokeDeviceError;
+  Object? logoutAllError;
 
   @override
   Future<AccountMe> getMe({
@@ -337,6 +436,8 @@ final class _AccountGateway implements AuthGateway {
     required String deviceId,
   }) async {
     revokeDeviceCalls++;
+    final error = revokeDeviceError;
+    if (error != null) throw error;
   }
   @override
   Future<int> clearRevokedDevices({
@@ -355,7 +456,11 @@ final class _AccountGateway implements AuthGateway {
   Future<void> logoutAll({
     required Uri origin,
     required String accessToken,
-  }) async {}
+  }) async {
+    logoutAllCalls++;
+    final error = logoutAllError;
+    if (error != null) throw error;
+  }
   @override
   void close() {}
 }

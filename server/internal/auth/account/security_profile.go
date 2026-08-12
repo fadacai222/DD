@@ -21,10 +21,11 @@ const (
 )
 
 var (
-	ErrLoginRateLimited = errors.New("login rate limited")
-	ErrUnauthorized     = errors.New("unauthorized")
-	ErrForbidden        = errors.New("forbidden")
-	ErrNotFound         = errors.New("not found")
+	ErrLoginRateLimited     = errors.New("login rate limited")
+	ErrUnauthorized         = errors.New("unauthorized")
+	ErrDeviceSessionRevoked = errors.New("device session revoked")
+	ErrForbidden            = errors.New("forbidden")
+	ErrNotFound             = errors.New("not found")
 )
 
 type Principal struct {
@@ -89,15 +90,24 @@ func (service *Service) AuthenticateAccessToken(ctx context.Context, raw string)
 	}
 	userID, _ := uuid.Parse(claims.Subject)
 	deviceID, _ := uuid.Parse(claims.DeviceID)
-	var active bool
+	var deviceRevokedAt *time.Time
+	var userStatus string
 	err = service.pool.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM devices d
-			JOIN users u ON u.id = d.user_id
-			WHERE d.id = $1 AND d.user_id = $2 AND d.revoked_at IS NULL AND u.status = 'ACTIVE'
-		)
-	`, deviceID, userID).Scan(&active)
-	if err != nil || !active {
+		SELECT d.revoked_at, u.status
+		FROM devices d
+		JOIN users u ON u.id = d.user_id
+		WHERE d.id = $1 AND d.user_id = $2
+	`, deviceID, userID).Scan(&deviceRevokedAt, &userStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Principal{}, ErrUnauthorized
+	}
+	if err != nil {
+		return Principal{}, ErrUnauthorized
+	}
+	if deviceRevokedAt != nil {
+		return Principal{}, ErrDeviceSessionRevoked
+	}
+	if userStatus != "ACTIVE" {
 		return Principal{}, ErrUnauthorized
 	}
 	return Principal{UserID: userID, DeviceID: deviceID}, nil

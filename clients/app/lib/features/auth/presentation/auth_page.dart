@@ -60,6 +60,12 @@ class _AuthPageState extends State<AuthPage>
   bool _messageIsError = false;
   Timer? _refreshTimer;
   Future<AuthSession?>? _refreshInFlight;
+  int? _refreshInFlightEpoch;
+  String? _refreshInFlightUserId;
+  String? _refreshInFlightDeviceId;
+  String? _refreshInFlightOrigin;
+  int _sessionEpoch = 0;
+  bool _sessionTransitionInProgress = false;
   List<LoginHistoryEntry> _loginHistory = const [];
 
   @override
@@ -605,6 +611,7 @@ class _AuthPageState extends State<AuthPage>
       device: AuthDeviceInput.current(),
     );
     if (!mounted) return;
+    _sessionEpoch++;
     setState(() => _session = session);
     final persisted = await _persistSessionBestEffort(session);
     _scheduleSessionRefresh(session);
@@ -625,6 +632,7 @@ class _AuthPageState extends State<AuthPage>
       device: AuthDeviceInput.current(),
     );
     if (!mounted) return;
+    _sessionEpoch++;
     setState(() => _session = session);
     final persisted = await _persistSessionBestEffort(session);
     _scheduleSessionRefresh(session);
@@ -659,33 +667,105 @@ class _AuthPageState extends State<AuthPage>
   }
 
   Future<AuthSession?> _refreshSession({required bool silent}) {
-    final inFlight = _refreshInFlight;
-    if (inFlight != null) return inFlight;
+    if (_sessionTransitionInProgress) {
+      return Future<AuthSession?>.value(null);
+    }
     final current = _session;
     if (current == null) return Future<AuthSession?>.value(null);
+    final origin = _validatedOrigin();
+    final epoch = _sessionEpoch;
+    final inFlight = _refreshInFlight;
+    if (inFlight != null &&
+        _refreshInFlightEpoch == epoch &&
+        _refreshInFlightUserId == current.user.id &&
+        _refreshInFlightDeviceId == current.device.id &&
+        _refreshInFlightOrigin == origin.origin) {
+      return inFlight;
+    }
 
-    final request = _performRefresh(current, silent: silent);
+    final request = _performRefresh(
+      current,
+      origin: origin,
+      epoch: epoch,
+      silent: silent,
+    );
     _refreshInFlight = request;
+    _refreshInFlightEpoch = epoch;
+    _refreshInFlightUserId = current.user.id;
+    _refreshInFlightDeviceId = current.device.id;
+    _refreshInFlightOrigin = origin.origin;
     request.whenComplete(() {
-      if (identical(_refreshInFlight, request)) _refreshInFlight = null;
+      if (!identical(_refreshInFlight, request)) return;
+      _refreshInFlight = null;
+      _refreshInFlightEpoch = null;
+      _refreshInFlightUserId = null;
+      _refreshInFlightDeviceId = null;
+      _refreshInFlightOrigin = null;
     });
     return request;
   }
 
+  bool _isCurrentRefreshContext(
+    AuthSession captured, {
+    required Uri origin,
+    required int epoch,
+  }) {
+    if (!mounted || epoch != _sessionEpoch) return false;
+    final active = _session;
+    if (active == null) return false;
+    return active.user.id == captured.user.id &&
+        active.device.id == captured.device.id &&
+        _validatedOrigin().origin == origin.origin;
+  }
+
+  Future<void> _persistStaleRefreshResult(
+    AuthSession session,
+    Uri origin,
+  ) async {
+    try {
+      // Rotation already happened server-side. Preserve only this account's
+      // new refresh token; never overwrite the active-session pointer.
+      await _vault.saveAccount(
+        origin: origin,
+        userId: session.user.id,
+        refreshToken: session.tokens.refreshToken,
+      );
+    } catch (_) {
+      // The active session must never be replaced because stale persistence
+      // failed. A future explicit login can recover this account.
+    }
+  }
+
+  Future<void> _removeStaleAccount(
+    AuthSession session,
+    Uri origin,
+  ) async {
+    try {
+      await _vault.removeAccount(origin: origin, userId: session.user.id);
+    } catch (_) {
+      // Stale-account cleanup must not mutate or block the active account.
+    }
+  }
+
   Future<AuthSession?> _performRefresh(
     AuthSession current, {
+    required Uri origin,
+    required int epoch,
     required bool silent,
   }) async {
     try {
       final next = await _gateway.refresh(
-        origin: _validatedOrigin(),
+        origin: origin,
         refreshToken: current.tokens.refreshToken,
       );
-      if (!mounted) return next;
+      if (!_isCurrentRefreshContext(current, origin: origin, epoch: epoch)) {
+        await _persistStaleRefreshResult(next, origin);
+        return next;
+      }
       setState(() => _session = next);
       _scheduleSessionRefresh(next);
       try {
-        await _persistSession(next);
+        await _persistSessionAtOrigin(next, origin);
       } catch (storageError) {
         // A successful server-side rotation must remain active in memory even
         // if Windows secure storage is temporarily busy. DdSecureStorage
@@ -699,26 +779,47 @@ class _AuthPageState extends State<AuthPage>
       return next;
     } catch (error) {
       if (error is AuthApiException && error.statusCode == 401) {
-        _refreshTimer?.cancel();
-        await _pushAccountLeaseController
-            .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
-        try {
-          await _vault.removeAccount(
-            origin: _validatedOrigin(),
-            userId: current.user.id,
-          );
-          await _vault.clear();
-        } catch (_) {
-          // Server-side revocation is authoritative even if local secure
-          // storage is temporarily unavailable.
+        if (!_isCurrentRefreshContext(current, origin: origin, epoch: epoch) ||
+            _sessionTransitionInProgress) {
+          await _removeStaleAccount(current, origin);
+          return null;
         }
-        if (mounted) {
-          setState(() => _session = null);
-          _setMessage('登录状态已失效，请重新登录。', error: true);
+
+        _sessionTransitionInProgress = true;
+        _refreshTimer?.cancel();
+        _sessionEpoch++;
+        try {
+          if (error.code == 'DEVICE_SESSION_REVOKED') {
+            await _pushAccountLeaseController
+                .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
+          } else {
+            // SESSION_EXPIRED covers invalid/expired/reused refresh tokens and
+            // does not prove the device is revoked. Attempt normal fail-closed
+            // endpoint cleanup with the current access token; never abandon on
+            // HTTP status alone.
+            try {
+              await _pushAccountLeaseController.releaseCurrentEndpoint();
+            } catch (_) {}
+          }
+          try {
+            await _vault.removeAccount(
+              origin: origin,
+              userId: current.user.id,
+            );
+            await _vault.clear();
+          } catch (_) {
+            // Local secure-storage cleanup can be retried by the next login.
+          }
+          if (mounted) {
+            setState(() => _session = null);
+            _setMessage('登录状态已失效，请重新登录。', error: true);
+          }
+        } finally {
+          _sessionTransitionInProgress = false;
         }
         return null;
       }
-      if (mounted) {
+      if (_isCurrentRefreshContext(current, origin: origin, epoch: epoch)) {
         if (!silent) _setMessage(_friendlyError(error), error: true);
         _refreshTimer?.cancel();
         _refreshTimer = Timer(
@@ -752,6 +853,7 @@ class _AuthPageState extends State<AuthPage>
           refreshToken: '',
         );
         if (!mounted) return;
+        _sessionEpoch++;
         setState(() => _session = session);
         _scheduleSessionRefresh(session);
         _setMessage('已通过 HttpOnly Cookie 自动恢复登录会话。');
@@ -766,6 +868,7 @@ class _AuthPageState extends State<AuthPage>
         refreshToken: stored.refreshToken,
       );
       if (!mounted) return;
+      _sessionEpoch++;
       setState(() => _session = session);
       final persisted = await _persistSessionBestEffort(session);
       _scheduleSessionRefresh(session);
@@ -782,9 +885,6 @@ class _AuthPageState extends State<AuthPage>
       }
     }
   }
-
-  Future<void> _persistSession(AuthSession session) =>
-      _persistSessionAtOrigin(session, _validatedOrigin());
 
   Future<void> _persistSessionAtOrigin(AuthSession session, Uri origin) async {
     await _vault.save(
@@ -883,18 +983,26 @@ class _AuthPageState extends State<AuthPage>
   }
 
   Future<void> _startAddingAccount() async {
+    if (_sessionTransitionInProgress) return;
+    final current = _session;
+    _sessionTransitionInProgress = true;
+    _refreshTimer?.cancel();
     try {
       await _pushAccountLeaseController.releaseCurrentEndpoint();
     } catch (error) {
+      _sessionTransitionInProgress = false;
+      if (mounted && current != null) _scheduleSessionRefresh(current);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('暂时无法暂停当前账号 Push，请重试：${_friendlyError(error)}')),
       );
       return;
     }
-    _refreshTimer?.cancel();
+    _sessionEpoch++;
+    _sessionTransitionInProgress = false;
     _password.clear();
     _email.clear();
+    if (!mounted) return;
     setState(() {
       _session = null;
       _message = '登录新账号；原账号仍保留在账号管理中。';
@@ -906,9 +1014,11 @@ class _AuthPageState extends State<AuthPage>
   }
 
   Future<void> _switchToAccount(LoginHistoryEntry entry) async {
+    if (_sessionTransitionInProgress) return;
     final current = _session;
     if (current == null) return;
     final currentOrigin = _validatedOrigin();
+    final currentEpoch = _sessionEpoch;
     if (current.user.id == entry.userId &&
         currentOrigin.origin == entry.origin.origin) {
       return;
@@ -923,10 +1033,32 @@ class _AuthPageState extends State<AuthPage>
       return;
     }
 
+    final pendingCurrentRefresh =
+        _refreshInFlight != null &&
+            _refreshInFlightEpoch == currentEpoch &&
+            _refreshInFlightUserId == current.user.id &&
+            _refreshInFlightDeviceId == current.device.id &&
+            _refreshInFlightOrigin == currentOrigin.origin
+        ? _refreshInFlight
+        : null;
+
+    _sessionTransitionInProgress = true;
+    _refreshTimer?.cancel();
     try {
-      // Release A before consuming B's one-time rotating refresh token.
+      // Release A before consuming B's one-time rotating refresh token. While
+      // this waits, transition gating prevents a new A timer refresh from
+      // starting; an already in-flight A refresh is isolated by the epoch below.
       await _pushAccountLeaseController.releaseCurrentEndpoint();
     } catch (error) {
+      _sessionTransitionInProgress = false;
+      final active = _session;
+      if (mounted &&
+          _sessionEpoch == currentEpoch &&
+          active != null &&
+          active.user.id == current.user.id &&
+          active.device.id == current.device.id) {
+        _scheduleSessionRefresh(active);
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('暂时无法切换账号：${_friendlyError(error)}')),
@@ -934,7 +1066,24 @@ class _AuthPageState extends State<AuthPage>
       return;
     }
 
-    _refreshTimer?.cancel();
+    if (!mounted) {
+      _sessionTransitionInProgress = false;
+      return;
+    }
+    final activeBeforeSwitch = _session;
+    final rollbackSession =
+        activeBeforeSwitch != null &&
+            activeBeforeSwitch.user.id == current.user.id &&
+            activeBeforeSwitch.device.id == current.device.id
+        ? activeBeforeSwitch
+        : current;
+
+    // Point of no return for A's active lease. Any A refresh that finishes
+    // after this line may preserve A's rotated account token, but cannot mutate
+    // active UI/session/Push state.
+    _sessionEpoch++;
+    final switchEpoch = _sessionEpoch;
+
     try {
       final next = await _gateway.refresh(
         origin: stored.origin,
@@ -944,8 +1093,12 @@ class _AuthPageState extends State<AuthPage>
         next,
         origin: stored.origin,
       );
-      if (!mounted) return;
+      if (!mounted || _sessionEpoch != switchEpoch) {
+        _sessionTransitionInProgress = false;
+        return;
+      }
       _origin.text = stored.origin.toString();
+      _sessionTransitionInProgress = false;
       setState(() {
         _session = next;
         _message = null;
@@ -966,7 +1119,13 @@ class _AuthPageState extends State<AuthPage>
           );
         } catch (_) {}
       }
-      await _restorePushAfterFailedAccountSwitch(current, currentOrigin);
+      _sessionTransitionInProgress = false;
+      await _restorePushAfterFailedAccountSwitch(
+        rollbackSession,
+        currentOrigin,
+        epoch: switchEpoch,
+        pendingRefresh: pendingCurrentRefresh,
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -979,7 +1138,13 @@ class _AuthPageState extends State<AuthPage>
         );
       }
     } catch (error) {
-      await _restorePushAfterFailedAccountSwitch(current, currentOrigin);
+      _sessionTransitionInProgress = false;
+      await _restorePushAfterFailedAccountSwitch(
+        rollbackSession,
+        currentOrigin,
+        epoch: switchEpoch,
+        pendingRefresh: pendingCurrentRefresh,
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(_friendlyError(error))),
@@ -990,8 +1155,10 @@ class _AuthPageState extends State<AuthPage>
 
   Future<void> _restorePushAfterFailedAccountSwitch(
     AuthSession session,
-    Uri origin,
-  ) async {
+    Uri origin, {
+    required int epoch,
+    Future<AuthSession?>? pendingRefresh,
+  }) async {
     try {
       await _pushAccountLeaseController.start(
         origin: origin,
@@ -1002,11 +1169,53 @@ class _AuthPageState extends State<AuthPage>
     } catch (_) {
       // The UI/session remains on A. Push start itself owns logging/retry paths.
     }
-    if (mounted) _scheduleSessionRefresh(session);
+    if (!mounted ||
+        !_isCurrentRefreshContext(session, origin: origin, epoch: epoch)) {
+      return;
+    }
+    if (pendingRefresh == null) {
+      _scheduleSessionRefresh(session);
+      return;
+    }
+    unawaited(
+      _reconcileRollbackRefresh(
+        pendingRefresh,
+        session,
+        origin,
+        epoch,
+      ),
+    );
+  }
+
+  Future<void> _reconcileRollbackRefresh(
+    Future<AuthSession?> pendingRefresh,
+    AuthSession rollbackSession,
+    Uri origin,
+    int epoch,
+  ) async {
+    final refreshed = await pendingRefresh;
+    if (!mounted ||
+        !_isCurrentRefreshContext(
+          rollbackSession,
+          origin: origin,
+          epoch: epoch,
+        )) {
+      return;
+    }
+    if (refreshed != null &&
+        refreshed.user.id == rollbackSession.user.id &&
+        refreshed.device.id == rollbackSession.device.id) {
+      setState(() => _session = refreshed);
+      await _persistSessionAtOrigin(refreshed, origin);
+      _scheduleSessionRefresh(refreshed);
+      return;
+    }
+    _scheduleSessionRefresh(_session ?? rollbackSession);
   }
 
   void _openLoginForHistory(LoginHistoryEntry entry, String message) {
     _refreshTimer?.cancel();
+    _sessionEpoch++;
     _origin.text = entry.origin.toString();
     _email.text = entry.email;
     _password.clear();
@@ -1023,48 +1232,60 @@ class _AuthPageState extends State<AuthPage>
   }
 
   Future<void> _clearSession() async {
+    if (_sessionTransitionInProgress) return;
+    _sessionTransitionInProgress = true;
     _refreshTimer?.cancel();
     final current = _session;
-    if (current != null) {
-      var endpointReleased = false;
-      try {
-        await _pushAccountLeaseController.releaseCurrentEndpoint();
-        endpointReleased = true;
-      } catch (_) {
-        // Device revocation below becomes authoritative if it succeeds/returns 401.
-      }
-      var authoritativeRevocation = false;
-      try {
-        await _gateway.revokeDevice(
-          origin: _validatedOrigin(),
-          accessToken: current.tokens.accessToken,
-          deviceId: current.device.id,
-        );
-        authoritativeRevocation = true;
-      } on AuthApiException catch (error) {
-        authoritativeRevocation = error.statusCode == 401;
-      } catch (_) {
-        // Ordinary network failures do not authorize local lease abandonment.
-      }
-      if (!endpointReleased && authoritativeRevocation) {
-        await _pushAccountLeaseController
-            .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
-      }
-    }
+    final currentOrigin = current == null ? null : _validatedOrigin();
+    if (current != null) _sessionEpoch++;
+    var authoritativeRevocation = false;
     try {
-      if (current != null) {
-        await _vault.removeAccount(
-          origin: _validatedOrigin(),
-          userId: current.user.id,
-        );
+      if (current != null && currentOrigin != null) {
+        var endpointReleased = false;
+        try {
+          await _pushAccountLeaseController.releaseCurrentEndpoint();
+          endpointReleased = true;
+        } catch (_) {
+          // Only an explicit server revocation fact below may permit abandon.
+        }
+        try {
+          await _gateway.revokeDevice(
+            origin: currentOrigin,
+            accessToken: current.tokens.accessToken,
+            deviceId: current.device.id,
+          );
+          authoritativeRevocation = true;
+        } on AuthApiException catch (error) {
+          authoritativeRevocation = error.code == 'DEVICE_SESSION_REVOKED';
+        } catch (_) {
+          // Ordinary network/API failures do not authorize local abandonment.
+        }
+        if (!endpointReleased && authoritativeRevocation) {
+          await _pushAccountLeaseController
+              .abandonCurrentEndpointLeaseAfterAuthoritativeRevocation();
+        }
       }
-      await _vault.clear();
-    } catch (_) {
-      // Local logout should not be blocked by an unavailable secure-storage backend.
+      try {
+        if (current != null && currentOrigin != null) {
+          await _vault.removeAccount(
+            origin: currentOrigin,
+            userId: current.user.id,
+          );
+        }
+        await _vault.clear();
+      } catch (_) {
+        // Local logout should not be blocked by unavailable secure storage.
+      }
+      if (!mounted) return;
+      setState(() => _session = null);
+      _setMessage(
+        authoritativeRevocation
+            ? '本机已退出，服务端设备会话也已撤销。'
+            : '本机已退出。服务端设备状态未能确认时不会伪造已撤销结论。',
+      );
+    } finally {
+      _sessionTransitionInProgress = false;
     }
-    if (!mounted) return;
-    setState(() => _session = null);
-    _setMessage('本机已退出，服务端设备会话也已撤销。');
   }
 
   Future<void> _openPasswordReset() async {

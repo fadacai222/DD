@@ -83,6 +83,70 @@ void main() {
     },
   );
 
+  test('refresh preserves authoritative DEVICE_SESSION_REVOKED error code', () async {
+    final client = AuthApiClient(
+      httpClient: MockClient(
+        (_) async => http.Response(
+          jsonEncode({
+            'error': {
+              'code': 'DEVICE_SESSION_REVOKED',
+              'message': 'Device session has been revoked',
+              'requestId': 'req_revoked_device',
+            },
+          }),
+          401,
+        ),
+      ),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.refresh(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        refreshToken: 'revoked-device-refresh',
+      ),
+      throwsA(
+        isA<AuthApiException>()
+            .having((error) => error.statusCode, 'statusCode', 401)
+            .having(
+              (error) => error.code,
+              'code',
+              'DEVICE_SESSION_REVOKED',
+            ),
+      ),
+    );
+  });
+
+  test('refresh keeps ordinary SESSION_EXPIRED distinct from device revocation', () async {
+    final client = AuthApiClient(
+      httpClient: MockClient(
+        (_) async => http.Response(
+          jsonEncode({
+            'error': {
+              'code': 'SESSION_EXPIRED',
+              'message': 'Session is no longer valid',
+              'requestId': 'req_expired_refresh',
+            },
+          }),
+          401,
+        ),
+      ),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.refresh(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        refreshToken: 'expired-refresh',
+      ),
+      throwsA(
+        isA<AuthApiException>()
+            .having((error) => error.statusCode, 'statusCode', 401)
+            .having((error) => error.code, 'code', 'SESSION_EXPIRED'),
+      ),
+    );
+  });
+
   test('avatar upload sends authenticated binary payload', () async {
     late http.Request captured;
     final client = AuthApiClient(
