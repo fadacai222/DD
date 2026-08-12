@@ -101,6 +101,10 @@ void main() {
     expect(appDelegate, contains('NativeServiceRegistrar.register'));
     expect(appDelegate, isNot(contains('FlutterEventChannel(')));
     expect(registrar, contains('protocol DDNativeService'));
+    expect(
+      registrar,
+      contains('guard let registrar = registry.registrar(forPlugin: Service.pluginKey)'),
+    );
     for (final service in const [
       'NativeRouteService',
       'PushNotificationService',

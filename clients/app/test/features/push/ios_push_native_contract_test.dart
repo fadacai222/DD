@@ -13,6 +13,9 @@ void main() {
     expect(service, contains('authorizationState'));
     expect(service, contains('requestAuthorization'));
     expect(service, contains('openNotificationSettings'));
+    expect(service, contains('if #available(iOS 16.0, *)'));
+    expect(service, contains('UIApplication.openNotificationSettingsURLString'));
+    expect(service, contains('UIApplication.openSettingsURLString'));
     expect(service, contains('registerForRemoteNotifications'));
     expect(service, contains('didRegisterForRemoteNotifications'));
     expect(service, contains('didFailToRegisterForRemoteNotifications'));

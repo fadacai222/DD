@@ -93,7 +93,7 @@ final class PushNotificationService: NSObject, DDNativeService, FlutterStreamHan
   private func openNotificationSettings(result: @escaping FlutterResult) {
     DispatchQueue.main.async {
       let url: URL?
-      if #available(iOS 15.4, *) {
+      if #available(iOS 16.0, *) {
         url = URL(string: UIApplication.openNotificationSettingsURLString)
       } else {
         url = URL(string: UIApplication.openSettingsURLString)

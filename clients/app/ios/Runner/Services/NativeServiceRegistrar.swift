@@ -19,7 +19,9 @@ enum NativeServiceRegistrar {
     _ service: Service.Type,
     with registry: FlutterPluginRegistry
   ) {
-    let registrar = registry.registrar(forPlugin: Service.pluginKey)
+    guard let registrar = registry.registrar(forPlugin: Service.pluginKey) else {
+      return
+    }
     Service.register(with: registrar)
   }
 }
