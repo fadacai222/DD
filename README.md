@@ -498,9 +498,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-auth-dev.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-auth-dev.ps1
 ```
 
-脚本会处理本地开发需要的主要组件，并维护 `.data` 状态。
+脚本会处理本地开发需要的主要组件，并维护 `.data` 状态。已有 `infra/dev/.env` 会原地升级：保留原开发凭据，并自动补齐后来新增的必需配置（包括独立的 `ADMIN_SECURITY_SECRET`），不需要为了升级配置使用 `-Force` 全量轮换。
 
-如果关键端口被未知进程占用，不应直接“强杀所有同名进程”；现有脚本会尽量避免误杀未知进程。
+如果 API/Worker 启动失败，失败轮次的 `.data/dd-auth-dev-*.out.log` / `.err.log` 会保留下来供排障；下一次启动前才会清理旧日志。如果关键端口被未知进程占用，不应直接“强杀所有同名进程”；现有脚本会尽量避免误杀未知进程。
 
 ### 构建客户端
 

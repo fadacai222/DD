@@ -29,6 +29,10 @@ if (-not (Test-Path -LiteralPath $GoExe)) { throw "Go not found: $GoExe" }
 if (-not (Test-Path -LiteralPath $DartExe)) { throw "Dart not found: $DartExe" }
 if (-not (Test-Path -LiteralPath $FlutterExe)) { throw "Flutter not found: $FlutterExe" }
 
+Invoke-Step 'Development environment upgrade contract' {
+    & (Join-Path $PSScriptRoot 'test-dev-env-contract.ps1')
+}
+
 Invoke-Step 'Go tests and vet' {
     Push-Location (Join-Path $Root 'server')
     try {

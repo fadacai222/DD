@@ -236,6 +236,9 @@ if ([string]::IsNullOrWhiteSpace($env:DD_MINIO_ROOT_PASSWORD)) { throw 'DD_MINIO
 if ([string]::IsNullOrWhiteSpace($env:EMAIL_CODE_PEPPER)) { throw 'EMAIL_CODE_PEPPER is missing from infra/dev/.env.' }
 if ([string]::IsNullOrWhiteSpace($env:DD_LIVEKIT_API_KEY)) { throw 'DD_LIVEKIT_API_KEY is missing from infra/dev/.env.' }
 if ([string]::IsNullOrWhiteSpace($env:DD_LIVEKIT_API_SECRET)) { throw 'DD_LIVEKIT_API_SECRET is missing from infra/dev/.env.' }
+if ([string]::IsNullOrWhiteSpace($env:ADMIN_SECURITY_SECRET) -or $env:ADMIN_SECURITY_SECRET.Length -lt 32) {
+    throw 'ADMIN_SECURITY_SECRET is missing or shorter than 32 characters in infra/dev/.env. Run scripts/init-dev-env.ps1 to upgrade the local development environment.'
+}
 $env:DD_LAN_IP = $LanIP
 
 $postgresWasRunning = Test-ComposeServiceRunning -Service 'postgres'
@@ -410,6 +413,8 @@ catch {
     if ($firewallReady) {
         Invoke-BestEffortCleanup { & $FirewallScript -LanIP $LanIP -Remove }
     }
-    Remove-Item -LiteralPath $StateFile, $ApiExe, $WorkerExe, $ApiOut, $ApiErr, $WorkerOut, $WorkerErr -Force -ErrorAction SilentlyContinue
+    # Preserve stdout/stderr from a failed startup so the BAT's diagnostic
+    # paths remain useful. The next run truncates these logs before starting.
+    Remove-Item -LiteralPath $StateFile, $ApiExe, $WorkerExe -Force -ErrorAction SilentlyContinue
     throw $originalError
 }
