@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('all', 'windows', 'web', 'android')]
+    [ValidateSet('all', 'windows', 'web', 'android', 'windows-android')]
     [string]$Target = 'all',
     [switch]$Clean
 )
@@ -12,6 +12,7 @@ $AppPath = Join-Path $Root 'clients\app'
 $FlutterExe = 'C:\dev\flutter\bin\flutter.bat'
 $JavaHome = 'C:\Program Files\Microsoft\jdk-21.0.12.8-hotspot'
 $RootWindowsShortcut = Join-Path $Root 'DD-Windows.lnk'
+$RootWindowsZip = Join-Path $Root 'DD-Windows.zip'
 $RootWebShortcut = Join-Path $Root 'DD-Web.lnk'
 $RootAndroidApk = Join-Path $Root 'DD-Android.apk'
 
@@ -334,13 +335,28 @@ function Set-RootShortcut {
 
 function Publish-RootClientArtifacts {
     $WindowsExe = Join-Path $AppPath 'build\windows\x64\runner\Release\im_client.exe'
+    if (-not (Test-Path -LiteralPath $WindowsExe)) {
+        $FreshWindowsExe = Join-Path $AppPath 'build_win_fresh\windows\x64\runner\Release\im_client.exe'
+        if (Test-Path -LiteralPath $FreshWindowsExe) {
+            $WindowsExe = $FreshWindowsExe
+        }
+    }
     if (Test-Path -LiteralPath $WindowsExe) {
+        $WindowsRelease = Split-Path -Parent $WindowsExe
         Set-RootShortcut `
             -ShortcutPath $RootWindowsShortcut `
             -TargetPath $WindowsExe `
-            -WorkingDirectory (Split-Path -Parent $WindowsExe) `
+            -WorkingDirectory $WindowsRelease `
             -IconLocation $WindowsExe
         Write-Host "Root shortcut: $RootWindowsShortcut"
+
+        Compress-Archive `
+            -Path (Join-Path $WindowsRelease '*') `
+            -DestinationPath $RootWindowsZip `
+            -CompressionLevel Optimal `
+            -Force
+        $WindowsZipArtifact = Get-Item -LiteralPath $RootWindowsZip
+        Write-Host "Root Windows ZIP: $RootWindowsZip ($([Math]::Round($WindowsZipArtifact.Length / 1MB, 1)) MiB)"
     }
 
     $WebIndex = Join-Path $AppPath 'build\web\index.html'
@@ -409,6 +425,10 @@ switch ($Target) {
     'windows' { Build-Windows }
     'web' { Build-Web }
     'android' { Build-Android }
+    'windows-android' {
+        Build-Windows
+        Build-Android
+    }
     'all' {
         Build-Windows
         Build-Web
@@ -420,5 +440,6 @@ Publish-RootClientArtifacts
 
 Write-Host 'Build complete.'
 Write-Host "Windows: $AppPath\build\windows\x64\runner\Release\im_client.exe"
+Write-Host "Windows package: $RootWindowsZip"
 Write-Host "Web:     $AppPath\build\web"
-Write-Host "Android: $AppPath\build\app\outputs\flutter-apk\app-debug.apk"
+Write-Host "Android: $RootAndroidApk"
