@@ -171,6 +171,30 @@ func TestVoiceTranscriptionLifecycleWithPostgres(t *testing.T) {
 	if err != nil || retrying.Status != transcription.StatusPending || !retrying.Retryable || retrying.ErrorCategory != "PROVIDER_TEMPORARY" || retrying.Transcript != "" {
 		t.Fatalf("retryable status=%#v err=%v", retrying, err)
 	}
+	for attempt := 2; attempt <= 3; attempt++ {
+		now = now.Add(5 * time.Second)
+		if processed, err := retryService.ProcessJobs(ctx, 1); err != nil || processed != 1 {
+			t.Fatalf("retry attempt %d process=%d err=%v", attempt, processed, err)
+		}
+	}
+	exhausted, err := retryService.Get(ctx, bobPrincipal, uuid.MustParse(retryVoice.ID))
+	if err != nil || exhausted.Status != transcription.StatusFailed || !exhausted.Retryable || exhausted.Attempts != 3 {
+		t.Fatalf("exhausted retryable status=%#v err=%v", exhausted, err)
+	}
+
+	requeued, err := retryService.Request(ctx, bobPrincipal, uuid.MustParse(retryVoice.ID))
+	if err != nil || requeued.Status != transcription.StatusPending || requeued.Retryable || requeued.Attempts != 0 || requeued.ErrorCategory != "" {
+		t.Fatalf("manual retry requeue status=%#v err=%v", requeued, err)
+	}
+	retryProvider.err = nil
+	retryProvider.result = transcription.ProviderResult{Transcript: "recovered transcript", Language: "en", Model: "whisper-test"}
+	if processed, err := retryService.ProcessJobs(ctx, 1); err != nil || processed != 1 {
+		t.Fatalf("manual retry process=%d err=%v", processed, err)
+	}
+	recovered, err := retryService.Get(ctx, bobPrincipal, uuid.MustParse(retryVoice.ID))
+	if err != nil || recovered.Status != transcription.StatusCompleted || recovered.Transcript != "recovered transcript" {
+		t.Fatalf("manual retry recovered status=%#v err=%v", recovered, err)
+	}
 }
 
 func sendVoice(t *testing.T, ctx context.Context, pool *pgxpool.Pool, service *messaging.Service, principal account.Principal, conversationID uuid.UUID, label string, now time.Time) messaging.Message {

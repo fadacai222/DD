@@ -59,7 +59,34 @@ func (service *Service) Request(ctx context.Context, principal account.Principal
 	if err := service.pool.QueryRow(ctx, `
 		INSERT INTO voice_transcriptions(message_id,requested_by_user_id,status,available_at,created_at,updated_at)
 		VALUES($1,$2,'PENDING',$3,$3,$3)
-		ON CONFLICT(message_id) DO UPDATE SET message_id=EXCLUDED.message_id
+		ON CONFLICT(message_id) DO UPDATE SET
+			requested_by_user_id=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN EXCLUDED.requested_by_user_id ELSE voice_transcriptions.requested_by_user_id END,
+			status=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN 'PENDING' ELSE voice_transcriptions.status END,
+			error_category=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN NULL ELSE voice_transcriptions.error_category END,
+			retryable=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN false ELSE voice_transcriptions.retryable END,
+			attempts=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN 0 ELSE voice_transcriptions.attempts END,
+			available_at=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN EXCLUDED.available_at ELSE voice_transcriptions.available_at END,
+			updated_at=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN EXCLUDED.updated_at ELSE voice_transcriptions.updated_at END,
+			started_at=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN NULL ELSE voice_transcriptions.started_at END,
+			completed_at=CASE
+				WHEN voice_transcriptions.status='FAILED' AND voice_transcriptions.retryable
+				THEN NULL ELSE voice_transcriptions.completed_at END
 		RETURNING id
 	`, messageID, principal.UserID, now).Scan(&id); err != nil {
 		return Transcription{}, fmt.Errorf("request voice transcription: %w", err)
