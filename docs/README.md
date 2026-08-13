@@ -170,9 +170,9 @@ POST   /api/v1/qr-login/consume
 
 ### P7 Calls
 
-`IMPLEMENTED + AUTO-VERIFIED / HUMAN-PENDING`。
+`IMPLEMENTED + AUTO-VERIFIED + HUMAN-PASS（基础公网 1:1） / HUMAN-PENDING（长时/弱网/后台/更多网络组合）`。
 
-自动证据包含正式 Bearer API、多设备仲裁、Block/非联系人拒绝、错误设备不能取 LiveKit token/控制 Call、终态通话记录服务端事务化等。公网 TURN/TLS 和跨端长时通话仍需真人环境。
+自动证据包含正式 Bearer API、多设备仲裁、Block/非联系人拒绝、错误设备不能取 LiveKit token/控制 Call、终态通话记录服务端事务化等。2026-08-14 生产环境已真人复测通过基础公网来电、接听、语音与视频媒体主链；30 分钟长时通话、弱网/多网络切换、后台/锁屏与更多跨运营商组合仍需真人环境。
 
 ### P8 Moments
 
