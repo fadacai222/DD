@@ -42,7 +42,16 @@ workflows:
             -sdk iphoneos \
             -archivePath build/ios/DD-unsigned.xcarchive \
             CODE_SIGNING_ALLOWED=NO
+      - name: Package unsigned IPA for manual re-signing
+        script: |
+          set -euo pipefail
+          rm -rf build/ios/unsigned-ipa
+          mkdir -p build/ios/unsigned-ipa/Payload
+          ditto build/ios/iphoneos/Runner.app build/ios/unsigned-ipa/Payload/Runner.app
+          (cd build/ios/unsigned-ipa && zip -qry --symlinks ../DD-unsigned.ipa Payload)
+          test -s build/ios/DD-unsigned.ipa || { echo 'unsigned IPA was not produced' >&2; exit 1; }
     artifacts:
+      - clients/app/build/ios/DD-unsigned.ipa
       - clients/app/build/ios/iphoneos/*.app
       - clients/app/build/ios/DD-unsigned.xcarchive/**
       - /tmp/xcodebuild_logs/*.log

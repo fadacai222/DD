@@ -22,5 +22,7 @@ void main() {
       2,
     );
     expect(codemagic, isNot(contains('script: dart analyze --fatal-infos\n')));
+    expect(codemagic, contains('Package unsigned IPA for manual re-signing'));
+    expect(codemagic, contains('clients/app/build/ios/DD-unsigned.ipa'));
   });
 }
