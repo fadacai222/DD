@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../../../core/network/app_endpoints.dart';
 import '../../../theme/app_theme.dart';
 import '../../push/application/push_registration_service.dart';
 import '../../shell/presentation/main_shell_page.dart';
@@ -77,8 +78,7 @@ class _AuthPageState extends State<AuthPage>
     _gateway = widget.gateway ?? AuthApiClient();
     _tabs = TabController(length: 2, vsync: this);
     _origin = TextEditingController(
-      text: (widget.initialOrigin ?? Uri.parse('http://127.0.0.1:18473'))
-          .toString(),
+      text: (widget.initialOrigin ?? Uri.parse(defaultApiOrigin)).toString(),
     );
     _email = TextEditingController();
     _code = TextEditingController();
@@ -197,7 +197,7 @@ class _AuthPageState extends State<AuthPage>
           keyboardType: TextInputType.url,
           decoration: const InputDecoration(
             labelText: '服务地址',
-            hintText: 'http://127.0.0.1:18473',
+            hintText: defaultApiOrigin,
             prefixIcon: Icon(Icons.dns_outlined),
             border: OutlineInputBorder(),
           ),

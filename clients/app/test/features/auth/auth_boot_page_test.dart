@@ -51,13 +51,14 @@ void main() {
     },
   );
 
-  testWidgets('empty vault goes to login only after boot decision', (
+  testWidgets('empty vault uses production API and then enters login', (
     tester,
   ) async {
     final vault = AuthSessionVault(storage: _MemorySecureStore());
     final gateway = _BootGateway(
       onRefresh: () async => throw StateError('refresh must not be called'),
     );
+    Uri? unauthenticatedOrigin;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -66,14 +67,17 @@ void main() {
           vault: vault,
           authenticatedBuilder: (_, session, origin) =>
               const SizedBox(key: Key('boot-authenticated-shell')),
-          unauthenticatedBuilder: (_, origin) =>
-              const SizedBox(key: Key('boot-login-page')),
+          unauthenticatedBuilder: (_, origin) {
+            unauthenticatedOrigin = origin;
+            return const SizedBox(key: Key('boot-login-page'));
+          },
         ),
       ),
     );
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('boot-login-page')), findsOneWidget);
+    expect(unauthenticatedOrigin, Uri.parse('https://api.85746.pro'));
     expect(gateway.refreshCalls, 0);
   });
 

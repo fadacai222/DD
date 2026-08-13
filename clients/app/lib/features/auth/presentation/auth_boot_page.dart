@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/network/app_endpoints.dart';
 import '../../../theme/app_theme.dart';
 import '../data/auth_api_client.dart';
 import '../data/auth_session_vault.dart';
@@ -36,7 +37,7 @@ class AuthBootPage extends StatefulWidget {
 }
 
 class _AuthBootPageState extends State<AuthBootPage> {
-  static final Uri _defaultOrigin = Uri.parse('http://127.0.0.1:18473');
+  static final Uri _defaultOrigin = Uri.parse(defaultApiOrigin);
 
   late final AuthGateway _gateway;
   late final bool _ownsGateway;
