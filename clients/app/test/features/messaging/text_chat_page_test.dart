@@ -1642,6 +1642,84 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final themeCase in <String, ThemeData>{
+    'light': AppTheme.light(),
+    'dark': AppTheme.dark(),
+  }.entries) {
+    testWidgets(
+      'iOS composer keeps wallpaper continuous in ${themeCase.key} mode',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final gateway = _ChatGateway();
+          final harness = _Harness(gateway);
+          addTearDown(harness.dispose);
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: themeCase.value,
+              home: TextChatPage(
+                coordinator: harness.coordinator,
+                conversation: _conversation(),
+                currentUserId: 'user-a',
+                stickerGateway: _ChatStickerGateway(),
+              ),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+
+          final footer = find.byKey(const Key('chat-composer-footer'));
+          expect(footer, findsOneWidget);
+          expect(find.byKey(const Key('chat-wallpaper-surface')), findsOneWidget);
+          final footerMaterial = tester
+              .widgetList<Material>(
+                find.ancestor(of: footer, matching: find.byType(Material)),
+              )
+              .firstWhere((material) => material.child?.key == footer.evaluate().single.widget.key);
+          expect(footerMaterial.type, MaterialType.transparency);
+          expect(footerMaterial.color, isNull);
+
+          final composer = tester.widget<TextField>(
+            find.byKey(const Key('chat-composer')),
+          );
+          expect(composer.decoration?.filled, isTrue);
+          expect(themeCase.value.inputDecorationTheme.fillColor, isNotNull);
+
+          for (final key in const <Key>[
+            Key('chat-voice-surface'),
+            Key('chat-emoji-surface'),
+            Key('chat-more-surface'),
+          ]) {
+            final surface = tester.widget<DecoratedBox>(find.byKey(key));
+            final decoration = surface.decoration as BoxDecoration;
+            expect(decoration.color, isNotNull);
+            expect(decoration.color, isNot(Colors.transparent));
+            expect(decoration.color, isNot(themeCase.value.colorScheme.surface));
+          }
+
+          final voice = tester.widget<GestureDetector>(
+            find.byKey(const Key('chat-voice')),
+          );
+          final emoji = tester.widget<IconButton>(
+            find.byKey(const Key('chat-emoji')),
+          );
+          final more = tester.widget<IconButton>(
+            find.byKey(const Key('chat-more')),
+          );
+          expect(voice.onTap, isNotNull);
+          expect(emoji.onPressed, isNotNull);
+          expect(more.onPressed, isNotNull);
+
+          await tester.tap(find.byKey(const Key('chat-voice')));
+          await tester.pump();
+          expect(find.byKey(const Key('chat-hold-to-talk')), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+  }
+
   testWidgets('mention overlay supports keyboard selection without sending', (
     tester,
   ) async {

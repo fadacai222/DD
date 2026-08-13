@@ -249,7 +249,7 @@ try {
     $brandDir = Join-Path $designDir 'brand-assets'
     Ensure-Directory $brandDir
     Copy-Item -LiteralPath $SourceLogo -Destination (Join-Path $brandDir 'DD-logo-master.png') -Force
-    New-SquarePng -Source $source -Path (Join-Path $brandDir 'DD-icon-1024.png') -Size 1024 -Scale 0.86 -Background ([System.Drawing.Color]::White)
+    New-SquarePng -Source $source -Path (Join-Path $brandDir 'DD-icon-1024.png') -Size 1024 -Scale 1.00 -Background ([System.Drawing.Color]::White)
     New-SquarePng -Source $source -Path (Join-Path $brandDir 'DD-icon-transparent-1024.png') -Size 1024 -Scale 0.86
     New-PngIco -Source $source -Path (Join-Path $brandDir 'DD-icon.ico')
     New-BrandPreview -Source $source -Path (Join-Path $brandDir 'DD-brand-preview.png')

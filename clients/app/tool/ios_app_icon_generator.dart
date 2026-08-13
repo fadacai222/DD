@@ -13,6 +13,7 @@ Future<void> generateIosAppIcons({
   if (source == null) {
     throw StateError('Unable to decode iOS app icon source: ${sourceFile.path}');
   }
+  _validateSource(source, sourceFile.path);
   final manifest = jsonDecode(await contentsFile.readAsString());
   if (manifest is! Map<String, dynamic> || manifest['images'] is! List) {
     throw StateError('Invalid AppIcon Contents.json');
@@ -48,3 +49,44 @@ Future<void> generateIosAppIcons({
         .writeAsBytes(img.encodePng(opaque), flush: true);
   }
 }
+
+void _validateSource(img.Image source, String sourcePath) {
+  final minDimension = source.width < source.height
+      ? source.width
+      : source.height;
+  // The legacy 0.86 safe-margin asset leaves about 7% white on each edge.
+  // Four percent catches that regression without rejecting normal antialiasing.
+  var insetThreshold = (minDimension * 0.04).ceil();
+  if (insetThreshold < 2) insetThreshold = 2;
+  if (insetThreshold * 2 >= minDimension) return;
+
+  for (var inset = 0; inset < insetThreshold; inset++) {
+    if (!_ringIsOpaqueWhite(source, inset)) return;
+  }
+  throw StateError(
+    'iOS app icon source has a suspicious white inset: $sourcePath',
+  );
+}
+
+bool _ringIsOpaqueWhite(img.Image source, int inset) {
+  final left = inset;
+  final top = inset;
+  final right = source.width - inset - 1;
+  final bottom = source.height - inset - 1;
+  for (var x = left; x <= right; x++) {
+    if (!_isOpaqueWhite(source.getPixel(x, top)) ||
+        !_isOpaqueWhite(source.getPixel(x, bottom))) {
+      return false;
+    }
+  }
+  for (var y = top + 1; y < bottom; y++) {
+    if (!_isOpaqueWhite(source.getPixel(left, y)) ||
+        !_isOpaqueWhite(source.getPixel(right, y))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _isOpaqueWhite(img.Pixel pixel) =>
+    pixel.a >= 250 && pixel.r >= 245 && pixel.g >= 245 && pixel.b >= 245;

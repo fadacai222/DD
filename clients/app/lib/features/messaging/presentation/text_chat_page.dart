@@ -3450,18 +3450,30 @@ class _TextChatPageState extends State<TextChatPage>
     if (_mentionController.visible) _mentionController.close();
   }
 
+  Widget _composerActionSurface({required Key key, required Widget child}) {
+    final theme = Theme.of(context);
+    final opacity = theme.brightness == Brightness.dark ? 0.88 : 0.90;
+    return DecoratedBox(
+      key: key,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: opacity),
+        shape: BoxShape.circle,
+      ),
+      child: child,
+    );
+  }
+
   Widget _composerBar(ConversationItem conversation) {
     if (!conversation.canWrite) {
       return _restrictedComposer(conversation);
     }
     final replyingTo = _replyingTo;
     final editingMessage = _editingMessage;
-    final surface = Theme.of(context).colorScheme.surface;
     return CompositedTransformTarget(
       key: _mentionAnchorKey,
       link: _mentionLayerLink,
       child: Material(
-        color: surface,
+        type: MaterialType.transparency,
         child: Container(
           key: const Key('chat-composer-footer'),
           decoration: const BoxDecoration(
@@ -3492,20 +3504,26 @@ class _TextChatPageState extends State<TextChatPage>
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  _voiceControlButton(),
+                  _composerActionSurface(
+                    key: const Key('chat-voice-surface'),
+                    child: _voiceControlButton(),
+                  ),
                   Expanded(
                     child: _mobileHoldToTalk && _voiceMode
                         ? _holdToTalkField()
                         : _composerField(),
                   ),
                   if (!_androidVoiceInputActive)
-                    IconButton(
-                      key: const Key('chat-emoji'),
-                      tooltip: '表情',
-                      onPressed: _showEmojiPicker,
-                      icon: const Icon(
-                        Icons.sentiment_satisfied_alt_rounded,
-                        size: 25,
+                    _composerActionSurface(
+                      key: const Key('chat-emoji-surface'),
+                      child: IconButton(
+                        key: const Key('chat-emoji'),
+                        tooltip: '表情',
+                        onPressed: _showEmojiPicker,
+                        icon: const Icon(
+                          Icons.sentiment_satisfied_alt_rounded,
+                          size: 25,
+                        ),
                       ),
                     ),
                   ValueListenableBuilder<TextEditingValue>(
@@ -3535,13 +3553,16 @@ class _TextChatPageState extends State<TextChatPage>
                           ),
                         );
                       }
-                      return IconButton(
-                        key: const Key('chat-more'),
-                        tooltip: '更多',
-                        onPressed: _showMoreMenu,
-                        icon: const Icon(
-                          Icons.add_circle_outline_rounded,
-                          size: 26,
+                      return _composerActionSurface(
+                        key: const Key('chat-more-surface'),
+                        child: IconButton(
+                          key: const Key('chat-more'),
+                          tooltip: '更多',
+                          onPressed: _showMoreMenu,
+                          icon: const Icon(
+                            Icons.add_circle_outline_rounded,
+                            size: 26,
+                          ),
                         ),
                       );
                     },
