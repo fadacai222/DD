@@ -342,10 +342,16 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 	}
 	prepared := make([]preparedItem, 0, len(set.Stickers))
 	unsupported := 0
+	tooLarge := 0
 	for _, source := range set.Stickers {
 		maxSourceBytes := telegramStickerMaximumSize(source)
-		if maxSourceBytes == 0 || source.FileSize > maxSourceBytes {
+		if maxSourceBytes == 0 {
 			unsupported++
+			continue
+		}
+		if source.FileSize > maxSourceBytes {
+			unsupported++
+			tooLarge++
 			continue
 		}
 		if cached, ok, cacheErr := service.lookupCachedTelegramAsset(ctx, source.FileUniqueID); cacheErr != nil {
@@ -360,7 +366,12 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 		}
 		file, downloadErr := service.provider.DownloadSticker(ctx, source.FileID, MaximumTelegramStickerSize)
 		if downloadErr != nil {
-			if errors.Is(downloadErr, ErrTelegramStickerDownloadTooLarge) || errors.Is(downloadErr, ErrTelegramStickerDownloadInvalid) {
+			if errors.Is(downloadErr, ErrTelegramStickerDownloadTooLarge) {
+				unsupported++
+				tooLarge++
+				continue
+			}
+			if errors.Is(downloadErr, ErrTelegramStickerDownloadInvalid) {
 				unsupported++
 				continue
 			}
@@ -368,7 +379,12 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 		}
 		file, normalizeErr := normalizeTelegramStickerFile(source, file)
 		if normalizeErr != nil {
-			if errors.Is(normalizeErr, ErrTelegramStickerFormatUnsupported) || errors.Is(normalizeErr, ErrTelegramStickerDownloadTooLarge) || errors.Is(normalizeErr, ErrTelegramStickerDownloadInvalid) {
+			if errors.Is(normalizeErr, ErrTelegramStickerDownloadTooLarge) {
+				unsupported++
+				tooLarge++
+				continue
+			}
+			if errors.Is(normalizeErr, ErrTelegramStickerFormatUnsupported) || errors.Is(normalizeErr, ErrTelegramStickerDownloadInvalid) {
 				unsupported++
 				continue
 			}
@@ -390,6 +406,9 @@ func (service *Service) ImportTelegramPack(ctx context.Context, principal accoun
 		})
 	}
 	if len(prepared) == 0 {
+		if unsupported > 0 && tooLarge == unsupported {
+			return StickerPack{}, ErrTelegramStickerDownloadTooLarge
+		}
 		return StickerPack{}, ErrTelegramStickerFormatUnsupported
 	}
 	now := service.now().UTC()

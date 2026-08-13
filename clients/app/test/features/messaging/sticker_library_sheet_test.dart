@@ -209,16 +209,10 @@ void main() {
       final gateway = _FakeStickerGateway();
       await _openSheet(tester, gateway);
 
-      await tester.tap(find.byKey(const Key('sticker-import-pack')));
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const Key('telegram-sticker-link-input')),
+      await _submitTelegramImport(
+        tester,
         'https://t.me/addstickers/Animals_by_TestBot',
       );
-      await tester.tap(
-        find.byKey(const Key('telegram-sticker-import-confirm')),
-      );
-      await tester.pumpAndSettle();
 
       expect(gateway.importedSetNames, ['Animals_by_TestBot']);
       expect(
@@ -240,6 +234,186 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'invalid Telegram link stays visible in sheet after dialog closes without request',
+    (tester) async {
+      final gateway = _FakeStickerGateway();
+      await _openSheet(tester, gateway);
+
+      await _submitTelegramImport(
+        tester,
+        'https://example.com/addstickers/Animals_by_TestBot',
+      );
+
+      expect(gateway.importedSetNames, isEmpty);
+      expect(find.byType(AlertDialog), findsNothing);
+      final feedback = find.byKey(const Key('sticker-operation-feedback'));
+      expect(feedback, findsOneWidget);
+      expect(
+        find.descendant(
+          of: feedback,
+          matching: find.textContaining('只允许导入 Telegram 官方贴纸包链接'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'Telegram import exposes stable friendly error matrix and diagnostic codes',
+    (tester) async {
+      final gateway = _FakeStickerGateway(
+        importHandler: (setName) async {
+          switch (setName) {
+            case 'NoRelay':
+              throw const StickerApiException(
+                statusCode: 503,
+                code: 'TELEGRAM_STICKER_RELAY_NOT_CONFIGURED',
+                message: 'relay not configured',
+              );
+            case 'RelayBusy':
+              throw const StickerApiException(
+                statusCode: 502,
+                code: 'TELEGRAM_STICKER_RELAY_UNAVAILABLE',
+                message: 'relay unavailable',
+              );
+            case 'RelayLimited':
+              throw const StickerApiException(
+                statusCode: 429,
+                code: 'TELEGRAM_STICKER_RELAY_RATE_LIMITED',
+                message: 'telegram rate limited',
+              );
+            case 'RelayTimeout':
+              throw const StickerApiException(
+                statusCode: 504,
+                code: 'TELEGRAM_STICKER_RELAY_TIMEOUT',
+                message: 'telegram timeout',
+              );
+            case 'MissingPack':
+              throw const StickerApiException(
+                statusCode: 404,
+                code: 'TELEGRAM_STICKER_PACK_NOT_FOUND',
+                message: 'not found',
+              );
+            case 'UnsupportedPack':
+              throw const StickerApiException(
+                statusCode: 422,
+                code: 'TELEGRAM_STICKER_FORMAT_UNSUPPORTED',
+                message: 'unsupported',
+              );
+            case 'TooLargePack':
+              throw const StickerApiException(
+                statusCode: 422,
+                code: 'TELEGRAM_STICKER_TOO_LARGE',
+                message: 'too large',
+              );
+            case 'NetworkTimeout':
+              throw const StickerApiException(
+                statusCode: 0,
+                code: 'STICKER_REQUEST_TIMEOUT',
+                message: 'timeout',
+              );
+            case 'ServerBoom':
+              throw const StickerApiException(
+                statusCode: 500,
+                code: 'STICKER_INTERNAL_ERROR',
+                message: 'internal',
+              );
+          }
+          throw StateError('unexpected set name $setName');
+        },
+      );
+      await _openSheet(tester, gateway);
+
+      final cases = <(String, String, String)>[
+        ('NoRelay', '服务端未配置 Telegram sticker relay', 'TELEGRAM_STICKER_RELAY_NOT_CONFIGURED'),
+        ('RelayBusy', 'Telegram 贴纸中继暂时不可用', 'TELEGRAM_STICKER_RELAY_UNAVAILABLE'),
+        ('RelayLimited', 'Telegram 当前正在限流', 'TELEGRAM_STICKER_RELAY_RATE_LIMITED'),
+        ('RelayTimeout', 'Telegram 贴纸中继请求超时', 'TELEGRAM_STICKER_RELAY_TIMEOUT'),
+        ('MissingPack', '没有找到这个 Telegram 贴纸包', 'TELEGRAM_STICKER_PACK_NOT_FOUND'),
+        ('UnsupportedPack', '支持静态 WebP/PNG、动态 TGS、视频 WebM', 'TELEGRAM_STICKER_FORMAT_UNSUPPORTED'),
+        ('TooLargePack', '文件超过当前实例允许的大小', 'TELEGRAM_STICKER_TOO_LARGE'),
+        ('NetworkTimeout', '网络请求超时', 'STICKER_REQUEST_TIMEOUT'),
+        ('ServerBoom', 'DD 表情服务暂时异常', 'STICKER_INTERNAL_ERROR'),
+      ];
+
+      for (final item in cases) {
+        await _submitTelegramImport(tester, item.$1);
+        final feedback = find.byKey(const Key('sticker-operation-feedback'));
+        expect(feedback, findsOneWidget);
+        expect(
+          find.descendant(of: feedback, matching: find.textContaining(item.$2)),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: feedback, matching: find.textContaining(item.$3)),
+          findsOneWidget,
+        );
+      }
+    },
+  );
+
+  testWidgets('partial Telegram import keeps supported stickers and shows counts', (
+    tester,
+  ) async {
+    final partial = _packWithCounts(
+      'partial-import',
+      'Partial',
+      supportedStickerCount: 2,
+      unsupportedStickerCount: 1,
+    );
+    final gateway = _FakeStickerGateway(
+      importHandler: (_) async => partial,
+    );
+    await _openSheet(tester, gateway);
+
+    await _submitTelegramImport(tester, 'Partial_by_TestBot');
+
+    expect(
+      find.byKey(const Key('sticker-tab-pack-partial-import')),
+      findsOneWidget,
+    );
+    expect(find.text('Partial'), findsOneWidget);
+    final feedback = find.byKey(const Key('sticker-operation-feedback'));
+    expect(feedback, findsOneWidget);
+    expect(
+      find.descendant(
+        of: feedback,
+        matching: find.textContaining('已添加 2 个表情；1 个文件导入失败'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('successful retry clears old Telegram import error and selects pack', (
+    tester,
+  ) async {
+    var attempts = 0;
+    final gateway = _FakeStickerGateway(
+      importHandler: (_) async {
+        attempts++;
+        if (attempts == 1) {
+          throw const StickerApiException(
+            statusCode: 503,
+            code: 'TELEGRAM_STICKER_RELAY_NOT_CONFIGURED',
+            message: 'relay not configured',
+          );
+        }
+        return _pack('retry-pack', 'RetrySuccess');
+      },
+    );
+    await _openSheet(tester, gateway);
+
+    await _submitTelegramImport(tester, 'Retry_by_TestBot');
+    expect(find.byKey(const Key('sticker-operation-feedback')), findsOneWidget);
+
+    await _submitTelegramImport(tester, 'Retry_by_TestBot');
+
+    expect(find.byKey(const Key('sticker-operation-feedback')), findsNothing);
+    expect(find.byKey(const Key('sticker-tab-pack-retry-pack')), findsOneWidget);
+    expect(find.text('RetrySuccess'), findsOneWidget);
+  });
 
   testWidgets('custom sticker manager supports organize multi-select delete', (
     tester,
@@ -378,6 +552,20 @@ Future<void> _openSheet(
   await tester.pumpAndSettle();
 }
 
+Future<void> _submitTelegramImport(
+  WidgetTester tester,
+  String value,
+) async {
+  await tester.tap(find.byKey(const Key('sticker-import-pack')));
+  await tester.pumpAndSettle();
+  await tester.enterText(
+    find.byKey(const Key('telegram-sticker-link-input')),
+    value,
+  );
+  await tester.tap(find.byKey(const Key('telegram-sticker-import-confirm')));
+  await tester.pumpAndSettle();
+}
+
 Future<Uint8List> _mediaBytes(String _) async => Uint8List.fromList(
   base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -486,13 +674,25 @@ CustomStickerItem _videoCustom(String id) => CustomStickerItem(
   createdAt: DateTime.utc(2026, 8, 12, 3, 55),
 );
 
-StickerPackItemGroup _pack(String id, String title) => StickerPackItemGroup(
+StickerPackItemGroup _pack(String id, String title) => _packWithCounts(
+  id,
+  title,
+  supportedStickerCount: 1,
+  unsupportedStickerCount: 0,
+);
+
+StickerPackItemGroup _packWithCounts(
+  String id,
+  String title, {
+  required int supportedStickerCount,
+  required int unsupportedStickerCount,
+}) => StickerPackItemGroup(
   id: id,
   setName: '${title}_by_TestBot',
   title: title,
   coverMediaId: 'cover-$id',
-  supportedStickerCount: 1,
-  unsupportedStickerCount: 0,
+  supportedStickerCount: supportedStickerCount,
+  unsupportedStickerCount: unsupportedStickerCount,
   sortOrder: 0,
   items: [
     StickerPackItem(
@@ -514,12 +714,14 @@ final class _FakeStickerGateway implements StickerGateway {
     List<CustomStickerItem> custom = const [],
     List<StickerPackItemGroup> packs = const [],
     this.partialRefreshResult,
+    this.importHandler,
   }) : custom = List<CustomStickerItem>.from(custom),
        packs = List<StickerPackItemGroup>.from(packs);
 
   final List<CustomStickerItem> custom;
   final List<StickerPackItemGroup> packs;
   final StickerPackItemGroup? partialRefreshResult;
+  final Future<StickerPackItemGroup> Function(String setName)? importHandler;
   final List<String> importedSetNames = [];
   final List<String> removedPackIds = [];
   final List<String> deletedStickerIds = [];
@@ -573,6 +775,17 @@ final class _FakeStickerGateway implements StickerGateway {
     required String setName,
   }) async {
     importedSetNames.add(setName);
+    final handler = importHandler;
+    if (handler != null) {
+      final pack = await handler(setName);
+      final index = packs.indexWhere((item) => item.id == pack.id);
+      if (index >= 0) {
+        packs[index] = pack;
+      } else {
+        packs.add(pack);
+      }
+      return pack;
+    }
     final refresh = partialRefreshResult;
     if (refresh != null && refresh.setName == setName) {
       final index = packs.indexWhere((pack) => pack.setName == setName);

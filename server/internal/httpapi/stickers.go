@@ -171,8 +171,16 @@ func (s *server) writeStickersError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusTooManyRequests, "STICKER_RATE_LIMITED", "Sticker import rate limit exceeded")
 	case errors.Is(err, stickers.ErrTelegramRelayNotConfigured):
 		writeAPIError(response, http.StatusServiceUnavailable, "TELEGRAM_STICKER_RELAY_NOT_CONFIGURED", "Telegram sticker relay is not configured on this DD instance")
+	case errors.Is(err, stickers.ErrTelegramStickerSetNotFound):
+		writeAPIError(response, http.StatusNotFound, "TELEGRAM_STICKER_PACK_NOT_FOUND", "Telegram sticker pack was not found")
+	case errors.Is(err, stickers.ErrTelegramProviderUnauthorized):
+		writeAPIError(response, http.StatusServiceUnavailable, "TELEGRAM_STICKER_RELAY_AUTH_FAILED", "Telegram sticker relay authentication failed")
+	case errors.Is(err, stickers.ErrTelegramProviderRateLimited):
+		writeAPIError(response, http.StatusTooManyRequests, "TELEGRAM_STICKER_RELAY_RATE_LIMITED", "Telegram sticker relay is rate limited; try again later")
+	case errors.Is(err, stickers.ErrTelegramProviderTimeout):
+		writeAPIError(response, http.StatusGatewayTimeout, "TELEGRAM_STICKER_RELAY_TIMEOUT", "Telegram sticker relay request timed out")
 	case errors.Is(err, stickers.ErrTelegramStickerFormatUnsupported):
-		writeAPIError(response, http.StatusUnprocessableEntity, "TELEGRAM_STICKER_FORMAT_UNSUPPORTED", "This sticker pack does not contain a currently supported static WebP sticker")
+		writeAPIError(response, http.StatusUnprocessableEntity, "TELEGRAM_STICKER_FORMAT_UNSUPPORTED", "This sticker pack does not contain a supported Telegram sticker format")
 	case errors.Is(err, stickers.ErrTelegramStickerDownloadTooLarge):
 		writeAPIError(response, http.StatusUnprocessableEntity, "TELEGRAM_STICKER_TOO_LARGE", "A Telegram sticker exceeds the configured size limit")
 	case errors.Is(err, stickers.ErrTelegramStickerDownloadInvalid):
