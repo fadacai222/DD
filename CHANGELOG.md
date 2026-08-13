@@ -10,6 +10,7 @@ DD follows Semantic Versioning for formal releases. Formal Git tags use the exac
 - Codemagic unsigned Release/archive validation plus signed App Store Connect delivery, resolved-native SBOM/vulnerability evidence, and GitHub release provenance integration.
 
 ### Changed
+- Production secret initialization now keeps the host secret directory root-only while making file-backed Compose secrets readable by DD's non-root API/Worker/migrate runtime; `deploy.sh` also verifies mounted-secret readability before touching persistent services.
 - Auth/Push account switching and logout now keep Push endpoint ownership fail-closed: ordinary `401/SESSION_EXPIRED` is not treated as device revocation, stale refresh completions are account/epoch isolated, and local Auth is only forgotten after endpoint deletion or authoritative device revocation is confirmed.
 - CallKit answer/decline/cancel/end uses server-confirmed two-phase action completion; outgoing ringing cancellation maps to `hangup`, incoming decline maps to `reject`, and failed/timed-out actions no longer falsely succeed in the system UI.
 - iOS media/file selection stays path/stream based for large media, and QR camera permission can recover after the user changes Camera access in iOS Settings.

@@ -7,6 +7,18 @@ load_prod_env
 require_cmd openssl
 umask 077
 mkdir -p "$PROD_DIR/secrets"
+chmod 700 "$PROD_DIR/secrets"
+
+# Local Docker Compose implements file-backed secrets as bind mounts. DD API,
+# Worker, and migrate intentionally run as non-root UID 65532, so a root-owned
+# 0600 source file becomes unreadable inside those containers. Keep the host
+# secrets directory root-only (0700), while making each mounted file 0644 so
+# the explicitly mounted secret is readable by its non-root container process.
+make_container_secret_readable() {
+  local path="$1"
+  [[ -e "$path" ]] || return 0
+  chmod 644 "$path"
+}
 
 random_hex() {
   openssl rand -hex "${1:-32}"
@@ -18,11 +30,12 @@ write_secret_once() {
   local path
   path="$(secret_path "$name")"
   if [[ -s "$path" ]]; then
+    make_container_secret_readable "$path"
     log "keep existing secret: $name"
     return 0
   fi
   printf '%s\n' "$value" > "$path"
-  chmod 600 "$path"
+  make_container_secret_readable "$path"
   log "generated secret: $name"
 }
 
@@ -32,7 +45,7 @@ ensure_optional_file() {
   if [[ ! -e "$path" ]]; then
     : > "$path"
   fi
-  chmod 600 "$path"
+  make_container_secret_readable "$path"
 }
 
 postgres_password="$(random_hex 32)"
@@ -83,6 +96,8 @@ else
   for supplied in turn_cert.pem turn_key.pem; do
     if [[ ! -s "$PROD_DIR/secrets/$supplied" ]]; then
       log "HUMAN-REQUIRED: install trusted $supplied for DD_TURN_DOMAIN; no self-signed production fallback is generated"
+    else
+      make_container_secret_readable "$PROD_DIR/secrets/$supplied"
     fi
   done
 fi

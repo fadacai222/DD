@@ -26,6 +26,36 @@ fi
 log "building versioned API / Worker / migrate images"
 compose_with_storage build api worker migrate
 
+log "verifying non-root DD runtime can read mounted production secrets"
+compose_with_storage run --rm --no-deps --entrypoint /bin/sh migrate -ec 'test -r /run/secrets/database_url'
+compose_with_storage run --rm --no-deps --entrypoint /bin/sh api -ec '
+  for path in \
+    /run/secrets/database_url \
+    /run/secrets/redis_url \
+    /run/secrets/auth_token_secret \
+    /run/secrets/admin_security_secret \
+    /run/secrets/email_code_pepper \
+    /run/secrets/livekit_api_key \
+    /run/secrets/livekit_api_secret \
+    /run/secrets/media_s3_access_key \
+    /run/secrets/media_s3_secret_key \
+    /run/secrets/smtp_password \
+    /run/secrets/telegram_bot_token; do
+    test -r "$path" || { echo "unreadable secret: $path" >&2; exit 1; }
+  done
+'
+compose_with_storage run --rm --no-deps --entrypoint /bin/sh worker -ec '
+  for path in \
+    /run/secrets/database_url \
+    /run/secrets/auth_token_secret \
+    /run/secrets/media_s3_access_key \
+    /run/secrets/media_s3_secret_key \
+    /run/secrets/fcm_service_account_json \
+    /run/secrets/apns_private_key; do
+    test -r "$path" || { echo "unreadable secret: $path" >&2; exit 1; }
+  done
+'
+
 log "starting persistence layer"
 compose_with_storage up -d postgres redis
 wait_service_healthy postgres 120

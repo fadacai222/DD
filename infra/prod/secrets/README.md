@@ -34,3 +34,5 @@ Optional integrations still need a file to exist; leave it empty when disabled:
 - `apns_private_key`
 
 Use `./scripts/init-secrets.sh` to generate the generated secrets and empty optional files. It intentionally does **not** generate a self-signed TURN certificate because self-signed TURN/TLS is not a production-valid fallback.
+
+On a single-host Docker Compose deployment, `init-secrets.sh` keeps the host `secrets/` directory at mode `0700` and normalizes the individual Compose-mounted secret files to `0644`. This is intentional: file-backed Compose secrets are bind-mounted and DD API/Worker/migrate run as non-root UID `65532`, so root-owned `0600` source files are unreadable inside those containers. Host users still cannot traverse the root-only `secrets/` directory; each container only receives the secret files explicitly granted to that service.
