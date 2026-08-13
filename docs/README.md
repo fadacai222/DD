@@ -58,6 +58,7 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 
 - P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 与 P13 U20-U25 Production Self-host/Release 主链已完成代码闭环。P13 剩余的是 `SECRET/HUMAN-PENDING`：真实原生签名证书与 GitHub production approval policy、公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等；P14 iOS U30 已完成本地总集成与自动门禁，含 iOS 15.0 Runner、Push/Auth lease、Media/QR、Calls/CallKit 和 native service 公共接线；2026-08-13 首次连接 `api.85746.pro` 真云端后暴露的 iOS 连接中断/错误恢复、头像 Photos picker、通话非联系人误报、旧 AppIcon 已完成针对性代码修复，状态统一为 `FIXED-PENDING-RETEST`，需新 iOS 包真人复测。macOS U31 仍为 `PLANNED`。
 - **客户端下载落地页**：根目录新增 `download-site/` 纯静态页面；Windows/普通桌面显示 Windows、Android 两个真实下载入口以及 iOS/macOS“敬请期待”，Android 浏览器仅显示 Android APK 下载入口，iOS/macOS 浏览器仅显示对应“敬请期待”；页面自带 `assets/banner.svg` 品牌 Banner，不依赖外部前端库。
 - **本地双端一键打包**：根目录 `一键打包Windows和安卓.bat` 调用正式 `scripts/build-client.ps1 -Target windows-android`，一次构建 Windows Release + Android Debug，并在根目录生成 `DD-Windows.zip`、`DD-Windows.lnk` 与 `DD-Android.apk`；`build_win_fresh` 等构建目录和根目录交付产物继续由 `.gitignore` 排除，不进入 Git 历史。
+- **客户端构建垃圾一键清理**：根目录 `一键清理客户端构建垃圾.bat` 调用 `scripts/clean-client-build-junk.ps1`，只删除可重建的 `clients/app/build`、历史 `build_win_*` / `build_windows_*`、Flutter build cache、Windows ephemeral 与 Android Gradle/CMake 临时目录；不删除源码、Git、配置、签名材料、依赖定义或全局 Pub/Gradle 缓存。
 
 当前不能宣称 Stable 1.0，也不能把“今晚能运行开发环境”写成“商业上线完成”。
 
