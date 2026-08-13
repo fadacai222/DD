@@ -8,7 +8,10 @@ load_prod_env
 
 for service in "$@"; do
   case "$service" in
-    api|worker|livekit|caddy|tls-mux) ;;
+    caddy|tls-mux)
+      is_bt_ingress && fail "'$service' is disabled in bt-nginx mode; BaoTa/Nginx owns TCP 80/443"
+      ;;
+    api|worker|livekit) ;;
     postgres|redis|minio|migrate|minio-init)
       fail "refusing controlled restart of stateful/one-shot service '$service'; use an explicit maintenance procedure"
       ;;

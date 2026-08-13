@@ -566,6 +566,7 @@ infra/prod/
 - Production Compose；
 - HTTPS / WSS；
 - Caddy / HAProxy；
+- 宝塔/Nginx 共存模式：宿主 Nginx 保留 80/443，DD 使用本机高位反代端口 + 独立 TURN/RTC 端口；
 - LiveKit embedded TURN；
 - MinIO / external S3；
 - backup；
@@ -576,6 +577,8 @@ infra/prod/
 - compatibility drill；
 - production preflight；
 - secrets 目录约定。
+
+宝塔 Debian 部署可直接看：`docs/runbooks/bt-panel-production.md`。
 
 **仍然必须由真实生产环境补齐：**
 

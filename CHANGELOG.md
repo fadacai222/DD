@@ -5,6 +5,7 @@ DD follows Semantic Versioning for formal releases. Formal Git tags use the exac
 ## [Unreleased]
 
 ### Added
+- Production self-hosting now supports a BaoTa/external-Nginx coexistence mode that leaves host TCP 80/443 with the existing Nginx, exposes DD HTTP backends on loopback-only high ports, and moves LiveKit TURN to configurable non-443 ports.
 - U30 iOS platform delivery code is now integrated locally: iOS 15.0 Runner foundation, Keychain-backed auth vault contract, APNs/FCM notification lifecycle, Files/Photos/camera/media bridges, QR lifecycle, LiveKit/CallKit/audio integration, and shared native-service registration/Xcode Sources wiring.
 - Codemagic unsigned Release/archive validation plus signed App Store Connect delivery, resolved-native SBOM/vulnerability evidence, and GitHub release provenance integration.
 

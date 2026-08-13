@@ -162,8 +162,8 @@ services:
           address: redis:6379
         turn:
           enabled: true
-          udp_port: 443
-          tls_port: 443
+          udp_port: ${DD_TURN_UDP_PORT:-443}
+          tls_port: ${DD_TURN_TLS_PORT:-443}
           domain: ${DD_TURN_DOMAIN:?DD_TURN_DOMAIN is required}
           cert_file: /run/secrets/turn_cert
           key_file: /run/secrets/turn_key
@@ -179,7 +179,7 @@ services:
         condition: service_healthy
     ports:
       - "7881:7881/tcp"
-      - "443:443/udp"
+      - "${DD_TURN_UDP_PORT:-443}:${DD_TURN_UDP_PORT:-443}/udp"
       - "${DD_RTC_UDP_PORT_START:-50000}-${DD_RTC_UDP_PORT_END:-50100}:${DD_RTC_UDP_PORT_START:-50000}-${DD_RTC_UDP_PORT_END:-50100}/udp"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]

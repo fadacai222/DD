@@ -121,8 +121,10 @@ wait_service_healthy livekit 120
 compose_with_storage up -d api worker
 wait_service_healthy api 180
 wait_service_healthy worker 120
-compose_with_storage up -d caddy tls-mux
-wait_service_healthy tls-mux 120
+if ! is_bt_ingress; then
+  compose_with_storage up -d caddy tls-mux
+  wait_service_healthy tls-mux 120
+fi
 "$SCRIPT_DIR/deployment-check.sh"
 
 restore_failed=false

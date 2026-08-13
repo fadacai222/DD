@@ -6,6 +6,7 @@ PROD_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$PROD_DIR/../.." && pwd -P)"
 ENV_FILE="${DD_PROD_ENV_FILE:-$PROD_DIR/.env}"
 COMPOSE_FILE="$PROD_DIR/compose.yml"
+BT_COMPOSE_FILE="$PROD_DIR/compose.bt.yml"
 
 log() {
   printf '[dd-prod] %s\n' "$*"
@@ -28,20 +29,32 @@ load_prod_env() {
   set +a
 }
 
+is_bt_ingress() {
+  [[ "${DD_INGRESS_MODE:-caddy}" == "bt-nginx" ]]
+}
+
+run_compose() {
+  local files=(-f "$COMPOSE_FILE")
+  if is_bt_ingress; then
+    files+=(-f "$BT_COMPOSE_FILE")
+  fi
+  docker compose --env-file "$ENV_FILE" "${files[@]}" "$@"
+}
+
 compose() {
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+  run_compose "$@"
 }
 
 compose_with_storage() {
   if [[ "${DD_OBJECT_STORAGE_MODE:-minio}" == "minio" ]]; then
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile selfhost-storage "$@"
+    run_compose --profile selfhost-storage "$@"
   else
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+    run_compose "$@"
   fi
 }
 
 compose_tools() {
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile tools "$@"
+  run_compose --profile tools "$@"
 }
 
 secret_path() {

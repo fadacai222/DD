@@ -32,9 +32,11 @@ Internal Compose network only:
 
 PostgreSQL, Redis, MinIO Console, API port 18473, and LiveKit signal port 7880 are **not** published directly on the host.
 
-TCP/443 is shared safely by TLS SNI: the TURN hostname is passed through to LiveKit so LiveKit owns the TURN certificate; normal HTTPS/WSS is passed through to Caddy. UDP/443 is deliberately reserved for TURN/UDP, so this baseline does not enable HTTP/3/QUIC on Caddy.
+TCP/443 is shared safely by TLS SNI in the default `DD_INGRESS_MODE=caddy` topology: the TURN hostname is passed through to LiveKit so LiveKit owns the TURN certificate; normal HTTPS/WSS is passed through to Caddy. UDP/443 is deliberately reserved for TURN/UDP, so this baseline does not enable HTTP/3/QUIC on Caddy.
 
-LiveKit's embedded TURN does not expose plain TURN/TCP. This baseline therefore does **not** pretend that TCP/3478 is available. The supported fallback chain is ICE/UDP -> TURN/UDP -> ICE/TCP (`7881`) -> TURN/TLS (`443/TCP`). A deployment that specifically requires plain TURN/TCP must add an external TURN implementation such as Coturn and explicitly configure LiveKit `turn_servers`; that optional topology is not silently enabled here.
+A second supported topology is `DD_INGRESS_MODE=bt-nginx`, intended for Debian hosts where BaoTa/Nginx already owns TCP 80/443. It loads `compose.bt.yml`, does not start DD Caddy/HAProxy, binds API/LiveKit signaling/MinIO only to loopback high ports, and exposes TURN/UDP + TURN/TLS on configurable non-443 ports (the provided BaoTa template uses `3478/UDP` and `5349/TCP`). See `docs/runbooks/bt-panel-production.md`.
+
+LiveKit's embedded TURN does not expose plain TURN/TCP. In the default topology the fallback chain is ICE/UDP -> TURN/UDP -> ICE/TCP (`7881`) -> TURN/TLS (`443/TCP`); BaoTa mode uses the configured TURN ports instead. A deployment that specifically requires plain TURN/TCP must add an external TURN implementation such as Coturn and explicitly configure LiveKit `turn_servers`; that optional topology is not silently enabled here.
 
 ## 2. Required host/network
 
@@ -47,7 +49,9 @@ Create DNS A records pointing to `DD_PUBLIC_IP`:
 - `DD_TURN_DOMAIN`
 - `DD_S3_DOMAIN` when using bundled MinIO
 
-Required inbound firewall/security-group rules:
+Required inbound firewall/security-group rules depend on ingress mode.
+
+Default Caddy/HAProxy mode:
 
 | Port | Protocol | Purpose |
 |---|---|---|
@@ -57,6 +61,8 @@ Required inbound firewall/security-group rules:
 | 7881 | TCP | LiveKit ICE/TCP fallback |
 | `DD_RTC_UDP_PORT_START..END` | UDP | LiveKit ICE media; default `50000..50100` |
 
+BaoTa/Nginx coexistence mode keeps Nginx on TCP 80/443 and adds only `DD_TURN_UDP_PORT` (default template `3478/UDP`), `DD_TURN_TLS_PORT` (default template `5349/TCP`), TCP 7881, and the configured RTC UDP range. API/RTC/MinIO reverse-proxy backends bind to `127.0.0.1` only.
+
 Do **not** open PostgreSQL 5432, Redis 6379, MinIO 9000/9001, LiveKit 7880, or API 18473 to the public Internet for this topology.
 
 ## 3. Configure
@@ -65,6 +71,14 @@ Do **not** open PostgreSQL 5432, Redis 6379, MinIO 9000/9001, LiveKit 7880, or A
 cd /opt/dd/infra/prod
 cp .env.example .env
 ```
+
+For BaoTa/Nginx coexistence, use the helper instead:
+
+```bash
+bash scripts/prepare-bt.sh your-domain.tld YOUR_PUBLIC_IP your@email.tld
+```
+
+It creates `.env` from `.env.bt.example` with separate `api/rtc/turn/media` hostnames and safe high-port defaults.
 
 Edit `.env` and replace every example domain/IP **and** the placeholder release values. Use an immutable release/image tag, for example `DD_RELEASE_VERSION=0.9.0` and `DD_IMAGE_TAG=v0.9.0`; `dev` and `latest` are rejected. `preflight.sh` deliberately rejects `example.com`, RFC1918/CGNAT addresses, documentation IP ranges, and development image tags so the template cannot accidentally pass as production configuration.
 

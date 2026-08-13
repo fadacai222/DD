@@ -1,0 +1,26 @@
+# BaoTa / external Nginx coexistence overlay.
+# Keeps host TCP 80/443 owned by the existing Nginx and exposes only loopback
+# HTTP backends plus the public WebRTC/TURN ports required by LiveKit.
+services:
+  minio:
+    ports:
+      - "127.0.0.1:${DD_S3_HOST_PORT:-19000}:9000/tcp"
+
+  livekit:
+    ports:
+      - "127.0.0.1:${DD_LIVEKIT_HOST_PORT:-17880}:7880/tcp"
+      - "${DD_TURN_TLS_PORT:-5349}:${DD_TURN_TLS_PORT:-5349}/tcp"
+
+  api:
+    ports:
+      - "127.0.0.1:${DD_API_HOST_PORT:-18473}:18473/tcp"
+
+  # These services remain in the base production model for the normal Caddy/
+  # HAProxy topology, but are disabled in BaoTa mode so they can never steal
+  # TCP 80/443 from the host Nginx unless an operator explicitly enables this
+  # otherwise-unused profile.
+  caddy:
+    profiles: ["dd-internal-ingress-disabled"]
+
+  tls-mux:
+    profiles: ["dd-internal-ingress-disabled"]

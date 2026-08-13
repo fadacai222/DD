@@ -50,9 +50,9 @@ compose_for_tag() {
   local tag="$1" version="$2"
   shift 2
   if [[ "${DD_OBJECT_STORAGE_MODE:-minio}" == "minio" ]]; then
-    DD_IMAGE_TAG="$tag" DD_RELEASE_VERSION="$version" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile selfhost-storage "$@"
+    DD_IMAGE_TAG="$tag" DD_RELEASE_VERSION="$version" run_compose --profile selfhost-storage "$@"
   else
-    DD_IMAGE_TAG="$tag" DD_RELEASE_VERSION="$version" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+    DD_IMAGE_TAG="$tag" DD_RELEASE_VERSION="$version" run_compose "$@"
   fi
 }
 

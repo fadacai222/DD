@@ -14,7 +14,11 @@ if service_is_running api; then
 fi
 
 log "pulling pinned infrastructure images"
-compose_with_storage pull postgres redis livekit caddy tls-mux
+if is_bt_ingress; then
+  compose_with_storage pull postgres redis livekit
+else
+  compose_with_storage pull postgres redis livekit caddy tls-mux
+fi
 if [[ "${DD_OBJECT_STORAGE_MODE:-minio}" == "minio" ]]; then
   compose_with_storage pull minio minio-init
 fi
@@ -45,11 +49,20 @@ compose_with_storage up -d api worker
 wait_service_healthy api 180
 wait_service_healthy worker 120
 
-log "starting HTTPS/WSS/TURN-TLS ingress"
-compose_with_storage up -d caddy tls-mux
-wait_service_healthy caddy 120
-wait_service_healthy tls-mux 120
+if is_bt_ingress; then
+  log "BaoTa ingress mode: keeping host Nginx on TCP 80/443; Caddy/tls-mux are not started"
+  log "loopback backends: API 127.0.0.1:${DD_API_HOST_PORT}, RTC 127.0.0.1:${DD_LIVEKIT_HOST_PORT}, Media 127.0.0.1:${DD_S3_HOST_PORT}"
+else
+  log "starting HTTPS/WSS/TURN-TLS ingress"
+  compose_with_storage up -d caddy tls-mux
+  wait_service_healthy caddy 120
+  wait_service_healthy tls-mux 120
+fi
 
 "$SCRIPT_DIR/deployment-check.sh"
 log "production deployment started successfully"
-log "run: $SCRIPT_DIR/deployment-check.sh --public after DNS resolves and ACME certificates are issued"
+if is_bt_ingress; then
+  log "configure BaoTa reverse proxies, then run: $SCRIPT_DIR/deployment-check.sh --public"
+else
+  log "run: $SCRIPT_DIR/deployment-check.sh --public after DNS resolves and ACME certificates are issued"
+fi

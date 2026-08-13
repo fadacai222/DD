@@ -56,6 +56,11 @@ require_value DD_ACME_EMAIL
 require_value DD_PUBLIC_IP
 is_public_ipv4 "$DD_PUBLIC_IP" || fail "DD_PUBLIC_IP must be a real public IPv4 address, not RFC1918/CGNAT/documentation/reserved space"
 
+case "${DD_INGRESS_MODE:-caddy}" in
+  caddy|bt-nginx) ;;
+  *) fail "DD_INGRESS_MODE must be caddy or bt-nginx" ;;
+esac
+
 [[ "$DD_API_DOMAIN" != "$DD_LIVEKIT_DOMAIN" && "$DD_API_DOMAIN" != "$DD_TURN_DOMAIN" && "$DD_LIVEKIT_DOMAIN" != "$DD_TURN_DOMAIN" ]] || fail "API, LiveKit, and TURN hostnames must be distinct"
 
 resolve_ipv4() {
@@ -152,10 +157,12 @@ if [[ "${DD_REGISTRATION_MODE:-closed}" != "closed" ]]; then
   fi
 fi
 
-for numeric in DD_RTC_UDP_PORT_START DD_RTC_UDP_PORT_END DD_BACKUP_RETENTION_DAYS DD_BACKUP_INTERVAL_HOURS DD_RPO_HOURS DD_RTO_HOURS; do
+for numeric in DD_TURN_UDP_PORT DD_TURN_TLS_PORT DD_RTC_UDP_PORT_START DD_RTC_UDP_PORT_END DD_BACKUP_RETENTION_DAYS DD_BACKUP_INTERVAL_HOURS DD_RPO_HOURS DD_RTO_HOURS; do
   require_value "$numeric"
   [[ "${!numeric}" =~ ^[0-9]+$ ]] || fail "$numeric must be an integer"
 done
+(( DD_TURN_UDP_PORT >= 1 && DD_TURN_UDP_PORT <= 65535 )) || fail "DD_TURN_UDP_PORT is outside 1..65535"
+(( DD_TURN_TLS_PORT >= 1 && DD_TURN_TLS_PORT <= 65535 )) || fail "DD_TURN_TLS_PORT is outside 1..65535"
 (( DD_RTC_UDP_PORT_START >= 1024 && DD_RTC_UDP_PORT_START <= 65535 )) || fail "DD_RTC_UDP_PORT_START is outside 1024..65535"
 (( DD_RTC_UDP_PORT_END >= DD_RTC_UDP_PORT_START && DD_RTC_UDP_PORT_END <= 65535 )) || fail "DD_RTC_UDP_PORT_END must be >= start and <= 65535"
 (( DD_RTC_UDP_PORT_END - DD_RTC_UDP_PORT_START <= 1000 )) || fail "RTC UDP range is unexpectedly wide (>1001 ports); review before exposing it"
@@ -163,6 +170,19 @@ case "${DD_LIVEKIT_SKIP_EXTERNAL_IP_VALIDATION:-false}" in
   true|false) ;;
   *) fail "DD_LIVEKIT_SKIP_EXTERNAL_IP_VALIDATION must be true or false" ;;
 esac
+
+if is_bt_ingress; then
+  for local_port in DD_API_HOST_PORT DD_LIVEKIT_HOST_PORT DD_S3_HOST_PORT; do
+    require_value "$local_port"
+    [[ "${!local_port}" =~ ^[0-9]+$ ]] || fail "$local_port must be an integer"
+    (( ${!local_port} >= 1024 && ${!local_port} <= 65535 )) || fail "$local_port is outside 1024..65535"
+    (( ${!local_port} != 443 )) || fail "$local_port must not use host TCP 443 in bt-nginx mode"
+  done
+  (( DD_TURN_TLS_PORT != 80 && DD_TURN_TLS_PORT != 443 )) || fail "DD_TURN_TLS_PORT must not use host TCP 80/443 in bt-nginx mode"
+  (( DD_TURN_UDP_PORT != 80 && DD_TURN_UDP_PORT != 443 )) || fail "DD_TURN_UDP_PORT must not use host UDP 80/443 in bt-nginx mode"
+else
+  (( DD_TURN_TLS_PORT == 443 && DD_TURN_UDP_PORT == 443 )) || fail "built-in caddy ingress requires TURN TLS/UDP on 443"
+fi
 (( DD_BACKUP_RETENTION_DAYS >= 1 )) || fail "DD_BACKUP_RETENTION_DAYS must be >= 1"
 (( DD_BACKUP_INTERVAL_HOURS >= 1 )) || fail "DD_BACKUP_INTERVAL_HOURS must be >= 1"
 (( DD_RPO_HOURS >= DD_BACKUP_INTERVAL_HOURS )) || fail "configured quiesced DR recovery-point interval exceeds DD_RPO_HOURS"
@@ -190,24 +210,29 @@ if [[ "${DD_OBJECT_STORAGE_MODE:-minio}" == "external-s3" ]]; then
   '
 fi
 
-caddy_file="$PROD_DIR/${DD_CADDYFILE#./}"
-[[ -f "$caddy_file" ]] || fail "Caddyfile not found: $caddy_file"
-caddy_host_path="$(docker_host_path "$caddy_file")"
-haproxy_host_path="$(docker_host_path "$PROD_DIR/haproxy.cfg")"
-log "validating Caddy config"
-MSYS_NO_PATHCONV=1 docker run --rm \
-  -e DD_ACME_EMAIL="$DD_ACME_EMAIL" \
-  -e DD_API_DOMAIN="$DD_API_DOMAIN" \
-  -e DD_LIVEKIT_DOMAIN="$DD_LIVEKIT_DOMAIN" \
-  -e DD_S3_DOMAIN="${DD_S3_DOMAIN:-}" \
-  -v "$caddy_host_path:/etc/caddy/Caddyfile:ro" \
-  caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+if is_bt_ingress; then
+  [[ -f "$BT_COMPOSE_FILE" ]] || fail "BaoTa compose overlay not found: $BT_COMPOSE_FILE"
+  log "BaoTa ingress selected: host Nginx keeps TCP 80/443; DD Caddy/HAProxy validation is skipped"
+else
+  caddy_file="$PROD_DIR/${DD_CADDYFILE#./}"
+  [[ -f "$caddy_file" ]] || fail "Caddyfile not found: $caddy_file"
+  caddy_host_path="$(docker_host_path "$caddy_file")"
+  haproxy_host_path="$(docker_host_path "$PROD_DIR/haproxy.cfg")"
+  log "validating Caddy config"
+  MSYS_NO_PATHCONV=1 docker run --rm \
+    -e DD_ACME_EMAIL="$DD_ACME_EMAIL" \
+    -e DD_API_DOMAIN="$DD_API_DOMAIN" \
+    -e DD_LIVEKIT_DOMAIN="$DD_LIVEKIT_DOMAIN" \
+    -e DD_S3_DOMAIN="${DD_S3_DOMAIN:-}" \
+    -v "$caddy_host_path:/etc/caddy/Caddyfile:ro" \
+    caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 
-log "validating HAProxy SNI routing config"
-MSYS_NO_PATHCONV=1 docker run --rm \
-  -e DD_TURN_DOMAIN="$DD_TURN_DOMAIN" \
-  -v "$haproxy_host_path:/usr/local/etc/haproxy/haproxy.cfg:ro" \
-  haproxy:3.2.4-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+  log "validating HAProxy SNI routing config"
+  MSYS_NO_PATHCONV=1 docker run --rm \
+    -e DD_TURN_DOMAIN="$DD_TURN_DOMAIN" \
+    -v "$haproxy_host_path:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+    haproxy:3.2.4-alpine haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null
+fi
 
 log "validating LiveKit production port configuration"
 livekit_ports="$(compose_with_storage run --rm --no-deps --entrypoint /bin/sh livekit -ec '
@@ -217,8 +242,12 @@ livekit_ports="$(compose_with_storage run --rm --no-deps --entrypoint /bin/sh li
 ')"
 printf '%s\n' "$livekit_ports" | grep -Fq '7881 - ICE/TCP' || fail "LiveKit config does not expose ICE/TCP 7881"
 printf '%s\n' "$livekit_ports" | grep -Fq "${DD_RTC_UDP_PORT_START}-${DD_RTC_UDP_PORT_END} - ICE/UDP range" || fail "LiveKit config does not expose the configured ICE/UDP range"
-printf '%s\n' "$livekit_ports" | grep -Fq '443 - TURN/TLS' || fail "LiveKit config does not expose TURN/TLS on TCP 443"
-printf '%s\n' "$livekit_ports" | grep -Fq '443 - TURN/UDP' || fail "LiveKit config does not expose TURN/UDP on UDP 443"
+printf '%s\n' "$livekit_ports" | grep -Fq "${DD_TURN_TLS_PORT} - TURN/TLS" || fail "LiveKit config does not expose TURN/TLS on TCP ${DD_TURN_TLS_PORT}"
+printf '%s\n' "$livekit_ports" | grep -Fq "${DD_TURN_UDP_PORT} - TURN/UDP" || fail "LiveKit config does not expose TURN/UDP on UDP ${DD_TURN_UDP_PORT}"
 
 log "preflight PASS"
-log "HUMAN-PENDING: verify public DNS, host/cloud firewall, NAT forwarding, UDP 443, TCP 443/7881, RTC UDP range, and real cross-carrier/mobile call fallback from outside this host"
+if is_bt_ingress; then
+  log "HUMAN-PENDING: configure BaoTa reverse proxies for API/RTC/Media and verify UDP ${DD_TURN_UDP_PORT}, TCP ${DD_TURN_TLS_PORT}/7881, RTC UDP range, and real cross-carrier/mobile call fallback"
+else
+  log "HUMAN-PENDING: verify public DNS, host/cloud firewall, NAT forwarding, UDP 443, TCP 443/7881, RTC UDP range, and real cross-carrier/mobile call fallback from outside this host"
+fi

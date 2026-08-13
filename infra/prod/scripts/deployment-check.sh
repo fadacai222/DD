@@ -13,7 +13,11 @@ elif [[ -n "${1:-}" ]]; then
   fail "usage: deployment-check.sh [--public]"
 fi
 
-for service in postgres redis livekit api worker caddy tls-mux; do
+services=(postgres redis livekit api worker)
+if ! is_bt_ingress; then
+  services+=(caddy tls-mux)
+fi
+for service in "${services[@]}"; do
   service_is_running "$service" || fail "$service is not running"
   wait_service_healthy "$service" 5
   log "$service healthy/running"
@@ -47,16 +51,16 @@ if [[ "$public_check" == "true" ]]; then
   rtc_status="$(curl --silent --show-error --max-time 15 -o /dev/null -w '%{http_code}' "https://${DD_LIVEKIT_DOMAIN}/")"
   [[ "$rtc_status" != "000" && "$rtc_status" -lt 500 ]] || fail "LiveKit public TLS endpoint returned HTTP $rtc_status"
 
-  log "checking TURN/TLS certificate and SNI route on TCP/443"
+  log "checking TURN/TLS certificate on TCP/${DD_TURN_TLS_PORT}"
   if command -v timeout >/dev/null 2>&1; then
-    timeout 15 openssl s_client -connect "${DD_TURN_DOMAIN}:443" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
+    timeout 15 openssl s_client -connect "${DD_TURN_DOMAIN}:${DD_TURN_TLS_PORT}" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
       || fail "TURN/TLS public handshake failed"
   else
-    openssl s_client -connect "${DD_TURN_DOMAIN}:443" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
+    openssl s_client -connect "${DD_TURN_DOMAIN}:${DD_TURN_TLS_PORT}" -servername "$DD_TURN_DOMAIN" -verify_return_error -brief </dev/null >/dev/null 2>&1 \
       || fail "TURN/TLS public handshake failed"
   fi
   log "public HTTPS + RTC TLS + TURN/TLS handshake PASS"
-  log "HUMAN-PENDING: this does not prove UDP 443, ICE/TCP 7881, media UDP range, carrier NAT behavior, or Wi-Fi/mobile-network switching; verify with real remote clients"
+  log "HUMAN-PENDING: this does not prove UDP ${DD_TURN_UDP_PORT}, ICE/TCP 7881, media UDP range, carrier NAT behavior, or Wi-Fi/mobile-network switching; verify with real remote clients"
 else
   log "public route checks skipped; run deployment-check.sh --public after DNS/cert issuance"
   log "HUMAN-PENDING: public TURN/UDP/TLS and cross-carrier RTC still require real external clients"
