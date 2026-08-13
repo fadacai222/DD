@@ -23,7 +23,10 @@ void main() {
     );
     expect(codemagic, isNot(contains('script: dart analyze --fatal-infos\n')));
     expect(codemagic, contains('Package unsigned IPA for manual re-signing'));
-    expect(codemagic, contains('clients/app/build/ios/DD-unsigned.ipa'));
+    expect(
+      codemagic,
+      contains(r'- $CM_BUILD_DIR/clients/app/build/ios/DD-unsigned.ipa'),
+    );
     expect(codemagic, contains('Transient SwiftPM/network download failure'));
     expect(codemagic, contains("grep -Eiq 'downloadError|could not connect to server"));
     expect(RegExp(r'#!/usr/bin/env bash').allMatches(codemagic).length, greaterThanOrEqualTo(2));

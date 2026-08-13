@@ -94,9 +94,9 @@ workflows:
           (cd build/ios/unsigned-ipa && zip -qry --symlinks ../DD-unsigned.ipa Payload)
           test -s build/ios/DD-unsigned.ipa || { echo 'unsigned IPA was not produced' >&2; exit 1; }
     artifacts:
-      - clients/app/build/ios/DD-unsigned.ipa
-      - clients/app/build/ios/iphoneos/*.app
-      - clients/app/build/ios/DD-unsigned.xcarchive/**
+      - $CM_BUILD_DIR/clients/app/build/ios/DD-unsigned.ipa
+      - $CM_BUILD_DIR/clients/app/build/ios/iphoneos/*.app
+      - $CM_BUILD_DIR/clients/app/build/ios/DD-unsigned.xcarchive/**
       - /tmp/xcodebuild_logs/*.log
 
   ios-signed-release:
