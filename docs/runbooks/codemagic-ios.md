@@ -1,6 +1,6 @@
 # Codemagic iOS 云构建 / 签名 / TestFlight
 
-> 当前状态：`U30 LOCAL-AUTO-VERIFIED / CODEMAGIC-FIRST-RUN / CLOUD-RETRY-PENDING / SECRET-HUMAN-REQUIRED`（2026-08-13）
+> 当前状态：`U30 LOCAL-AUTO-VERIFIED / UNSIGNED-CLOUD-AUTO-VERIFIED / SIGNED-CLOUD-PENDING / SECRET-HUMAN-REQUIRED`（2026-08-13）
 
 仓库根目录 `codemagic.yaml` 提供两个独立工作流。`ios-unsigned-validation` 不需要任何 Apple Secret，使用 Flutter 3.44.9、Xcode 26.6 和 Mac mini M2 执行依赖解析、静态分析、Flutter 测试、`flutter build ios --release --no-codesign`，并用 `xcodebuild archive ... CODE_SIGNING_ALLOWED=NO` 验证 Release archive 工程结构；`ios-signed-release` 只用于正式 tag，由 U25 GitHub Release DAG 通过 Codemagic API 触发并生成 `DD-vX.Y.Z-ios-arm64.ipa`。
 
@@ -15,7 +15,7 @@
 5. 云端顺序应为：`flutter pub get` → 仅对 DD 自有 `lib/`、`test/`、`tool/` 依次执行 `dart analyze --fatal-infos` → `flutter test` → `flutter build ios --release --no-codesign` → unsigned `xcodebuild archive`。
 6. 只有上述 Release compile + archive 都成功后，才可把 iOS Release 工程编译写为 `AUTO-VERIFIED`；这仍不等于签名/安装/TestFlight/真机通过。
 
-它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 前两次真实 Mac mini M2 云构建在 Xcode compile 前暴露 analyzer 输入边界问题，第三次暴露 macOS `flutter test` 的 `ChatVoicePlayer` 过早初始化 native audio backend；这些前置门禁已修复。随后云构建已真实进入 `flutter build ios --release --no-codesign` / Xcode compile，并暴露两条 Swift blocker：`FlutterPluginRegistry.registrar(forPlugin:)` 的 optional registrar 被直接传给 `DDNativeService.register`，以及 iOS 15 deployment target 下错误以 `#available(iOS 15.4, *)` 使用仅 iOS 16+ 可用的 `UIApplication.openNotificationSettingsURLString`。当前 registrar 已显式解包，通知设置 deep-link 已改为 iOS 16+ 使用 notification settings URL、iOS 15 回退 app settings URL；对应静态合同本地 8/8 PASS。该修复仍需下一次 Codemagic 真 Xcode 重跑验证；在 Release compile + unsigned archive 真正通过前状态保持 `CLOUD-RETRY-PENDING`。
+它不会上传 TestFlight，不读取 certificate/profile/App Store Connect key，也不能作为正式 IPA 证据。2026-08-13 前两次真实 Mac mini M2 云构建在 Xcode compile 前暴露 analyzer 输入边界问题，第三次暴露 macOS `flutter test` 的 `ChatVoicePlayer` 过早初始化 native audio backend；这些前置门禁已修复。随后云构建已真实进入 `flutter build ios --release --no-codesign` / Xcode compile，并暴露两条 Swift blocker：`FlutterPluginRegistry.registrar(forPlugin:)` 的 optional registrar 被直接传给 `DDNativeService.register`，以及 iOS 15 deployment target 下错误以 `#available(iOS 15.4, *)` 使用仅 iOS 16+ 可用的 `UIApplication.openNotificationSettingsURLString`。当前 registrar 已显式解包，通知设置 deep-link 已改为 iOS 16+ 使用 notification settings URL、iOS 15 回退 app settings URL；对应静态合同本地 8/8 PASS。随后 Codemagic Mac mini M2 已在真实 Xcode 环境完成 `flutter build ios --release --no-codesign` 与 unsigned `xcodebuild archive`，`Build unsigned iOS Release app`、`Validate unsigned Release archive` 均成功，因此 unsigned Release compile/archive 已可记为 `UNSIGNED-CLOUD-AUTO-VERIFIED`。该证据仍不等于签名 IPA、TestFlight 或真机通过；后续状态转入 `SIGNED-CLOUD-PENDING / SECRET-HUMAN-REQUIRED`。
 
 ## 2. Codemagic signing contract
 
