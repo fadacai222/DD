@@ -1989,6 +1989,66 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('shared sticker pack import uses actionable Telegram error copy', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'pack-share-error-message',
+          conversationId: 'conversation-1',
+          sequence: 1,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'pack-share-error-client-0001',
+          type: 'STICKER_PACK',
+          content: const TextMessageContent(
+            text: 'dd://stickers/telegram/Missing_by_TestBot?title=Missing',
+            mediaId: 'media-pack-share-error-preview',
+            width: 512,
+            height: 512,
+            mimeType: 'image/webp',
+            sizeBytes: 2048,
+          ),
+          createdAt: DateTime.utc(2026, 8, 14, 1, 30),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    final stickerGateway = _ChatStickerGateway(
+      importError: const StickerApiException(
+        statusCode: 404,
+        code: 'TELEGRAM_STICKER_PACK_NOT_FOUND',
+        message: 'not found',
+      ),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(),
+          currentUserId: 'user-a',
+          stickerGateway: stickerGateway,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 420));
+
+    await tester.tap(
+      find.byKey(
+        const Key('telegram-sticker-pack-card-Missing_by_TestBot'),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('没有找到这个 Telegram 贴纸包'), findsOneWidget);
+    expect(find.textContaining('TELEGRAM_STICKER_PACK_NOT_FOUND'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('custom sticker selection sends stable DD media id as STICKER', (
     tester,
   ) async {
@@ -2922,11 +2982,13 @@ final class _ChatStickerGateway implements StickerGateway {
   _ChatStickerGateway({
     List<CustomStickerItem> custom = const [],
     List<StickerPackItemGroup> packs = const [],
+    this.importError,
   }) : _custom = List<CustomStickerItem>.from(custom),
        _packs = List<StickerPackItemGroup>.from(packs);
 
   final List<CustomStickerItem> _custom;
   final List<StickerPackItemGroup> _packs;
+  final Object? importError;
   final List<(String, int, int)> createdRequests = [];
 
   @override
@@ -2975,6 +3037,8 @@ final class _ChatStickerGateway implements StickerGateway {
     required String accessToken,
     required String setName,
   }) async {
+    final error = importError;
+    if (error != null) throw error;
     final pack = _chatStickerPack('imported-${_packs.length}');
     _packs.add(pack);
     return pack;

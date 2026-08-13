@@ -61,6 +61,7 @@ import 'mention_composer_controller.dart';
 import 'mention_rich_text.dart';
 import 'mention_suggestion_overlay.dart';
 import 'sticker_library_sheet.dart';
+import 'sticker_operation_error_text.dart';
 import 'video_viewer_page.dart';
 import 'widgets/inline_video_preview.dart';
 import 'widgets/looping_video_sticker.dart';
@@ -1944,9 +1945,9 @@ class _TextChatPageState extends State<TextChatPage>
       ).showSnackBar(SnackBar(content: Text('已添加表情包「${pack.title}」')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('表情包添加失败：$error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('表情包添加失败：${stickerOperationErrorText(error)}')),
+      );
     } finally {
       if (ownsGateway) gateway.close();
     }
