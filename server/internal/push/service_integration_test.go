@@ -54,6 +54,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	}()
 
 	now := time.Date(2026, 8, 11, 5, 0, 0, 0, time.UTC)
+	queueTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	service, err := NewService(Config{Pool: pool, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +105,17 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	`, messageID, conversationID, senderID, senderDevice, `{"text":"hello from push"}`, now); err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
+	foreignDedupe := "push-foreign:" + suffix
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
 		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
-	`, recipientID, messageID, conversationID, senderID, "push-it:"+suffix, now); err != nil {
+	`, senderID, messageID, conversationID, recipientID, foreignDedupe, now); err != nil {
+		t.Fatalf("seed unrelated pending push job: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
+		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
+	`, recipientID, messageID, conversationID, senderID, "push-it:"+suffix, queueTime); err != nil {
 		t.Fatalf("seed message push job: %v", err)
 	}
 	defer func() {
@@ -117,7 +125,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	}()
 
 	provider := &captureProvider{}
-	processed, err := service.DispatchJobs(ctx, Providers{UnifiedPush: provider}, 10)
+	processed, err := service.DispatchJobs(ctx, Providers{UnifiedPush: provider}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +146,13 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	if jobStatus != "SENT" {
 		t.Fatalf("job status=%s", jobStatus)
 	}
+	var foreignStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM push_jobs WHERE dedupe_key=$1`, foreignDedupe).Scan(&foreignStatus); err != nil {
+		t.Fatal(err)
+	}
+	if foreignStatus != "PENDING" {
+		t.Fatalf("dispatch consumed unrelated pending job status=%s", foreignStatus)
+	}
 
 	if _, err := pool.Exec(ctx, `
 		UPDATE conversation_members SET muted_until=$3
@@ -148,7 +163,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
 		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
-	`, recipientID, messageID, conversationID, senderID, "push-muted:"+suffix, now); err != nil {
+	`, recipientID, messageID, conversationID, senderID, "push-muted:"+suffix, queueTime); err != nil {
 		t.Fatalf("seed muted message push job: %v", err)
 	}
 	mutedProvider := &captureProvider{}
@@ -183,7 +198,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
 		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
-	`, recipientID, messageID, conversationID, senderID, "push-auth:"+suffix, now); err != nil {
+	`, recipientID, messageID, conversationID, senderID, "push-auth:"+suffix, queueTime); err != nil {
 		t.Fatalf("seed provider auth failure job: %v", err)
 	}
 	authProvider := &captureProvider{err: errors.New("FCM OAuth HTTP 403: invalid_grant")}
@@ -214,7 +229,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
 		VALUES($1,'MESSAGE_CREATED',$2,$3,$4,$5,'{}'::jsonb,'PENDING',$6,$6)
-	`, recipientID, messageID, conversationID, senderID, "push-retry:"+suffix, now); err != nil {
+	`, recipientID, messageID, conversationID, senderID, "push-retry:"+suffix, queueTime); err != nil {
 		t.Fatalf("seed retryable provider job: %v", err)
 	}
 	retryProvider := &captureProvider{err: fmt.Errorf("%w: FCM HTTP 503", ErrRetryable)}
