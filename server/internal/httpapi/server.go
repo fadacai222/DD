@@ -13,9 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"example.com/selfhosted-im/server/internal/auth/account"
 	"example.com/selfhosted-im/server/internal/protocol"
+	"example.com/selfhosted-im/server/internal/transcription"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/google/uuid"
 )
 
 const (
@@ -37,6 +40,13 @@ type RuntimeMetrics interface {
 	RealtimePublishFailure(reason string)
 	RealtimeQueueDropped()
 	RedisReconnect()
+}
+
+type TranscriptionService interface {
+	Request(context.Context, account.Principal, uuid.UUID) (transcription.Transcription, error)
+	Get(context.Context, account.Principal, uuid.UUID) (transcription.Transcription, error)
+	GetPreferences(context.Context, account.Principal) (transcription.Preferences, error)
+	UpdatePreferences(context.Context, account.Principal, transcription.UpdatePreferencesInput) (transcription.Preferences, error)
 }
 
 type RealtimeEventBus interface {
@@ -64,6 +74,7 @@ type Config struct {
 	GroupsService      GroupsService
 	CallsService       CallsService
 	MessagingService   MessagingService
+	TranscriptionService TranscriptionService
 	MediaService       MediaService
 	StickersService    StickersService
 	MomentsService     MomentsService
@@ -99,6 +110,7 @@ type server struct {
 	groups               GroupsService
 	formalCalls          CallsService
 	messaging            MessagingService
+	transcription        TranscriptionService
 	media                MediaService
 	stickers             StickersService
 	moments              MomentsService
@@ -172,6 +184,7 @@ func NewHandler(config Config) http.Handler {
 		groups:             config.GroupsService,
 		formalCalls:        config.CallsService,
 		messaging:          config.MessagingService,
+		transcription:      config.TranscriptionService,
 		media:              config.MediaService,
 		stickers:           config.StickersService,
 		moments:            config.MomentsService,
@@ -278,6 +291,7 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/qr-login/scan", s.handleQRLoginScan)
 	mux.HandleFunc("/api/v1/qr-login/confirm", s.handleQRLoginConfirm)
 	mux.HandleFunc("/api/v1/qr-login/consume", s.handleQRLoginConsume)
+	mux.HandleFunc("/api/v1/voice-transcription/preferences", s.handleVoiceTranscriptionPreferences)
 	mux.HandleFunc("/api/v1/push/preferences", s.handlePushPreferences)
 	mux.HandleFunc("/api/v1/push/endpoints", s.handlePushEndpoints)
 	mux.HandleFunc("/api/v1/push/endpoints/", s.handlePushEndpointByProvider)

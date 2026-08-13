@@ -33,6 +33,7 @@ import (
 	"example.com/selfhosted-im/server/internal/qrcode"
 	"example.com/selfhosted-im/server/internal/realtimebus"
 	"example.com/selfhosted-im/server/internal/stickers"
+	"example.com/selfhosted-im/server/internal/transcription"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -59,6 +60,7 @@ func main() {
 	var groupsService httpapi.GroupsService
 	var callsService httpapi.CallsService
 	var messagingService httpapi.MessagingService
+	var transcriptionService httpapi.TranscriptionService
 	var mediaService httpapi.MediaService
 	var stickersService httpapi.StickersService
 	var momentsService httpapi.MomentsService
@@ -163,6 +165,23 @@ func main() {
 			}
 			mediaService = managedMedia
 		}
+		var transcriptionProvider transcription.Provider
+		if config.VoiceTranscriptionEndpoint != "" {
+			transcriptionProvider, err = transcription.NewWhisperHTTPProvider(transcription.WhisperHTTPConfig{
+				Endpoint: config.VoiceTranscriptionEndpoint,
+				Model: config.VoiceTranscriptionModel,
+				Credential: config.VoiceTranscriptionCredential,
+			})
+			if err != nil {
+				logger.Error("voice transcription provider initialization failed", "error", err)
+				os.Exit(2)
+			}
+		}
+		transcriptionService, err = transcription.NewService(transcription.Config{Pool: pool, Provider: transcriptionProvider, Media: managedMedia})
+		if err != nil {
+			logger.Error("voice transcription service initialization failed", "error", err)
+			os.Exit(2)
+		}
 		var telegramProvider stickers.TelegramProvider
 		if config.TelegramBotToken != "" {
 			telegramProvider, err = stickers.NewTelegramBotProvider(stickers.TelegramBotProviderConfig{Token: config.TelegramBotToken})
@@ -244,6 +263,7 @@ func main() {
 			GroupsService:      groupsService,
 			CallsService:       callsService,
 			MessagingService:   messagingService,
+			TranscriptionService: transcriptionService,
 			MediaService:       mediaService,
 			StickersService:    stickersService,
 			MomentsService:     momentsService,

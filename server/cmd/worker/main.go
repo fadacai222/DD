@@ -18,6 +18,7 @@ import (
 	"example.com/selfhosted-im/server/internal/platform/database"
 	"example.com/selfhosted-im/server/internal/push"
 	"example.com/selfhosted-im/server/internal/stickers"
+	transcribe "example.com/selfhosted-im/server/internal/transcription"
 )
 
 var version = "dev"
@@ -114,6 +115,35 @@ func main() {
 		}
 	}
 
+	var voiceProvider transcribe.Provider
+	voiceEndpoint := strings.TrimSpace(os.Getenv("VOICE_TRANSCRIPTION_ENDPOINT"))
+	voiceModel := strings.TrimSpace(os.Getenv("VOICE_TRANSCRIPTION_MODEL"))
+	if (voiceEndpoint == "") != (voiceModel == "") {
+		logger.Error("worker voice provider endpoint/model configuration is incomplete")
+		os.Exit(2)
+	}
+	if voiceEndpoint != "" {
+		credential, credentialErr := appconfig.ReadSecret("VOICE_TRANSCRIPTION_CREDENTIAL")
+		if credentialErr != nil {
+			logger.Error("worker voice provider credential configuration failed", "error", credentialErr)
+			os.Exit(2)
+		}
+		voiceProvider, err = transcribe.NewWhisperHTTPProvider(transcribe.WhisperHTTPConfig{
+			Endpoint: voiceEndpoint,
+			Model: voiceModel,
+			Credential: credential,
+		})
+		if err != nil {
+			logger.Error("worker voice provider initialization failed", "error", err)
+			os.Exit(2)
+		}
+	}
+	voiceService, err := transcribe.NewService(transcribe.Config{Pool: pool, Provider: voiceProvider, Media: mediaService})
+	if err != nil {
+		logger.Error("worker voice transcription initialization failed", "error", err)
+		os.Exit(2)
+	}
+
 	dataRightsService, err := datarights.NewService(datarights.Config{
 		Pool: pool, Hasher: password.NewDefaultHasher(), Store: dataRightsStore,
 	})
@@ -152,6 +182,8 @@ func main() {
 	defer mediaCleanupTicker.Stop()
 	dataRightsTicker := time.NewTicker(2 * time.Second)
 	defer dataRightsTicker.Stop()
+	voiceTicker := time.NewTicker(2 * time.Second)
+	defer voiceTicker.Stop()
 	pushCleanupTicker := time.NewTicker(time.Hour)
 	defer pushCleanupTicker.Stop()
 
@@ -178,6 +210,21 @@ func main() {
 			}
 			if processed > 0 {
 				logger.Info("outbox batch dispatched", "service", "dd-worker", "events", processed)
+			}
+		case <-voiceTicker.C:
+			voiceContext, voiceCancel := context.WithTimeout(ctx, 2*time.Minute)
+			queued, voiceErr := voiceService.EnqueueEligibleAuto(voiceContext, 100)
+			processed := 0
+			if voiceErr == nil {
+				processed, voiceErr = voiceService.ProcessJobs(voiceContext, 2)
+			}
+			voiceCancel()
+			if voiceErr != nil {
+				logger.Error("voice transcription job dispatch failed", "service", "dd-worker", "error", voiceErr)
+				continue
+			}
+			if queued > 0 || processed > 0 {
+				logger.Info("voice transcription jobs processed", "service", "dd-worker", "queued", queued, "processed", processed)
 			}
 		case <-dataRightsTicker.C:
 			jobContext, jobCancel := context.WithTimeout(ctx, 2*time.Minute)

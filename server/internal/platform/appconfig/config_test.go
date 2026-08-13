@@ -374,6 +374,24 @@ func TestLoadMediaS3RequiresCompleteCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadVoiceTranscriptionRequiresEndpointAndModelPair(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("VOICE_TRANSCRIPTION_ENDPOINT", "http://127.0.0.1:18080/v1/audio/transcriptions")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "VOICE_TRANSCRIPTION_MODEL") {
+		t.Fatalf("Load() error = %v, want model validation error", err)
+	}
+
+	t.Setenv("VOICE_TRANSCRIPTION_MODEL", "whisper-large-v3")
+	t.Setenv("VOICE_TRANSCRIPTION_CREDENTIAL", "server-only-secret")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.VoiceTranscriptionEndpoint == "" || config.VoiceTranscriptionModel != "whisper-large-v3" || config.VoiceTranscriptionCredential != "server-only-secret" {
+		t.Fatalf("voice transcription config = %#v", config)
+	}
+}
+
 func clearConfigEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -401,6 +419,10 @@ func clearConfigEnvironment(t *testing.T) {
 		"MEDIA_S3_ACCESS_KEY_FILE",
 		"MEDIA_S3_SECRET_KEY",
 		"MEDIA_S3_SECRET_KEY_FILE",
+		"VOICE_TRANSCRIPTION_ENDPOINT",
+		"VOICE_TRANSCRIPTION_MODEL",
+		"VOICE_TRANSCRIPTION_CREDENTIAL",
+		"VOICE_TRANSCRIPTION_CREDENTIAL_FILE",
 		"AUTH_TOKEN_SECRET",
 		"AUTH_TOKEN_SECRET_FILE",
 		"ADMIN_SECURITY_SECRET",

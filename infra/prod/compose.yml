@@ -225,6 +225,9 @@ services:
       MEDIA_S3_REGION: ${DD_MEDIA_S3_REGION:-us-east-1}
       MEDIA_S3_ACCESS_KEY_FILE: /run/secrets/media_s3_access_key
       MEDIA_S3_SECRET_KEY_FILE: /run/secrets/media_s3_secret_key
+      VOICE_TRANSCRIPTION_ENDPOINT: ${DD_VOICE_TRANSCRIPTION_ENDPOINT:-}
+      VOICE_TRANSCRIPTION_MODEL: ${DD_VOICE_TRANSCRIPTION_MODEL:-}
+      VOICE_TRANSCRIPTION_CREDENTIAL_FILE: /run/secrets/voice_transcription_credential
       SMTP_HOST: ${DD_SMTP_HOST:-}
       SMTP_PORT: ${DD_SMTP_PORT:-587}
       SMTP_FROM: ${DD_SMTP_FROM:-}
@@ -242,6 +245,7 @@ services:
       - livekit_api_secret
       - media_s3_access_key
       - media_s3_secret_key
+      - voice_transcription_credential
       - smtp_password
       - telegram_bot_token
     depends_on:
@@ -287,6 +291,9 @@ services:
       MEDIA_S3_REGION: ${DD_MEDIA_S3_REGION:-us-east-1}
       MEDIA_S3_ACCESS_KEY_FILE: /run/secrets/media_s3_access_key
       MEDIA_S3_SECRET_KEY_FILE: /run/secrets/media_s3_secret_key
+      VOICE_TRANSCRIPTION_ENDPOINT: ${DD_VOICE_TRANSCRIPTION_ENDPOINT:-}
+      VOICE_TRANSCRIPTION_MODEL: ${DD_VOICE_TRANSCRIPTION_MODEL:-}
+      VOICE_TRANSCRIPTION_CREDENTIAL_FILE: /run/secrets/voice_transcription_credential
       FCM_SERVICE_ACCOUNT_JSON_FILE: /run/secrets/fcm_service_account_json
       APNS_KEY_ID: ${DD_APNS_KEY_ID:-}
       APNS_TEAM_ID: ${DD_APNS_TEAM_ID:-}
@@ -297,6 +304,7 @@ services:
       - auth_token_secret
       - media_s3_access_key
       - media_s3_secret_key
+      - voice_transcription_credential
       - fcm_service_account_json
       - apns_private_key
     depends_on:
@@ -471,6 +479,8 @@ secrets:
     file: ./secrets/smtp_password
   telegram_bot_token:
     file: ./secrets/telegram_bot_token
+  voice_transcription_credential:
+    file: ./secrets/voice_transcription_credential
   fcm_service_account_json:
     file: ./secrets/fcm_service_account_json
   apns_private_key:

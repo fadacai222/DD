@@ -30,6 +30,7 @@ Optional integrations still need a file to exist; leave it empty when disabled:
 
 - `smtp_password`
 - `telegram_bot_token`
+- `voice_transcription_credential` — optional server-only bearer credential for the Whisper-compatible provider
 - `fcm_service_account_json`
 - `apns_private_key`
 
