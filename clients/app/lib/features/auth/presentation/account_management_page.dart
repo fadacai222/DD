@@ -47,6 +47,8 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   String _pushPreviewMode = 'SENDER_ONLY';
   bool _pushSettingsAvailable = false;
   NotificationAuthorizationState? _iosNotificationAuthorization;
+  NotificationAuthorizationState? _androidNotificationAuthorization;
+  AndroidNotificationDeliveryStatus? _androidNotificationDeliveryStatus;
   late final PushApiClient _pushApiClient;
   String? _message;
   Timer? _autoSaveTimer;
@@ -60,6 +62,7 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     _pushApiClient = PushApiClient();
     _load();
     unawaited(_refreshIosNotificationAuthorization());
+    unawaited(_refreshAndroidNotificationDiagnostics());
   }
 
   @override
@@ -164,6 +167,11 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         const SizedBox(height: 18),
         _sectionTitle('设备'),
         _deviceSettings(),
+        if (_isAndroid) ...[
+          const SizedBox(height: 18),
+          _sectionTitle('通知'),
+          _androidNotificationDiagnostics(),
+        ],
       ],
     );
   }
@@ -259,6 +267,12 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
                     ),
                   ),
                 ),
+              ],
+              if (_isAndroid) ...[
+                const Divider(height: 1, indent: 56),
+                _androidNotificationPermissionLine(),
+                const Divider(height: 1, indent: 56),
+                _androidNotificationChannelLine(),
               ],
               const Divider(height: 1, indent: 56),
               _SettingLine(
@@ -385,6 +399,73 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
   bool get _isIos =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
+  bool get _isAndroid =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Widget _androidNotificationDiagnostics() {
+    return Column(
+      children: [
+        _androidNotificationPermissionLine(),
+        const Divider(height: 1),
+        _androidNotificationChannelLine(),
+      ],
+    );
+  }
+
+  Widget _androidNotificationPermissionLine() {
+    final canRequest =
+        _androidNotificationAuthorization ==
+        NotificationAuthorizationState.notDetermined;
+    return _SettingLine(
+      title: 'Android 系统通知权限',
+      subtitle: _androidNotificationAuthorizationSubtitle,
+      trailing: TextButton(
+        onPressed: canRequest
+            ? _handleAndroidNotificationAuthorization
+            : _refreshAndroidNotificationDiagnostics,
+        child: Text(canRequest ? '开启' : '刷新'),
+      ),
+    );
+  }
+
+  Widget _androidNotificationChannelLine() {
+    return _SettingLine(
+      title: 'DD 新消息通知频道',
+      subtitle: _androidNotificationChannelSubtitle,
+      trailing: TextButton(
+        onPressed: _refreshAndroidNotificationDiagnostics,
+        child: const Text('刷新'),
+      ),
+    );
+  }
+
+  String get _androidNotificationAuthorizationSubtitle =>
+      switch (_androidNotificationAuthorization) {
+        NotificationAuthorizationState.granted => '应用级通知权限已允许',
+        NotificationAuthorizationState.provisional => '系统报告为临时授权状态',
+        NotificationAuthorizationState.denied =>
+          '系统已关闭 DD 通知权限；这不是服务端 Push 故障，请到 Android 系统设置恢复',
+        NotificationAuthorizationState.notDetermined =>
+          'Android 13+ 尚未授予通知权限；点击开启后由系统弹出授权框',
+        NotificationAuthorizationState.unsupported => '无法读取 Android 系统通知权限',
+        null => '正在读取 Android 系统通知权限',
+      };
+
+  String get _androidNotificationChannelSubtitle =>
+      switch (_androidNotificationDeliveryStatus) {
+        AndroidNotificationDeliveryStatus.ready => 'DD 新消息频道已开启，可显示后台通知',
+        AndroidNotificationDeliveryStatus.appNotificationsDisabled =>
+          '应用级通知已关闭；FCM 即使到达也不会显示系统通知',
+        AndroidNotificationDeliveryStatus.channelDisabled =>
+          'DD 新消息频道已关闭；请到 Android 系统通知设置重新开启',
+        AndroidNotificationDeliveryStatus.channelMissing =>
+          'DD 新消息频道尚未创建；重新打开 DD 后再刷新检查',
+        AndroidNotificationDeliveryStatus.unavailable =>
+          '暂时无法读取通知频道状态，可用系统设置或 ADB 继续核对',
+        AndroidNotificationDeliveryStatus.unsupported => '当前平台不支持 Android 通知频道诊断',
+        null => '正在读取 DD 新消息通知频道状态',
+      };
+
   String get _iosNotificationAuthorizationLabel =>
       switch (_iosNotificationAuthorization) {
         NotificationAuthorizationState.granted => '已允许',
@@ -411,6 +492,43 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
         NotificationAuthorizationState.denied => '系统设置',
         _ => null,
       };
+
+  Future<void> _refreshAndroidNotificationDiagnostics() async {
+    if (!_isAndroid) return;
+    NotificationAuthorizationState authorization;
+    AndroidNotificationDeliveryStatus delivery;
+    try {
+      authorization = await PushRegistrationService.shared.authorizationState();
+    } catch (_) {
+      authorization = NotificationAuthorizationState.unsupported;
+    }
+    try {
+      delivery = await AppNotificationService.shared.androidDeliveryStatus();
+    } catch (_) {
+      delivery = AndroidNotificationDeliveryStatus.unavailable;
+    }
+    if (!mounted) return;
+    setState(() {
+      _androidNotificationAuthorization = authorization;
+      _androidNotificationDeliveryStatus = delivery;
+    });
+  }
+
+  Future<void> _handleAndroidNotificationAuthorization() async {
+    if (!_isAndroid) return;
+    if (_androidNotificationAuthorization ==
+        NotificationAuthorizationState.notDetermined) {
+      try {
+        await PushRegistrationService.shared.requestNotificationPermission();
+      } catch (_) {
+        // The diagnostics refresh below will expose the actual system state.
+      }
+    }
+    await _refreshAndroidNotificationDiagnostics();
+    if (_androidNotificationAuthorization?.canDeliver == true && _pushEnabled) {
+      await PushRegistrationService.shared.onAppResumed();
+    }
+  }
 
   Future<void> _refreshIosNotificationAuthorization() async {
     if (!_isIos) return;
@@ -452,6 +570,9 @@ class _AccountManagementPageState extends State<AccountManagementPage> {
     await widget.onPushPreferencesChanged?.call(preferences);
     if (_isIos) {
       await _refreshIosNotificationAuthorization();
+    }
+    if (_isAndroid) {
+      await _refreshAndroidNotificationDiagnostics();
     }
     if (!mounted) return;
     setState(() {

@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
@@ -8,6 +7,7 @@ import '../../../core/logging/client_log.dart';
 import '../../../core/notifications/app_notification_service.dart';
 import '../../../core/notifications/notification_authorization.dart';
 import '../data/push_api_client.dart';
+import 'android_background_push.dart';
 import 'ios_push_native_bridge.dart';
 import 'push_endpoint_lifecycle.dart';
 import 'push_messaging_adapter.dart';
@@ -15,27 +15,35 @@ import 'push_notification_content.dart';
 
 @pragma('vm:entry-point')
 Future<void> ddFirebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  try {
-    if (Firebase.apps.isEmpty) {
-      await Firebase.initializeApp();
-    }
-    final content = PushNotificationContent.fromData(
-      Map<String, dynamic>.from(message.data),
-    );
-    if (content == null) return;
-    await AppNotificationService.shared.initialize(requestPermission: false);
-    await AppNotificationService.shared.showMessage(
-      senderName: content.senderName.isEmpty ? 'DD' : content.senderName,
-      preview: content.preview.isEmpty ? '你有新的动态' : content.preview,
-      conversationId: content.conversationId,
-      senderUserId: content.senderUserId.isEmpty ? null : content.senderUserId,
-      avatarUrl: content.avatarUrl,
-      notificationData: content.navigationData,
-      badgeCount: content.badgeCount,
-    );
-  } catch (_) {
-    // Background Push failure must never crash or relaunch the client process.
+  final result = await processAndroidBackgroundPush(
+    data: Map<String, dynamic>.from(message.data),
+    initializeFirebase: () => FirebasePushMessagingAdapter().initialize(),
+    displayNotification: (content) =>
+        AppNotificationService.shared.showAndroidBackgroundMessage(
+          senderName: content.senderName.isEmpty ? 'DD' : content.senderName,
+          preview: content.preview.isEmpty ? '你有新的动态' : content.preview,
+          conversationId: content.conversationId,
+          senderUserId: content.senderUserId.isEmpty ? null : content.senderUserId,
+          avatarUrl: content.avatarUrl,
+          notificationData: content.navigationData,
+        ),
+  );
+  await _logAndroidBackgroundPushResult(result);
+}
+
+Future<void> _logAndroidBackgroundPushResult(
+  AndroidBackgroundPushResult result,
+) async {
+  final message = 'Android background push outcome=${result.name}';
+  debugPrint('DD $message');
+  if (result == AndroidBackgroundPushResult.displayed ||
+      result == AndroidBackgroundPushResult.ignoredInvalidPayload) {
+    await ClientLog.info(message);
+    return;
   }
+  // Fixed categories only: never persist payloads, tokens, message text,
+  // capability URLs, account ids or navigation ids from RemoteMessage.
+  await ClientLog.error(message);
 }
 
 abstract interface class PushAccountLeaseController {
@@ -149,11 +157,11 @@ final class PushRegistrationService implements PushAccountLeaseController {
 
   static Future<void> prepareBackgroundMessaging() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
-    FirebaseMessaging.onBackgroundMessage(ddFirebaseMessagingBackgroundHandler);
     try {
-      if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp();
-      }
+      // firebase_messaging 16.5.x reference setup initializes the default
+      // Firebase app before registering the top-level background handler.
+      await FirebasePushMessagingAdapter().initialize();
+      FirebaseMessaging.onBackgroundMessage(ddFirebaseMessagingBackgroundHandler);
     } catch (error, stackTrace) {
       await ClientLog.error(
         'Firebase startup initialization failed; background push is unavailable.',
