@@ -274,9 +274,29 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 		return nil, ErrInvalidInput
 	}
 	rows, err := service.pool.Query(ctx, `
-		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at
+		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at,
+		       mention.message_id,mention.sequence
 		FROM conversation_members m
 		JOIN conversations c ON c.id=m.conversation_id
+		LEFT JOIN LATERAL (
+			SELECT mm.message_id::text AS message_id,mm.sequence
+			FROM message_mentions mm
+			JOIN messages message
+			  ON message.id=mm.message_id
+			 AND message.conversation_id=mm.conversation_id
+			 AND message.sequence=mm.sequence
+			LEFT JOIN message_local_deletions local_delete
+			  ON local_delete.message_id=mm.message_id AND local_delete.user_id=m.user_id
+			WHERE c.type='GROUP'
+			  AND mm.mentioned_user_id=m.user_id
+			  AND mm.conversation_id=c.id
+			  AND mm.sequence>m.last_read_sequence
+			  AND message.recalled_at IS NULL
+			  AND message.deleted_at IS NULL
+			  AND local_delete.message_id IS NULL
+			ORDER BY mm.sequence DESC,mm.message_id DESC
+			LIMIT 1
+		) mention ON true
 		WHERE m.user_id=$1 AND m.status='ACTIVE'
 		  AND (m.hidden_through_sequence IS NULL OR c.last_sequence > m.hidden_through_sequence)
 		ORDER BY (m.archived_at IS NOT NULL) ASC,m.is_pinned DESC,c.updated_at DESC,c.id DESC
@@ -290,7 +310,7 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 	result := make([]Conversation, 0, limit)
 	for rows.Next() {
 		var item Conversation
-		if err := rows.Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt, &item.LatestUnreadMentionMessageID, &item.LatestUnreadMentionSequence); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		normalizeConversationTimesUTC(&item)
@@ -358,11 +378,23 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 func (service *Service) GetConversation(ctx context.Context, principal account.Principal, conversationID uuid.UUID) (Conversation, error) {
 	var item Conversation
 	err := service.pool.QueryRow(ctx, `
-		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at
+		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at,
+		       mention.message_id,mention.sequence
 		FROM conversation_members m
 		JOIN conversations c ON c.id=m.conversation_id
+		LEFT JOIN LATERAL (
+			SELECT mm.message_id::text AS message_id,mm.sequence
+			FROM message_mentions mm
+			JOIN messages message ON message.id=mm.message_id AND message.conversation_id=mm.conversation_id AND message.sequence=mm.sequence
+			LEFT JOIN message_local_deletions local_delete ON local_delete.message_id=mm.message_id AND local_delete.user_id=m.user_id
+			WHERE c.type='GROUP' AND mm.mentioned_user_id=m.user_id AND mm.conversation_id=c.id
+			  AND mm.sequence>m.last_read_sequence AND message.recalled_at IS NULL AND message.deleted_at IS NULL
+			  AND local_delete.message_id IS NULL
+			ORDER BY mm.sequence DESC,mm.message_id DESC
+			LIMIT 1
+		) mention ON true
 		WHERE c.id=$1 AND m.user_id=$2 AND m.status='ACTIVE'
-	`, conversationID, principal.UserID).Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt)
+	`, conversationID, principal.UserID).Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt, &item.LatestUnreadMentionMessageID, &item.LatestUnreadMentionSequence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Conversation{}, ErrNotFound
 	}

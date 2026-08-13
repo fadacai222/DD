@@ -100,7 +100,7 @@ func TestDataRightsLifecycleWithPostgres(t *testing.T) {
 	principal1 := account.Principal{UserID: user1, DeviceID: device1}
 	principal2 := account.Principal{UserID: user2, DeviceID: device2}
 
-	conversationID, groupID, privateMediaID, privateObjectKey := seedDataRightsBusinessData(t, ctx, pool, user1, device1, user2, now, suffix)
+	conversationID, groupID, privateMediaID, privateObjectKey := seedDataRightsBusinessData(t, ctx, pool, user1, device1, user2, device2, now, suffix)
 	_ = conversationID
 
 	firstExport, err := service.RequestExport(ctx, principal1, "export-"+suffix)
@@ -220,6 +220,14 @@ func TestDataRightsLifecycleWithPostgres(t *testing.T) {
 	if userStatus != "DELETED" || !strings.HasPrefix(email, "deleted-") || !strings.HasPrefix(handle, "deleted_") || displayName != "Deleted Account" {
 		t.Fatalf("anonymized user status=%s email=%s handle=%s display=%s", userStatus, email, handle, displayName)
 	}
+	var mentionRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM message_mentions WHERE mentioned_user_id=$1`, user1).Scan(&mentionRows); err != nil {
+		t.Fatal(err)
+	}
+	if mentionRows != 0 {
+		t.Fatalf("account deletion left %d durable mention rows", mentionRows)
+	}
+	t.Log("durable mention rows removed during account deletion")
 	if _, err := authService.AuthenticateAccessToken(ctx, access.Raw); !errors.Is(err, account.ErrUnauthorized) {
 		t.Fatalf("deleted account access token error=%v", err)
 	}
@@ -327,7 +335,7 @@ func insertDataRightsTestUser(t *testing.T, ctx context.Context, pool *pgxpool.P
 	return userID, deviceID
 }
 
-func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool.Pool, user1, device1, user2 uuid.UUID, now time.Time, suffix string) (uuid.UUID, uuid.UUID, uuid.UUID, string) {
+func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool.Pool, user1, device1, user2, device2 uuid.UUID, now time.Time, suffix string) (uuid.UUID, uuid.UUID, uuid.UUID, string) {
 	t.Helper()
 	conversationID := uuid.New()
 	pair := user1.String() + ":" + user2.String()
@@ -343,13 +351,21 @@ func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 
 	groupID := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO conversations(id,type,created_at,updated_at) VALUES($1,'GROUP',$2,$2)`, groupID, now); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO conversations(id,type,created_at,updated_at,last_sequence) VALUES($1,'GROUP',$2,$2,1)`, groupID, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO conversation_members(conversation_id,user_id,role,status,joined_at) VALUES($1,$2,'OWNER','ACTIVE',$4),($1,$3,'MEMBER','ACTIVE',$4)`, groupID, user1, user2, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO groups(conversation_id,name,created_by_user_id,status,created_at,updated_at) VALUES($1,'U12 Group',$2,'ACTIVE',$3,$3)`, groupID, user1, now); err != nil {
+		t.Fatal(err)
+	}
+	groupMessageID := uuid.New()
+	groupContent := fmt.Sprintf(`{"text":"@u1 retained mention","entities":[{"type":"MENTION","offset":0,"length":3,"userId":"%s","handle":"u1"}]}`, user1)
+	if _, err := pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at) VALUES($1,$2,1,$3,$4,$5,'TEXT',$6::jsonb,$7)`, groupMessageID, groupID, user2, device2, "u12-mention-"+suffix, groupContent, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO message_mentions(message_id,conversation_id,sequence,mentioned_user_id,mention_all) VALUES($1,$2,1,$3,false)`, groupMessageID, groupID, user1); err != nil {
 		t.Fatal(err)
 	}
 

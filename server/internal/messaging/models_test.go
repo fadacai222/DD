@@ -107,6 +107,30 @@ func TestGroupPreviewJSONAlwaysCarriesAvatarMembers(t *testing.T) {
 	}
 }
 
+func TestConversationJSONCarriesDurableMentionTarget(t *testing.T) {
+	messageID := "00000000-0000-0000-0000-000000000777"
+	sequence := int64(42)
+	payload, err := json.Marshal(Conversation{
+		ID:                             "group-1",
+		Type:                           "GROUP",
+		LatestUnreadMentionMessageID:   &messageID,
+		LatestUnreadMentionSequence:    &sequence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["latestUnreadMentionMessageId"] != messageID {
+		t.Fatalf("latestUnreadMentionMessageId=%#v", decoded["latestUnreadMentionMessageId"])
+	}
+	if decoded["latestUnreadMentionSequence"] != float64(sequence) {
+		t.Fatalf("latestUnreadMentionSequence=%#v", decoded["latestUnreadMentionSequence"])
+	}
+}
+
 func TestPaginationLimits(t *testing.T) {
 	if got, err := normalizeHistoryLimit(0); err != nil || got != DefaultHistoryLimit {
 		t.Fatalf("history default=%d err=%v", got, err)

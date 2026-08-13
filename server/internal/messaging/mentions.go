@@ -231,3 +231,92 @@ func cloneMessageEntities(entities []MessageEntity) []MessageEntity {
 	copy(result, entities)
 	return result
 }
+
+// Durable unread mention lookup is joined into conversation summary queries.
+
+func syncMessageMentionIndexTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	messageID uuid.UUID,
+	conversationID uuid.UUID,
+	sequence int64,
+	senderUserID uuid.UUID,
+	conversationType string,
+	entities []MessageEntity,
+) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM message_mentions WHERE message_id=$1`, messageID); err != nil {
+		return fmt.Errorf("clear message mention index: %w", err)
+	}
+	if conversationType != "GROUP" || len(entities) == 0 {
+		return nil
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT user_id,role
+		FROM conversation_members
+		WHERE conversation_id=$1 AND status='ACTIVE'
+	`, conversationID)
+	if err != nil {
+		return fmt.Errorf("load active mention recipients: %w", err)
+	}
+	defer rows.Close()
+
+	activeMembers := make(map[uuid.UUID]string)
+	senderRole := ""
+	for rows.Next() {
+		var userID uuid.UUID
+		var role string
+		if err := rows.Scan(&userID, &role); err != nil {
+			return fmt.Errorf("scan active mention recipient: %w", err)
+		}
+		activeMembers[userID] = role
+		if userID == senderUserID {
+			senderRole = role
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate active mention recipients: %w", err)
+	}
+
+	recipients := make(map[uuid.UUID]bool)
+	for _, entity := range entities {
+		switch strings.ToUpper(strings.TrimSpace(entity.Type)) {
+		case "MENTION":
+			userID, err := uuid.Parse(strings.TrimSpace(entity.UserID))
+			if err != nil || userID == senderUserID {
+				continue
+			}
+			if _, active := activeMembers[userID]; !active {
+				continue
+			}
+			if _, exists := recipients[userID]; !exists {
+				recipients[userID] = false
+			}
+		case "MENTION_ALL":
+			// Re-authorize even preserved forward entities. A server-trusted entity
+			// from another conversation must not grant @all power in this group.
+			if !canMentionAllRole(senderRole) {
+				continue
+			}
+			for userID := range activeMembers {
+				if userID != senderUserID {
+					recipients[userID] = true
+				}
+			}
+		}
+	}
+
+	for userID, mentionAll := range recipients {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_mentions(message_id,conversation_id,sequence,mentioned_user_id,mention_all)
+			VALUES($1,$2,$3,$4,$5)
+			ON CONFLICT(message_id,mentioned_user_id) DO UPDATE
+			SET conversation_id=EXCLUDED.conversation_id,
+			    sequence=EXCLUDED.sequence,
+			    mention_all=message_mentions.mention_all OR EXCLUDED.mention_all
+		`, messageID, conversationID, sequence, userID, mentionAll); err != nil {
+			return fmt.Errorf("persist message mention index: %w", err)
+		}
+	}
+	return nil
+}

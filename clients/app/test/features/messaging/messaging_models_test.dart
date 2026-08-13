@@ -105,6 +105,8 @@ void main() {
       },
       'lastSequence': 9,
       'lastReadSequence': 7,
+      'latestUnreadMentionMessageId': 'message-mention-9',
+      'latestUnreadMentionSequence': 9,
       'unreadCount': 2,
       'canWrite': true,
       'preferences': {'isPinned': false, 'mutedUntil': null, 'archivedAt': null},
@@ -120,6 +122,8 @@ void main() {
     expect(conversation.group?.avatarMembers.first.displayName, 'Alice');
     expect(conversation.group?.avatarMembers.last.displayName, 'Dave');
     expect(conversation.canWrite, isTrue);
+    expect(conversation.latestUnreadMentionMessageId, 'message-mention-9');
+    expect(conversation.latestUnreadMentionSequence, 9);
   });
 
   test('pending VIDEO survives persistence and is classified as media', () {

@@ -141,20 +141,22 @@ type GroupPreview struct {
 }
 
 type Conversation struct {
-	ID                   string                  `json:"id"`
-	Type                 string                  `json:"type"`
-	Peer                 *UserPreview            `json:"peer,omitempty"`
-	Group                *GroupPreview           `json:"group,omitempty"`
-	CanWrite             bool                    `json:"canWrite"`
-	LastSequence         int64                   `json:"lastSequence"`
-	LastReadSequence     int64                   `json:"lastReadSequence"`
-	PeerLastReadSequence *int64                  `json:"peerLastReadSequence,omitempty"`
-	UnreadCount          int64                   `json:"unreadCount"`
-	LastMessage          *Message                `json:"lastMessage,omitempty"`
-	LastMessageSender    *UserPreview            `json:"lastMessageSender,omitempty"`
-	Preferences          ConversationPreferences `json:"preferences"`
-	CreatedAt            time.Time               `json:"createdAt"`
-	UpdatedAt            time.Time               `json:"updatedAt"`
+	ID                           string                  `json:"id"`
+	Type                         string                  `json:"type"`
+	Peer                         *UserPreview            `json:"peer,omitempty"`
+	Group                        *GroupPreview           `json:"group,omitempty"`
+	CanWrite                     bool                    `json:"canWrite"`
+	LastSequence                 int64                   `json:"lastSequence"`
+	LastReadSequence             int64                   `json:"lastReadSequence"`
+	PeerLastReadSequence         *int64                  `json:"peerLastReadSequence,omitempty"`
+	LatestUnreadMentionMessageID *string                 `json:"latestUnreadMentionMessageId"`
+	LatestUnreadMentionSequence  *int64                  `json:"latestUnreadMentionSequence"`
+	UnreadCount                  int64                   `json:"unreadCount"`
+	LastMessage                  *Message                `json:"lastMessage,omitempty"`
+	LastMessageSender            *UserPreview            `json:"lastMessageSender,omitempty"`
+	Preferences                  ConversationPreferences `json:"preferences"`
+	CreatedAt                    time.Time               `json:"createdAt"`
+	UpdatedAt                    time.Time               `json:"updatedAt"`
 }
 
 type DirectConversationInput struct {

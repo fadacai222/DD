@@ -87,6 +87,7 @@ DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 
 000031_admin_auth ← 独立 Admin identity/session/MFA
 000032_admin_governance ← 举报/治理/审计
 000033_data_rights ← 数据导出/账号注销生命周期
+000034_message_mentions ← GROUP durable @ 提醒事实/当前 viewer 未读 mention 查询索引
 ```
 
 当前 Go 正式业务模块包括：
@@ -168,6 +169,8 @@ POST   /api/v1/qr-login/consume
 `IMPLEMENTED + AUTO-VERIFIED / HUMAN-PENDING`。
 
 2026-08-12 修复“更换/移除群头像时请求只带 `avatarMediaId` 被误判为无更新”的服务端校验遗漏；新增 `TestUpdateGroupInputHasChanges`，Flutter `groups_api_client_test.dart` 的 avatar-only 请求回归也继续通过。真人更换/移除群头像仍为 `FIXED-PENDING-RETEST`。
+
+2026-08-14 Wave2 AI07 新增 `000034_message_mentions`。GROUP 的 server-authoritative `MENTION` / 合法 `MENTION_ALL` 与消息写入同事务落 durable viewer 索引；编辑重建索引、撤回删除索引，conversation summary 对当前 principal 返回 `latestUnreadMentionMessageId` / `latestUnreadMentionSequence`，并继续用 `conversation_members.last_read_sequence` 自然清除。真实 PostgreSQL 18.4 durable mention lifecycle 与 000034 up/down roundtrip 已通过；最终 UI 接线仍待后续单写者完成，状态 `FIXED-PENDING-RETEST`。
 
 ### P7 Calls
 

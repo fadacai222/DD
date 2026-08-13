@@ -3408,7 +3408,7 @@
       },
       "Conversation": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "type", "lastSequence", "lastReadSequence", "unreadCount", "canWrite", "preferences", "createdAt", "updatedAt"],
+        "required": ["id", "type", "lastSequence", "lastReadSequence", "latestUnreadMentionMessageId", "latestUnreadMentionSequence", "unreadCount", "canWrite", "preferences", "createdAt", "updatedAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "type": {"type": "string", "enum": ["DIRECT", "GROUP", "SELF"]},
@@ -3417,6 +3417,8 @@
           "lastSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "lastReadSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "peerLastReadSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 0, "description": "Direct-chat peer read cursor when the peer allows read receipts; null when hidden or not applicable."},
+          "latestUnreadMentionMessageId": {"type": ["string", "null"], "format": "uuid", "description": "Viewer-specific latest unread GROUP message that mentions the current principal; null when no unread mention exists."},
+          "latestUnreadMentionSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 1, "description": "Sequence of latestUnreadMentionMessageId. It disappears naturally once lastReadSequence reaches it."},
           "unreadCount": {"type": "integer", "format": "int64", "minimum": 0},
           "canWrite": {"type": "boolean"},
           "lastMessage": {"oneOf": [{"$ref": "#/components/schemas/Message"}, {"type": "null"}]},

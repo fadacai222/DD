@@ -274,6 +274,11 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 	`, conversationID, sequence, principal.UserID, principal.DeviceID, input.ClientMessageID, input.Type, string(contentBytes), replyID, input.forwardSourceID, now).Scan(&messageID); err != nil {
 		return SendResult{}, fmt.Errorf("insert message: %w", err)
 	}
+	if input.Type == "TEXT" {
+		if err := syncMessageMentionIndexTx(ctx, tx, messageID, conversationID, sequence, principal.UserID, conversationType, input.Content.Entities); err != nil {
+			return SendResult{}, err
+		}
+	}
 	if primaryMediaID != nil {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO message_media(message_id,media_id,role,created_at)
@@ -484,6 +489,9 @@ func (service *Service) EditMessage(ctx context.Context, principal account.Princ
 	`, messageID, content, now); err != nil {
 		return SendResult{}, fmt.Errorf("edit message: %w", err)
 	}
+	if err := syncMessageMentionIndexTx(ctx, tx, messageID, conversationID, message.Sequence, principal.UserID, conversationType, entities); err != nil {
+		return SendResult{}, err
+	}
 	message.Content = &contentValue
 	message.EditedAt = &now
 	message.EditVersion++
@@ -537,6 +545,9 @@ func (service *Service) RecallMessage(ctx context.Context, principal account.Pri
 	}
 	if _, err := tx.Exec(ctx, `UPDATE messages SET recalled_at=$2,content_json='{}'::jsonb WHERE id=$1`, messageID, now); err != nil {
 		return SendResult{}, fmt.Errorf("recall message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM message_mentions WHERE message_id=$1`, messageID); err != nil {
+		return SendResult{}, fmt.Errorf("delete recalled message mentions: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM message_media WHERE message_id=$1`, messageID); err != nil {
 		return SendResult{}, fmt.Errorf("detach recalled message media: %w", err)

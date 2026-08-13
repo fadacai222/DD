@@ -265,6 +265,8 @@ final class ConversationItem {
     required this.unreadCount,
     this.canWrite = true,
     this.peerLastReadSequence,
+    this.latestUnreadMentionMessageId,
+    this.latestUnreadMentionSequence,
     required this.preferences,
     required this.createdAt,
     required this.updatedAt,
@@ -297,6 +299,12 @@ final class ConversationItem {
       peerLastReadSequence: json['peerLastReadSequence'] is int
           ? json['peerLastReadSequence'] as int
           : null,
+      latestUnreadMentionMessageId: json['latestUnreadMentionMessageId'] is String
+          ? json['latestUnreadMentionMessageId'] as String
+          : null,
+      latestUnreadMentionSequence: json['latestUnreadMentionSequence'] is int
+          ? json['latestUnreadMentionSequence'] as int
+          : null,
       unreadCount: _requiredInt(json, 'unreadCount'),
       canWrite: json['canWrite'] != false,
       lastMessage: rawLastMessage is Map<String, dynamic>
@@ -318,6 +326,8 @@ final class ConversationItem {
   final int lastSequence;
   final int lastReadSequence;
   final int? peerLastReadSequence;
+  final String? latestUnreadMentionMessageId;
+  final int? latestUnreadMentionSequence;
   final int unreadCount;
   final bool canWrite;
   final ChatMessage? lastMessage;
