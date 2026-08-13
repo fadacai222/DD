@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10c891">
+  <meta name="description" content="DD 官方客户端下载页。Windows 与 Android 现已提供下载。">
+  <title>DD 官方下载</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/logo.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="DD 官方下载首页">
+        <img class="brand-logo" src="./assets/logo.svg" alt="DD">
+        <span class="brand-name">DD</span>
+      </a>
+      <span class="header-note">官方客户端下载</span>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">DD FOR EVERY DEVICE</p>
+          <h1 id="hero-title">沟通简单一点，<br><span>下载直接一点。</span></h1>
+          <p class="hero-description">选择你的设备，获取 DD 客户端。PC 端显示全部平台，Android 手机仅显示 Android 安装包。</p>
+
+          <div id="desktopDownloads" class="download-grid" aria-label="全部客户端下载">
+            <a class="download-card available" href="https://27568.news/DD-Windows.exe" rel="noopener noreferrer">
+              <span class="platform-icon windows-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M3 4.2 10.5 3v8H3V4.2Zm8.5-1.4L21 1.2V11h-9.5V2.8ZM3 12h7.5v8L3 18.8V12Zm8.5 0H21v9.8l-9.5-1.6V12Z"/></svg>
+              </span>
+              <span class="download-card-copy">
+                <strong>Windows</strong>
+                <small>下载 DD-Windows.exe</small>
+              </span>
+              <span class="download-arrow" aria-hidden="true">↓</span>
+            </a>
+
+            <a class="download-card available" href="https://27568.news/DD-Android.apk" rel="noopener noreferrer">
+              <span class="platform-icon android-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="m7.1 6.7-1.6-2.8a.75.75 0 0 1 1.3-.75l1.65 2.86A8.8 8.8 0 0 1 12 5.3c1.28 0 2.5.25 3.56.7l1.65-2.85a.75.75 0 1 1 1.3.75l-1.62 2.8A7 7 0 0 1 20 12H4a7 7 0 0 1 3.1-5.3ZM8 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2ZM4 13h16v5.6A2.4 2.4 0 0 1 17.6 21H6.4A2.4 2.4 0 0 1 4 18.6V13Z"/></svg>
+              </span>
+              <span class="download-card-copy">
+                <strong>Android</strong>
+                <small>下载 DD-Android.apk</small>
+              </span>
+              <span class="download-arrow" aria-hidden="true">↓</span>
+            </a>
+
+            <div class="download-card coming" aria-disabled="true">
+              <span class="platform-icon apple-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M16.8 12.7c.02-2.18 1.78-3.23 1.86-3.28a4.03 4.03 0 0 0-3.18-1.72c-1.34-.14-2.63.8-3.31.8-.7 0-1.75-.78-2.88-.76a4.22 4.22 0 0 0-3.55 2.17c-1.54 2.67-.39 6.6 1.08 8.76.74 1.06 1.61 2.25 2.74 2.2 1.1-.04 1.52-.7 2.85-.7 1.32 0 1.7.7 2.85.67 1.19-.02 1.94-1.06 2.65-2.13a8.72 8.72 0 0 0 1.21-2.47 3.79 3.79 0 0 1-2.32-3.53ZM14.6 6.27a3.84 3.84 0 0 0 .9-2.75 3.95 3.95 0 0 0-2.56 1.3 3.66 3.66 0 0 0-.93 2.65 3.26 3.26 0 0 0 2.6-1.2Z"/></svg>
+              </span>
+              <span class="download-card-copy">
+                <strong>iOS</strong>
+                <small>敬请期待</small>
+              </span>
+              <span class="soon-badge">Soon</span>
+            </div>
+
+            <div class="download-card coming" aria-disabled="true">
+              <span class="platform-icon mac-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5.2l.75 2H17a1 1 0 1 1 0 2H7a1 1 0 1 1 0-2h2.45l.75-2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v9.5h14V5H5Z"/></svg>
+              </span>
+              <span class="download-card-copy">
+                <strong>macOS</strong>
+                <small>敬请期待</small>
+              </span>
+              <span class="soon-badge">Soon</span>
+            </div>
+          </div>
+
+          <div id="singlePlatform" class="single-platform" hidden>
+            <p id="singlePlatformHint" class="single-platform-hint"></p>
+            <a id="singlePlatformAction" class="mobile-cta" href="https://27568.news/DD-Android.apk" rel="noopener noreferrer">
+              <span class="mobile-cta-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="m7.1 6.7-1.6-2.8a.75.75 0 0 1 1.3-.75l1.65 2.86A8.8 8.8 0 0 1 12 5.3c1.28 0 2.5.25 3.56.7l1.65-2.85a.75.75 0 1 1 1.3.75l-1.62 2.8A7 7 0 0 1 20 12H4a7 7 0 0 1 3.1-5.3ZM8 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2ZM4 13h16v5.6A2.4 2.4 0 0 1 17.6 21H6.4A2.4 2.4 0 0 1 4 18.6V13Z"/></svg>
+              </span>
+              <span>下载 Android APK</span>
+            </a>
+            <div id="singlePlatformComing" class="mobile-coming" hidden>
+              <strong id="singlePlatformName">DD</strong>
+              <span>敬请期待</span>
+            </div>
+          </div>
+
+          <p class="download-footnote">官方下载域名：<strong>27568.news</strong></p>
+        </div>
+
+        <div class="hero-art" aria-label="DD 客户端展示">
+          <div class="art-surface">
+            <div class="art-brand-block">
+              <img class="art-logo" src="./assets/logo.svg" alt="DD Logo">
+              <div>
+                <strong>DD</strong>
+                <span>聊天 · 通话 · 文件</span>
+              </div>
+            </div>
+
+            <div class="feature-pills" aria-hidden="true">
+              <span><i></i>消息实时送达</span>
+              <span><i></i>文件快速传输</span>
+            </div>
+
+            <div class="decor-chat" aria-hidden="true"><b></b><b></b><b></b></div>
+
+            <div class="phone" aria-hidden="true">
+              <div class="phone-screen">
+                <div class="phone-top"><span>9:41</span><b>•••</b></div>
+                <div class="chat-title">设计小组</div>
+                <div class="bubble bubble-left">大家看看新方案 👀</div>
+                <div class="bubble bubble-file">设计稿_v3.pdf</div>
+                <div class="bubble bubble-right">非常棒，细节很到位 ✓</div>
+                <div class="bubble bubble-voice">▶ 0:32</div>
+                <div class="bubble bubble-photo"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="trust-strip" aria-label="产品能力">
+        <span>即时通讯</span><i></i>
+        <span>多端同步</span><i></i>
+        <span>文件与媒体</span><i></i>
+        <span>语音与视频通话</span>
+      </section>
+    </main>
+
+    <footer>DD · 当前提供 Windows 与 Android 下载</footer>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

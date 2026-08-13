@@ -46,6 +46,7 @@ dist/
 build/
 coverage/
 clients/app/build_windows_*/
+clients/app/build_win_*/
 
 # Flutter platform generated files
 **/android/.gradle/
@@ -65,3 +66,4 @@ logs/
 /DD-Windows.lnk
 /DD-Web.lnk
 /DD-Android.apk
+/DD-Windows.zip
