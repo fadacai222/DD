@@ -92,8 +92,8 @@ func TestCallLifecycleWithPostgres(t *testing.T) {
 	if _, err := service.Create(ctx, principals["carol"], CreateInput{CalleeUserID: bob.String(), Kind: KindAudio}); !errors.Is(err, ErrBusy) {
 		t.Fatalf("busy callee create err=%v want ErrBusy", err)
 	}
-	if _, err := service.Create(ctx, principals["carol"], CreateInput{CalleeUserID: alice.String(), Kind: KindAudio}); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("non-contact create err=%v want ErrForbidden", err)
+	if _, err := service.Create(ctx, principals["carol"], CreateInput{CalleeUserID: alice.String(), Kind: KindAudio}); !errors.Is(err, ErrContactRequired) {
+		t.Fatalf("non-contact create err=%v want ErrContactRequired", err)
 	}
 
 	accepted, err := service.ApplyAction(ctx, principals["bob1"], callID, ActionInput{Action: "accept"})

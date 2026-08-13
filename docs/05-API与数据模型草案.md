@@ -251,7 +251,7 @@ QR secret 通过 POST body 传输；登录 nonce 数据库只存 SHA-256。群 i
 | POST | `/api/v1/calls/{callId}/actions` | accept/reject/cancel/end 等状态动作 |
 | POST | `/api/v1/calls/{callId}/token` | 胜出/有权控制设备获取 scoped LiveKit token |
 
-正式语义：caller identity/device 由 Access Token Principal 决定；callee 必须是联系人且双方未 Block；状态持久化 PostgreSQL；callee 多设备第一台 accept 后独占媒体控制。旧 `/api/calls...` 只属于兼容/历史实验面。
+正式语义：caller identity/device 由 Access Token Principal 决定；callee 必须是联系人且双方未 Block；状态持久化 PostgreSQL；callee 多设备第一台 accept 后独占媒体控制。发起对象不是联系人时返回 `403 / CALL_CONTACT_REQUIRED`；真正的当前用户/设备无权控制既有 call 仍返回 `403 / CALL_FORBIDDEN`，客户端不得把两者混成同一提示。旧 `/api/calls...` 只属于兼容/历史实验面。
 
 ---
 

@@ -185,6 +185,8 @@ func (s *server) writeFormalCallsError(response http.ResponseWriter, request *ht
 		writeAPIError(response, http.StatusNotFound, "CALL_NOT_FOUND", "Call or participant was not found")
 	case errors.Is(err, calls.ErrBlocked):
 		writeAPIError(response, http.StatusForbidden, "CALL_BLOCKED", "Call is blocked by relationship policy")
+	case errors.Is(err, calls.ErrContactRequired):
+		writeAPIError(response, http.StatusForbidden, "CALL_CONTACT_REQUIRED", "Calls require the callee to be a contact")
 	case errors.Is(err, calls.ErrForbidden):
 		writeAPIError(response, http.StatusForbidden, "CALL_FORBIDDEN", "Call operation is not allowed")
 	case errors.Is(err, calls.ErrBusy):

@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/media/avatar_crop_page.dart';
 import '../../../core/media/avatar_image_processor.dart';
 import '../../../core/media/image_viewer_page.dart';
 import '../../../core/media/media_cache_budget.dart';
+import '../../../core/media/profile_avatar_picker.dart';
 import '../../../core/notifications/app_notification_service.dart';
 import '../../../core/performance/app_performance_store.dart';
 import '../../../core/sound/app_sound_service.dart';
@@ -942,12 +944,28 @@ class _MainShellPageState extends State<MainShellPage>
 
   Future<void> _changeAvatar() async {
     if (_avatarBusy) return;
-    const imageGroup = XTypeGroup(
-      label: '图片',
-      extensions: ['jpg', 'jpeg', 'png', 'webp'],
-      mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
-    );
-    final file = await openFile(acceptedTypeGroups: const [imageGroup]);
+    XFile? file;
+    try {
+      file = await pickProfileAvatarImage();
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      if (error.code == 'PHOTO_LIBRARY_PERMISSION_DENIED') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('没有照片权限，请在系统设置中允许 DD 访问照片。'),
+            action: SnackBarAction(
+              label: '去设置',
+              onPressed: () => unawaited(openProfileAvatarPickerSettings()),
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择头像失败：${error.message ?? error.code}')),
+        );
+      }
+      return;
+    }
     if (file == null || !mounted) return;
     final sourceLength = await file.length();
     if (!mounted) return;

@@ -625,6 +625,38 @@ void main() {
     },
   );
 
+  test('transient conversation load failure can recover without losing session state', () async {
+    final gateway = _FakeMessagingGateway()..listConversationFailures = 1;
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-recover',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('https://api.85746.pro'),
+      accessToken: 'still-valid-token',
+      currentUserId: 'user-a',
+      deviceId: 'device-recover',
+      gateway: gateway,
+      localStore: _MemoryMessagingStore(),
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    await coordinator.initialize();
+    expect(coordinator.errorMessage, contains('网络连接'));
+    expect(coordinator.accessToken, 'still-valid-token');
+
+    await coordinator.recover();
+
+    expect(coordinator.errorMessage, isNull);
+    expect(coordinator.accessToken, 'still-valid-token');
+    expect(gateway.listConversationCalls, greaterThanOrEqualTo(2));
+  });
+
   test('sync cursor only advances and is persisted', () async {
     final gateway = _FakeMessagingGateway()
       ..syncPages.addAll([
@@ -738,6 +770,8 @@ final class _FakeMessagingGateway implements MessagingGateway {
   int clearMuteCalls = 0;
   bool preferencePinned = false;
   DateTime? preferenceMutedUntil;
+  int listConversationFailures = 0;
+  int listConversationCalls = 0;
 
   @override
   Future<ChatMessage> sendText({
@@ -850,7 +884,14 @@ final class _FakeMessagingGateway implements MessagingGateway {
   Future<List<ConversationItem>> listConversations({
     required Uri origin,
     required String accessToken,
-  }) async => const [];
+  }) async {
+    listConversationCalls++;
+    if (listConversationFailures > 0) {
+      listConversationFailures--;
+      throw http.ClientException('Connection closed before full header was received');
+    }
+    return const [];
+  }
 
   @override
   Future<ConversationItem> getConversation({

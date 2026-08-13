@@ -86,7 +86,7 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 		return Call{}, ErrBlocked
 	}
 	if !isContact {
-		return Call{}, ErrForbidden
+		return Call{}, ErrContactRequired
 	}
 	var conversationID uuid.UUID
 	if err := tx.QueryRow(ctx, `

@@ -121,6 +121,31 @@ void main() {
     expect(controller.errorMessage, '不能呼叫自己。');
   });
 
+  test('non-contact call explains that the peer must be a contact', () async {
+    final api = _FakeCallSessionApi()
+      ..createError = const CallApiException(
+        code: 'CALL_CONTACT_REQUIRED',
+        message: 'Calls require the callee to be a contact',
+      );
+    final controller = TwoPartyCallController(
+      _FakeCallMedia(),
+      api: api,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) {
+        return _FakeSignalingClient();
+      },
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'https://api.85746.pro',
+      participantIdentity: 'alice',
+      participantName: 'Alice',
+    );
+    await controller.placeCall(calleeIdentity: 'bob', kind: CallKind.video);
+
+    expect(controller.errorMessage, '只能给联系人发起语音/视频通话，请先添加对方为联系人。');
+  });
+
   test('caller creates an outgoing video call', () async {
     final api = _FakeCallSessionApi();
     final media = _FakeCallMedia();
@@ -619,6 +644,7 @@ final class _FakeCallSessionApi implements CallSessionApi {
   CallSession? activeCall;
   int fetchActiveCount = 0;
   String? failAction;
+  CallApiException? createError;
   final List<String> appliedActions = <String>[];
 
   late final CallSession ringingCall = CallSession(
@@ -648,6 +674,8 @@ final class _FakeCallSessionApi implements CallSessionApi {
     required String calleeIdentity,
     required CallKind kind,
   }) async {
+    final error = createError;
+    if (error != null) throw error;
     lastCreatedKind = kind;
     return CallSession(
       id: ringingCall.id,

@@ -449,14 +449,14 @@ final class AuthApiClient implements AuthGateway {
     Map<String, dynamic> body,
   ) {
     final origin = normalizeAuthOrigin(rawOrigin);
-    return _client.post(
-      origin.resolve(path),
-      headers: const {
+    final request = http.Request('POST', origin.resolve(path))
+      ..persistentConnection = false
+      ..headers.addAll(const {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
-    );
+      })
+      ..body = jsonEncode(body);
+    return _client.send(request).then(http.Response.fromStream);
   }
 
   Future<http.Response> _authorized(

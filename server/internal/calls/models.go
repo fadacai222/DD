@@ -6,13 +6,14 @@ import (
 )
 
 var (
-	ErrUnavailable  = errors.New("calls service unavailable")
-	ErrInvalidInput = errors.New("invalid call input")
-	ErrNotFound     = errors.New("call not found")
-	ErrForbidden    = errors.New("call operation forbidden")
-	ErrBusy         = errors.New("participant already has an active call")
-	ErrConflict     = errors.New("call state conflict")
-	ErrBlocked      = errors.New("call blocked by relationship")
+	ErrUnavailable     = errors.New("calls service unavailable")
+	ErrInvalidInput    = errors.New("invalid call input")
+	ErrNotFound        = errors.New("call not found")
+	ErrForbidden       = errors.New("call operation forbidden")
+	ErrContactRequired = errors.New("call requires contact relationship")
+	ErrBusy            = errors.New("participant already has an active call")
+	ErrConflict        = errors.New("call state conflict")
+	ErrBlocked         = errors.New("call blocked by relationship")
 )
 
 const (

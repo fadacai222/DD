@@ -770,7 +770,8 @@ final class TwoPartyCallController extends ChangeNotifier {
       'CALL_BUSY' => '对方或你正在通话中。',
       'CALL_NOT_FOUND' => '该通话已经不存在。',
       'INVALID_CALL_STATE' => '通话状态已变化，正在自动同步。',
-      'CALL_FORBIDDEN' => '当前身份无权操作这通电话。',
+      'CALL_CONTACT_REQUIRED' => '只能给联系人发起语音/视频通话，请先添加对方为联系人。',
+      'CALL_FORBIDDEN' => '当前设备无权操作这通电话，请同步最新通话状态后重试。',
       _ => '通话服务错误：${error.message}',
     };
   }

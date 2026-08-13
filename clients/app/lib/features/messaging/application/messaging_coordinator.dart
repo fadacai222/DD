@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:realtime_poc/realtime_poc.dart';
 
 import '../../../core/logging/client_log.dart';
@@ -272,6 +273,29 @@ final class MessagingCoordinator extends ChangeNotifier {
         await _realtime.connect();
       } catch (_) {
         // REST + cursor sync remain authoritative; realtime reconnects itself.
+      }
+    } catch (error) {
+      _setError(_friendlyError(error));
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  Future<void> recover() async {
+    if (_disposed || _busy) return;
+    _setBusy(true);
+    _errorMessage = null;
+    _notify();
+    try {
+      await refreshConversations();
+      await flushPending();
+      await syncNow();
+      if (_realtime.state == RealtimeConnectionState.disconnected) {
+        try {
+          await _realtime.connect();
+        } catch (_) {
+          // REST + cursor sync remain usable while realtime reconnects.
+        }
       }
     } catch (error) {
       _setError(_friendlyError(error));
@@ -1086,6 +1110,9 @@ final class MessagingCoordinator extends ChangeNotifier {
       return error.message;
     }
     if (error is FormatException) return error.message;
+    if (error is http.ClientException) {
+      return '网络连接中断，请重试。登录状态和本地消息不会因此清除。';
+    }
     return error.toString();
   }
 

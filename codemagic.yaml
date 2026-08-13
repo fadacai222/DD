@@ -21,6 +21,8 @@ workflows:
           xcodebuild -version
       - name: Resolve Flutter dependencies
         script: flutter pub get
+      - name: Generate DD iOS AppIcon assets
+        script: dart run tool/generate_ios_app_icons.dart
       - name: Analyze Flutter client
         script: |
           set -euo pipefail
@@ -138,6 +140,8 @@ workflows:
           [ "$CM_COMMIT" = "$DD_RELEASE_SHA" ] || { echo "Codemagic commit mismatch: $CM_COMMIT != $DD_RELEASE_SHA" >&2; exit 1; }
       - name: Resolve Flutter dependencies
         script: flutter pub get
+      - name: Generate DD iOS AppIcon assets
+        script: dart run tool/generate_ios_app_icons.dart
       - name: Analyze Flutter client
         script: |
           set -euo pipefail

@@ -1084,6 +1084,15 @@ class _ConversationsPageState extends State<ConversationsPage> {
               ),
             ),
             IconButton(
+              key: const Key('conversations-error-retry'),
+              tooltip: '重试',
+              visualDensity: VisualDensity.compact,
+              onPressed: _coordinator.busy
+                  ? null
+                  : () => unawaited(_coordinator.recover()),
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+            ),
+            IconButton(
               tooltip: '查看完整错误',
               visualDensity: VisualDensity.compact,
               onPressed: _showErrorDetails,

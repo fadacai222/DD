@@ -889,12 +889,19 @@ class _AuthPageState extends State<AuthPage>
         persisted ? '已从系统安全存储自动恢复登录会话。' : '登录会话已恢复，但本机安全存储暂时不可写；当前会话仍可继续使用。',
         error: !persisted,
       );
-    } catch (_) {
-      try {
-        await _vault.clear();
-      } catch (_) {
-        // Secure storage may be unavailable on an unsupported desktop runtime.
+    } on AuthApiException catch (error) {
+      if (error.statusCode == 401) {
+        try {
+          await _vault.clear();
+        } catch (_) {
+          // Secure storage may be unavailable on an unsupported desktop runtime.
+        }
+        _setMessage(_friendlyError(error), error: true);
+        return;
       }
+      _setMessage(_friendlyError(error), error: true);
+    } catch (error) {
+      _setMessage(_friendlyError(error), error: true);
     }
   }
 
@@ -1386,6 +1393,9 @@ class _AuthPageState extends State<AuthPage>
         _ =>
           '${error.message}${error.requestId == null ? '' : ' · ${error.requestId}'}',
       };
+    }
+    if (error is http.ClientException) {
+      return '网络连接中断，请检查网络后重试。登录状态已保留。';
     }
     if (error is FormatException || error is ArgumentError) {
       return error.toString().replaceFirst(

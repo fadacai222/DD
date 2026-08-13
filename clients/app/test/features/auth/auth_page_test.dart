@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:im_client/core/security/dd_secure_storage.dart';
 import 'package:im_client/features/auth/data/auth_api_client.dart';
 import 'package:im_client/features/auth/data/auth_session_vault.dart';
@@ -78,6 +79,35 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('transient restore failure preserves stored refresh session', (
+    tester,
+  ) async {
+    final origin = Uri.parse('https://api.85746.pro');
+    final vault = AuthSessionVault(storage: _MemorySecureStore());
+    await vault.save(origin: origin, refreshToken: 'refresh-preserved');
+    final gateway = _SwitchAuthGateway()
+      ..refreshHandler = (_) async => throw http.ClientException(
+        'Connection closed before full header was received',
+      );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AuthPage(
+          gateway: gateway,
+          vault: vault,
+          initialOrigin: origin,
+          restoreSession: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect((await vault.read())?.refreshToken, 'refresh-preserved');
+    expect(find.textContaining('网络'), findsWidgets);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('A release failure never consumes B stored refresh token', (
     tester,

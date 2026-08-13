@@ -38,6 +38,7 @@ void main() {
       );
 
       expect(captured.url.path, '/api/v1/auth/register');
+      expect(captured.persistentConnection, isFalse);
       final body = jsonDecode(captured.body) as Map<String, dynamic>;
       expect(body['displayName'], 'Alice');
       expect((body['device'] as Map<String, dynamic>)['platform'], 'WINDOWS');
