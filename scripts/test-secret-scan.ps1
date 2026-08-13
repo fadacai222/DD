@@ -296,3 +296,7 @@ Invoke-GitleaksHistoryScan -Context $HistoryContext
 Assert-FalseGreenHistoryIsRejected -Context $HistoryContext
 Assert-DetectorRejectsKnownLeak
 Write-Host '[secret-scan] PASS'
+# PowerShell Core can propagate the last native command's expected exit code 1
+# from the detector self-test even after all assertions pass. Reaching this
+# point proves every fail-closed check completed successfully.
+exit 0
