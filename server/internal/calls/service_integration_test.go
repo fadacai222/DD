@@ -149,6 +149,17 @@ func TestCallLifecycleWithPostgres(t *testing.T) {
 	assertCallSystemMessage(t, ctx, pool, aliceBobConversation, rejectedCall.ID, "[语音通话] 已拒绝")
 
 	current = current.Add(time.Minute)
+	cancelledCall, err := service.Create(ctx, principals["alice1"], CreateInput{CalleeUserID: bob.String(), Kind: KindAudio})
+	if err != nil {
+		t.Fatalf("create cancel call: %v", err)
+	}
+	cancelled, err := service.ApplyAction(ctx, principals["alice1"], uuid.MustParse(cancelledCall.ID), ActionInput{Action: "hangup"})
+	if err != nil || cancelled.Status != StatusEnded || cancelled.EndReason != "cancelled" {
+		t.Fatalf("cancel result=%+v err=%v", cancelled, err)
+	}
+	assertCallSystemMessage(t, ctx, pool, aliceBobConversation, cancelledCall.ID, "[语音通话] 已取消")
+
+	current = current.Add(time.Minute)
 	timeoutCall, err := service.Create(ctx, principals["alice1"], CreateInput{CalleeUserID: bob.String(), Kind: KindAudio})
 	if err != nil {
 		t.Fatalf("create timeout call: %v", err)

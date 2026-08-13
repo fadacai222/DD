@@ -230,6 +230,7 @@ func (service *Service) ApplyAction(ctx context.Context, principal account.Princ
 		return Call{}, ErrConflict
 	}
 
+	terminalReason := ""
 	switch action {
 	case "accept":
 		if state.status != StatusRinging || principal.UserID != state.calleeUserID {
@@ -251,6 +252,7 @@ func (service *Service) ApplyAction(ctx context.Context, principal account.Princ
 		`, callID, now); err != nil {
 			return Call{}, fmt.Errorf("reject call: %w", err)
 		}
+		terminalReason = "rejected"
 	case "hangup":
 		switch state.status {
 		case StatusRinging:
@@ -260,6 +262,7 @@ func (service *Service) ApplyAction(ctx context.Context, principal account.Princ
 			if err := endRingingCallTx(ctx, tx, callID, now, "cancelled"); err != nil {
 				return Call{}, err
 			}
+			terminalReason = "cancelled"
 		case StatusAccepted:
 			if !state.deviceCanControl(principal) {
 				return Call{}, ErrForbidden
@@ -270,8 +273,14 @@ func (service *Service) ApplyAction(ctx context.Context, principal account.Princ
 			`, callID, now); err != nil {
 				return Call{}, fmt.Errorf("hang up call: %w", err)
 			}
+			terminalReason = "hung_up"
 		default:
 			return Call{}, ErrConflict
+		}
+	}
+	if terminalReason != "" {
+		if err := writeCallSystemMessageTx(ctx, tx, callID, state, terminalReason, now); err != nil {
+			return Call{}, err
 		}
 	}
 	call, err := service.scanCall(tx.QueryRow(ctx, callSelectByIDSQL, callID))
