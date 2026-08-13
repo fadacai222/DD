@@ -130,7 +130,7 @@ func (s *server) handleFormalCallToken(response http.ResponseWriter, request *ht
 		s.writeFormalCallsError(response, request, err)
 		return
 	}
-	s.issueCallToken(
+	s.issueFormalCallToken(
 		response,
 		request,
 		authorization.RoomName,

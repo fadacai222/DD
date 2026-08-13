@@ -33,6 +33,14 @@ type callTokenResponse struct {
 	ExpiresAt        time.Time `json:"expires_at"`
 }
 
+type formalCallTokenResponse struct {
+	ServerURL           string `json:"server_url"`
+	Token               string `json:"token"`
+	RoomName            string `json:"room_name"`
+	ParticipantIdentity string `json:"participant_identity"`
+	ExpiresInSeconds    int64  `json:"expires_in_seconds"`
+}
+
 func (s *server) handleCallToken(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		methodNotAllowed(response, http.MethodPost)
@@ -77,9 +85,48 @@ func (s *server) issueCallToken(
 	participantIdentity string,
 	participantName string,
 ) {
+	token, ok := s.mintCallToken(response, roomName, participantIdentity, participantName)
+	if !ok {
+		return
+	}
+
+	writeJSON(response, http.StatusOK, callTokenResponse{
+		ServerURL:        s.resolveLiveKitURL(request),
+		ParticipantToken: token,
+		ExpiresAt:        s.now().UTC().Add(s.callTokenTTL),
+	})
+}
+
+func (s *server) issueFormalCallToken(
+	response http.ResponseWriter,
+	request *http.Request,
+	roomName string,
+	participantIdentity string,
+	participantName string,
+) {
+	token, ok := s.mintCallToken(response, roomName, participantIdentity, participantName)
+	if !ok {
+		return
+	}
+
+	writeJSON(response, http.StatusOK, formalCallTokenResponse{
+		ServerURL:           s.resolveLiveKitURL(request),
+		Token:               token,
+		RoomName:            roomName,
+		ParticipantIdentity: participantIdentity,
+		ExpiresInSeconds:    int64(s.callTokenTTL / time.Second),
+	})
+}
+
+func (s *server) mintCallToken(
+	response http.ResponseWriter,
+	roomName string,
+	participantIdentity string,
+	participantName string,
+) (string, bool) {
 	if s.liveKitURL == "" || s.liveKitAPIKey == "" || s.liveKitAPISecret == "" {
 		writeAPIError(response, http.StatusServiceUnavailable, "CALL_SERVICE_UNAVAILABLE", "Call service is not configured")
-		return
+		return "", false
 	}
 
 	grant := &auth.VideoGrant{
@@ -98,14 +145,9 @@ func (s *server) issueCallToken(
 		ToJWT()
 	if err != nil {
 		writeAPIError(response, http.StatusInternalServerError, "TOKEN_ISSUE_FAILED", "Unable to issue call token")
-		return
+		return "", false
 	}
-
-	writeJSON(response, http.StatusOK, callTokenResponse{
-		ServerURL:        s.resolveLiveKitURL(request),
-		ParticipantToken: token,
-		ExpiresAt:        s.now().UTC().Add(s.callTokenTTL),
-	})
+	return token, true
 }
 
 func (s *server) resolveLiveKitURL(request *http.Request) string {
