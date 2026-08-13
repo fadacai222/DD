@@ -580,7 +580,91 @@ void main() {
       find.byKey(const Key('conversation-pin-conversation-1')),
       findsOneWidget,
     );
+    expect(tester.getTopLeft(tile).dx, closeTo(initialX, 1));
   });
+
+  testWidgets(
+    'Android swipe state machine requires a new gesture before opening the opposite side',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final gateway = _ConversationGateway();
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:19999'),
+        clientId: 'device-a',
+        channelFactory: (_) => throw StateError('not used'),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'device-a',
+        gateway: gateway,
+        localStore: _ConversationStore(),
+        realtimeClient: realtime,
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await realtime.dispose();
+      });
+      await coordinator.refreshConversations();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: ConversationsPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'token',
+            currentUserId: 'user-a',
+            deviceId: 'device-a',
+            coordinator: coordinator,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final tile = find.byKey(const Key('conversation-conversation-1'));
+      final closedX = tester.getTopLeft(tile).dx;
+
+      Future<void> dragAndExpect(double dx, Matcher matcher) async {
+        final currentLeft = tester.getTopLeft(tile).dx;
+        final startX = (currentLeft + 180).clamp(10.0, 350.0);
+        await tester.dragFrom(
+          Offset(startX, tester.getCenter(tile).dy),
+          Offset(dx, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.getTopLeft(tile).dx, matcher);
+      }
+
+      // closed -> left-open -> opposite swipe only closes -> a new swipe opens right.
+      await dragAndExpect(-260, lessThan(closedX - 150));
+      await dragAndExpect(360, closeTo(closedX, 1));
+      await dragAndExpect(180, greaterThan(closedX + 100));
+      await dragAndExpect(-360, closeTo(closedX, 1));
+
+      // Symmetric sequence starting from the other side.
+      await dragAndExpect(180, greaterThan(closedX + 100));
+      await dragAndExpect(-360, closeTo(closedX, 1));
+      await dragAndExpect(-260, lessThan(closedX - 150));
+      await dragAndExpect(360, closeTo(closedX, 1));
+
+      // A canceled reverse gesture returns to the side that was open.
+      await dragAndExpect(-260, lessThan(closedX - 150));
+      final openLeftX = tester.getTopLeft(tile).dx;
+      final cancelStartX = (openLeftX + 180).clamp(10.0, 350.0);
+      final canceledGesture = await tester.startGesture(
+        Offset(cancelStartX, tester.getCenter(tile).dy),
+      );
+      await canceledGesture.moveBy(const Offset(90, 0));
+      await canceledGesture.cancel();
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(tile).dx, closeTo(openLeftX, 1));
+      await dragAndExpect(360, closeTo(closedX, 1));
+    },
+  );
 
   testWidgets(
     'Android left swipe exposes mute/archive/delete and delete hides',

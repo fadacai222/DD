@@ -1522,13 +1522,18 @@ class _ConversationSwipeActions extends StatefulWidget {
       _ConversationSwipeActionsState();
 }
 
+enum _ConversationSwipeState { closed, leadingOpen, trailingOpen }
+
 class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
   static const double _actionWidth = 72;
   static const double _rightReveal = _actionWidth * 2;
   static const double _leftReveal = _actionWidth * 3;
+  static const double _settleThreshold = 38;
   double _offset = 0;
   bool _dragging = false;
   bool _busy = false;
+  _ConversationSwipeState _state = _ConversationSwipeState.closed;
+  _ConversationSwipeState _dragOriginState = _ConversationSwipeState.closed;
 
   @override
   Widget build(BuildContext context) {
@@ -1605,42 +1610,51 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
             behavior: HitTestBehavior.translucent,
             onHorizontalDragStart: (_) {
               if (_busy) return;
-              setState(() => _dragging = true);
+              setState(() {
+                _dragging = true;
+                _dragOriginState = _state;
+              });
             },
             onHorizontalDragUpdate: (details) {
               if (_busy) return;
+              var minOffset = -_leftReveal;
+              var maxOffset = _rightReveal;
+              switch (_dragOriginState) {
+                case _ConversationSwipeState.closed:
+                  break;
+                case _ConversationSwipeState.leadingOpen:
+                  minOffset = 0;
+                  break;
+                case _ConversationSwipeState.trailingOpen:
+                  maxOffset = 0;
+                  break;
+              }
               setState(() {
                 _offset = (_offset + details.delta.dx).clamp(
-                  -_leftReveal,
-                  _rightReveal,
+                  minOffset,
+                  maxOffset,
                 );
               });
             },
             onHorizontalDragEnd: (details) {
               if (_busy) return;
-              final velocity = details.primaryVelocity ?? 0;
-              var target = 0.0;
-              if (velocity > 450) {
-                target = _rightReveal;
-              } else if (velocity < -450) {
-                target = -_leftReveal;
-              } else if (_offset > 38) {
-                target = _rightReveal;
-              } else if (_offset < -38) {
-                target = -_leftReveal;
-              }
+              final targetState = _settledStateFor(
+                details.primaryVelocity ?? 0,
+              );
               setState(() {
                 _dragging = false;
-                _offset = target;
+                _state = targetState;
+                _offset = _offsetForState(targetState);
               });
             },
             onHorizontalDragCancel: () {
-              if (mounted) {
-                setState(() {
-                  _dragging = false;
-                  _offset = 0;
-                });
-              }
+              if (!mounted) return;
+              setState(() {
+                _dragging = false;
+                final targetState = _busy ? _state : _dragOriginState;
+                _state = targetState;
+                _offset = _offsetForState(targetState);
+              });
             },
             child: AnimatedContainer(
               duration: _dragging
@@ -1654,6 +1668,35 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
         ],
       ),
     );
+  }
+
+  double _offsetForState(_ConversationSwipeState state) => switch (state) {
+    _ConversationSwipeState.closed => 0,
+    _ConversationSwipeState.leadingOpen => _rightReveal,
+    _ConversationSwipeState.trailingOpen => -_leftReveal,
+  };
+
+  _ConversationSwipeState _settledStateFor(double velocity) {
+    switch (_dragOriginState) {
+      case _ConversationSwipeState.closed:
+        if (velocity > 450 || _offset > _settleThreshold) {
+          return _ConversationSwipeState.leadingOpen;
+        }
+        if (velocity < -450 || _offset < -_settleThreshold) {
+          return _ConversationSwipeState.trailingOpen;
+        }
+        return _ConversationSwipeState.closed;
+      case _ConversationSwipeState.leadingOpen:
+        if (velocity < -450 || _offset <= _rightReveal - _settleThreshold) {
+          return _ConversationSwipeState.closed;
+        }
+        return _ConversationSwipeState.leadingOpen;
+      case _ConversationSwipeState.trailingOpen:
+        if (velocity > 450 || _offset >= -_leftReveal + _settleThreshold) {
+          return _ConversationSwipeState.closed;
+        }
+        return _ConversationSwipeState.trailingOpen;
+    }
   }
 
   Widget _action({
@@ -1672,13 +1715,19 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
           onTap: _busy
               ? null
               : () async {
-                  setState(() => _busy = true);
+                  setState(() {
+                    _busy = true;
+                    _dragging = false;
+                    _offset = _offsetForState(_state);
+                  });
                   try {
                     await onTap();
                   } finally {
                     if (mounted) {
                       setState(() {
                         _busy = false;
+                        _state = _ConversationSwipeState.closed;
+                        _dragOriginState = _ConversationSwipeState.closed;
                         _offset = 0;
                       });
                     }
