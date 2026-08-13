@@ -34,34 +34,34 @@ const (
 )
 
 type Config struct {
-	Environment        Environment
-	Port               int
-	PublicBaseURL      string
-	InstanceName       string
-	AllowedOrigins     []string
-	AllowedHTTPOrigins []string
-	LiveKitURL         string
-	LiveKitPublicPort  int
-	LiveKitAPIKey      string
-	LiveKitAPISecret   string
-	DatabaseURL        string
-	RedisURL           string
-	MediaS3Endpoint    string
-	MediaS3Bucket      string
-	MediaS3Region      string
-	MediaS3AccessKey   string
-	MediaS3SecretKey   string
+	Environment         Environment
+	Port                int
+	PublicBaseURL       string
+	InstanceName        string
+	AllowedOrigins      []string
+	AllowedHTTPOrigins  []string
+	LiveKitURL          string
+	LiveKitPublicPort   int
+	LiveKitAPIKey       string
+	LiveKitAPISecret    string
+	DatabaseURL         string
+	RedisURL            string
+	MediaS3Endpoint     string
+	MediaS3Bucket       string
+	MediaS3Region       string
+	MediaS3AccessKey    string
+	MediaS3SecretKey    string
 	TelegramBotToken    string
 	AuthTokenSecret     string
 	AdminSecuritySecret string
 	RegistrationMode    RegistrationMode
-	EmailCodePepper    string
-	SMTPHost           string
-	SMTPPort           int
-	SMTPFrom           string
-	SMTPUsername       string
-	SMTPPassword       string
-	SMTPRequireTLS     bool
+	EmailCodePepper     string
+	SMTPHost            string
+	SMTPPort            int
+	SMTPFrom            string
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPRequireTLS      bool
 }
 
 func Load() (Config, error) {
@@ -168,34 +168,34 @@ func Load() (Config, error) {
 	}
 
 	config := Config{
-		Environment:        environment,
-		Port:               port,
-		PublicBaseURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("IM_PUBLIC_BASE_URL")), "/"),
-		InstanceName:       instanceName,
-		AllowedOrigins:     allowedOrigins,
-		AllowedHTTPOrigins: allowedHTTPOrigins,
-		LiveKitURL:         strings.TrimSpace(os.Getenv("LIVEKIT_URL")),
-		LiveKitPublicPort:  liveKitPublicPort,
-		LiveKitAPIKey:      liveKitAPIKey,
-		LiveKitAPISecret:   liveKitAPISecret,
-		DatabaseURL:        databaseURL,
-		RedisURL:           redisURL,
-		MediaS3Endpoint:    strings.TrimRight(strings.TrimSpace(os.Getenv("MEDIA_S3_ENDPOINT")), "/"),
-		MediaS3Bucket:      strings.TrimSpace(os.Getenv("MEDIA_S3_BUCKET")),
-		MediaS3Region:      strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
-		MediaS3AccessKey:   mediaS3AccessKey,
-		MediaS3SecretKey:   mediaS3SecretKey,
+		Environment:         environment,
+		Port:                port,
+		PublicBaseURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("IM_PUBLIC_BASE_URL")), "/"),
+		InstanceName:        instanceName,
+		AllowedOrigins:      allowedOrigins,
+		AllowedHTTPOrigins:  allowedHTTPOrigins,
+		LiveKitURL:          strings.TrimSpace(os.Getenv("LIVEKIT_URL")),
+		LiveKitPublicPort:   liveKitPublicPort,
+		LiveKitAPIKey:       liveKitAPIKey,
+		LiveKitAPISecret:    liveKitAPISecret,
+		DatabaseURL:         databaseURL,
+		RedisURL:            redisURL,
+		MediaS3Endpoint:     strings.TrimRight(strings.TrimSpace(os.Getenv("MEDIA_S3_ENDPOINT")), "/"),
+		MediaS3Bucket:       strings.TrimSpace(os.Getenv("MEDIA_S3_BUCKET")),
+		MediaS3Region:       strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
+		MediaS3AccessKey:    mediaS3AccessKey,
+		MediaS3SecretKey:    mediaS3SecretKey,
 		TelegramBotToken:    telegramBotToken,
 		AuthTokenSecret:     authTokenSecret,
 		AdminSecuritySecret: adminSecuritySecret,
 		RegistrationMode:    registrationMode,
-		EmailCodePepper:    emailCodePepper,
-		SMTPHost:           smtpHost,
-		SMTPPort:           smtpPort,
-		SMTPFrom:           smtpFrom,
-		SMTPUsername:       strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
-		SMTPPassword:       smtpPassword,
-		SMTPRequireTLS:     smtpRequireTLS,
+		EmailCodePepper:     emailCodePepper,
+		SMTPHost:            smtpHost,
+		SMTPPort:            smtpPort,
+		SMTPFrom:            smtpFrom,
+		SMTPUsername:        strings.TrimSpace(os.Getenv("SMTP_USERNAME")),
+		SMTPPassword:        smtpPassword,
+		SMTPRequireTLS:      smtpRequireTLS,
 	}
 	if err := config.Validate(); err != nil {
 		return Config{}, err

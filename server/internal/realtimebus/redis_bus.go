@@ -21,10 +21,10 @@ type Observer interface {
 }
 
 type RedisBus struct {
-	client    *redis.Client
-	nodeID    string
-	channel   string
-	observer  Observer
+	client   *redis.Client
+	nodeID   string
+	channel  string
+	observer Observer
 }
 
 type redisDelivery struct {
