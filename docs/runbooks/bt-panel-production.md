@@ -56,14 +56,13 @@ bash scripts/init-secrets.sh
 127.0.0.1:17880  LiveKit signaling
 127.0.0.1:19000  MinIO media
 3478/UDP         TURN/UDP
-5349/TCP         TURN/TLS
 7881/TCP         ICE/TCP
 50000-50100/UDP  WebRTC media
 ```
 
 DD 不绑定宿主机 TCP 80/443。
 
-## 4. 宝塔里建 4 个站点
+## 4. 宝塔里建 3 个反代站点
 
 ### `api.85746.pro`
 
@@ -99,28 +98,7 @@ proxy_set_header Host $host;
 
 这是为了避免大视频/文件被 Nginx `413` 或整包缓冲。
 
-### `turn.85746.pro`
-
-只需要创建站点并申请可信 SSL 证书，不需要 HTTP 反向代理。LiveKit 自己在 `5349/TCP` 提供 TURN/TLS。
-
-证书申请成功后导入 DD：
-
-```bash
-cd /opt/dd/infra/prod
-bash scripts/import-bt-turn-cert.sh turn.85746.pro
-```
-
-脚本默认读取宝塔证书目录：
-
-```text
-/www/server/panel/vhost/cert/turn.85746.pro/
-```
-
-宝塔以后续签 TURN 证书后，再执行一次导入脚本并：
-
-```bash
-bash scripts/restart.sh livekit
-```
+`turn.85746.pro` 只需要 DNS A 记录，不需要在宝塔创建网站或申请证书；宝塔模式故意关闭 TURN/TLS，避免和宿主机 Nginx 的 TCP 443 冲突。
 
 ## 5. 防火墙
 
@@ -135,7 +113,6 @@ bash scripts/restart.sh livekit
 
 ```text
 3478/UDP
-5349/TCP
 7881/TCP
 50000-50100/UDP
 ```
@@ -192,4 +169,4 @@ FCM/APNs Secret 也可以先留空；它们不阻塞 API/数据库/媒体/通话
 
 ## 8. 当前能力边界
 
-宝塔模式保留宝塔 Nginx 的 80/443，但 TURN/TLS 改用 5349/TCP。相比把 TURN/TLS 放在 443，这对“只允许 HTTPS 443 出站”的极端公司网络兼容性稍弱；家庭网络、移动网络和普通公网部署仍应通过真实设备测试确认。LiveKit 的信令仍通过 `wss://rtc.85746.pro` 的标准 443/TCP 走宝塔 Nginx。
+宝塔模式保留宝塔 Nginx 的 80/443，并故意关闭 embedded TURN/TLS；RTC 仍保留 TURN/UDP 3478、ICE/TCP 7881 与 ICE/UDP 媒体端口。这样部署最简单，但“只允许 TCP 443 出站”的严格公司网络可能无法走 TURN/TLS fallback。LiveKit 的信令仍通过 `wss://rtc.85746.pro` 的标准 443/TCP 走宝塔 Nginx。若以后必须覆盖这类网络，应单独设计宿主机 443 的 L4/SNI 分流或外部负载均衡，而不是把 5349 直接当作浏览器可用的 TURN/TLS 公网端口。

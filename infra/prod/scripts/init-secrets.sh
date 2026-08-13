@@ -75,10 +75,16 @@ for optional in smtp_password telegram_bot_token fcm_service_account_json apns_p
   ensure_optional_file "$optional"
 done
 
-for supplied in turn_cert.pem turn_key.pem; do
-  if [[ ! -s "$PROD_DIR/secrets/$supplied" ]]; then
-    log "HUMAN-REQUIRED: install trusted $supplied for DD_TURN_DOMAIN; no self-signed production fallback is generated"
-  fi
-done
+if is_bt_ingress; then
+  ensure_optional_file turn_cert.pem
+  ensure_optional_file turn_key.pem
+  log "BaoTa ingress mode: TURN/TLS is disabled, so TURN certificate files may remain empty"
+else
+  for supplied in turn_cert.pem turn_key.pem; do
+    if [[ ! -s "$PROD_DIR/secrets/$supplied" ]]; then
+      log "HUMAN-REQUIRED: install trusted $supplied for DD_TURN_DOMAIN; no self-signed production fallback is generated"
+    fi
+  done
+fi
 
 log "secret initialization complete; no existing non-empty secret was overwritten"

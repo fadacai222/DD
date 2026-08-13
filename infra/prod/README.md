@@ -34,9 +34,9 @@ PostgreSQL, Redis, MinIO Console, API port 18473, and LiveKit signal port 7880 a
 
 TCP/443 is shared safely by TLS SNI in the default `DD_INGRESS_MODE=caddy` topology: the TURN hostname is passed through to LiveKit so LiveKit owns the TURN certificate; normal HTTPS/WSS is passed through to Caddy. UDP/443 is deliberately reserved for TURN/UDP, so this baseline does not enable HTTP/3/QUIC on Caddy.
 
-A second supported topology is `DD_INGRESS_MODE=bt-nginx`, intended for Debian hosts where BaoTa/Nginx already owns TCP 80/443. It loads `compose.bt.yml`, does not start DD Caddy/HAProxy, binds API/LiveKit signaling/MinIO only to loopback high ports, and exposes TURN/UDP + TURN/TLS on configurable non-443 ports (the provided BaoTa template uses `3478/UDP` and `5349/TCP`). See `docs/runbooks/bt-panel-production.md`.
+A second supported topology is `DD_INGRESS_MODE=bt-nginx`, intended for Debian hosts where BaoTa/Nginx already owns TCP 80/443. It loads `compose.bt.yml`, does not start DD Caddy/HAProxy, binds API/LiveKit signaling/MinIO only to loopback high ports, keeps TURN/UDP on `3478/UDP`, and intentionally disables embedded TURN/TLS so DD never competes for host TCP 443. See `docs/runbooks/bt-panel-production.md`.
 
-LiveKit's embedded TURN does not expose plain TURN/TCP. In the default topology the fallback chain is ICE/UDP -> TURN/UDP -> ICE/TCP (`7881`) -> TURN/TLS (`443/TCP`); BaoTa mode uses the configured TURN ports instead. A deployment that specifically requires plain TURN/TCP must add an external TURN implementation such as Coturn and explicitly configure LiveKit `turn_servers`; that optional topology is not silently enabled here.
+LiveKit's embedded TURN does not expose plain TURN/TCP. In the default topology the fallback chain is ICE/UDP -> TURN/UDP -> ICE/TCP (`7881`) -> TURN/TLS (`443/TCP`). BaoTa mode keeps ICE/UDP, TURN/UDP and ICE/TCP but has no TURN/TLS fallback; if strict TCP-443-only network support becomes a requirement, add a deliberate L4/SNI or external load-balancer design instead of advertising a non-443 TURN/TLS endpoint.
 
 ## 2. Required host/network
 
@@ -61,7 +61,7 @@ Default Caddy/HAProxy mode:
 | 7881 | TCP | LiveKit ICE/TCP fallback |
 | `DD_RTC_UDP_PORT_START..END` | UDP | LiveKit ICE media; default `50000..50100` |
 
-BaoTa/Nginx coexistence mode keeps Nginx on TCP 80/443 and adds only `DD_TURN_UDP_PORT` (default template `3478/UDP`), `DD_TURN_TLS_PORT` (default template `5349/TCP`), TCP 7881, and the configured RTC UDP range. API/RTC/MinIO reverse-proxy backends bind to `127.0.0.1` only.
+BaoTa/Nginx coexistence mode keeps Nginx on TCP 80/443 and adds only `DD_TURN_UDP_PORT` (template `3478/UDP`), TCP 7881, and the configured RTC UDP range. `DD_TURN_TLS_PORT=0` is required in this mode. API/RTC/MinIO reverse-proxy backends bind to `127.0.0.1` only.
 
 Do **not** open PostgreSQL 5432, Redis 6379, MinIO 9000/9001, LiveKit 7880, or API 18473 to the public Internet for this topology.
 
@@ -124,6 +124,8 @@ Real secrets live under `infra/prod/secrets/`, which is deny-by-default in Git. 
 
 ### TURN/TLS certificate
 
+The following applies only to the default `DD_INGRESS_MODE=caddy` topology. `bt-nginx` intentionally disables embedded TURN/TLS and does not require a TURN certificate.
+
 Install a publicly trusted certificate and matching key for exactly `DD_TURN_DOMAIN`:
 
 ```text
@@ -146,12 +148,12 @@ Preflight validates:
 
 - required domains/public IP and non-wildcard HTTPS origins;
 - required secret files and minimum secret lengths;
-- TURN certificate hostname, expiry, and private-key match;
+- TURN certificate hostname, expiry, and private-key match when TURN/TLS is enabled;
 - backup interval <= configured RPO;
 - RTC public port range;
 - Docker Compose model;
-- selected Caddy configuration;
-- HAProxy SNI routing configuration;
+- selected Caddy configuration and HAProxy SNI routing in built-in ingress mode;
+- BaoTa compose overlay / high-port contract in `bt-nginx` mode;
 - LiveKit production port configuration.
 
 `deploy.sh` is for a **first installation**. If an API container is already running it refuses to proceed; existing installations must use `upgrade.sh`.
@@ -162,7 +164,7 @@ After DNS and certificates are live:
 bash scripts/deployment-check.sh --public
 ```
 
-This checks DD live/readiness, public HTTPS, LiveKit TLS ingress, and the TURN/TLS TCP/443 certificate/SNI route. It cannot prove carrier UDP/NAT behavior from the server itself.
+This checks DD live/readiness and public HTTPS/LiveKit TLS ingress. In default ingress mode it also verifies the TURN/TLS certificate/SNI route; in `bt-nginx` mode TURN/TLS is disabled. It cannot prove carrier UDP/NAT behavior from the server itself.
 
 ## 6. Controlled restart
 

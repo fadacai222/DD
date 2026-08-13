@@ -19,10 +19,12 @@ Required generated secrets:
 - `admin_security_secret` — independent Admin session/CSRF/security key; never reuse or fall back to `auth_token_secret`
 - `email_code_pepper`
 
-Required operator-supplied TURN/TLS certificate files:
+Required operator-supplied TURN/TLS certificate files for the default `DD_INGRESS_MODE=caddy` topology:
 
 - `turn_cert.pem` — trusted certificate chain for `DD_TURN_DOMAIN`
 - `turn_key.pem` — matching private key
+
+For `DD_INGRESS_MODE=bt-nginx`, embedded TURN/TLS is intentionally disabled so these two files may remain empty placeholders created by `init-secrets.sh`.
 
 Optional integrations still need a file to exist; leave it empty when disabled:
 

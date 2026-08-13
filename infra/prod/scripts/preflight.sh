@@ -133,8 +133,13 @@ done
 for optional in smtp_password telegram_bot_token fcm_service_account_json apns_private_key; do
   require_secret_file "$optional"
 done
-require_secret_nonempty turn_cert.pem
-require_secret_nonempty turn_key.pem
+if ! is_bt_ingress; then
+  require_secret_nonempty turn_cert.pem
+  require_secret_nonempty turn_key.pem
+else
+  require_secret_file turn_cert.pem
+  require_secret_file turn_key.pem
+fi
 
 [[ "$(read_secret database_url)" == postgres://* || "$(read_secret database_url)" == postgresql://* ]] || fail "database_url must be a postgres:// or postgresql:// URL"
 [[ "$(read_secret redis_url)" == redis://* || "$(read_secret redis_url)" == rediss://* ]] || fail "redis_url must be a redis:// or rediss:// URL"
@@ -162,7 +167,7 @@ for numeric in DD_TURN_UDP_PORT DD_TURN_TLS_PORT DD_RTC_UDP_PORT_START DD_RTC_UD
   [[ "${!numeric}" =~ ^[0-9]+$ ]] || fail "$numeric must be an integer"
 done
 (( DD_TURN_UDP_PORT >= 1 && DD_TURN_UDP_PORT <= 65535 )) || fail "DD_TURN_UDP_PORT is outside 1..65535"
-(( DD_TURN_TLS_PORT >= 1 && DD_TURN_TLS_PORT <= 65535 )) || fail "DD_TURN_TLS_PORT is outside 1..65535"
+(( DD_TURN_TLS_PORT >= 0 && DD_TURN_TLS_PORT <= 65535 )) || fail "DD_TURN_TLS_PORT is outside 0..65535"
 (( DD_RTC_UDP_PORT_START >= 1024 && DD_RTC_UDP_PORT_START <= 65535 )) || fail "DD_RTC_UDP_PORT_START is outside 1024..65535"
 (( DD_RTC_UDP_PORT_END >= DD_RTC_UDP_PORT_START && DD_RTC_UDP_PORT_END <= 65535 )) || fail "DD_RTC_UDP_PORT_END must be >= start and <= 65535"
 (( DD_RTC_UDP_PORT_END - DD_RTC_UDP_PORT_START <= 1000 )) || fail "RTC UDP range is unexpectedly wide (>1001 ports); review before exposing it"
@@ -178,7 +183,7 @@ if is_bt_ingress; then
     (( ${!local_port} >= 1024 && ${!local_port} <= 65535 )) || fail "$local_port is outside 1024..65535"
     (( ${!local_port} != 443 )) || fail "$local_port must not use host TCP 443 in bt-nginx mode"
   done
-  (( DD_TURN_TLS_PORT != 80 && DD_TURN_TLS_PORT != 443 )) || fail "DD_TURN_TLS_PORT must not use host TCP 80/443 in bt-nginx mode"
+  (( DD_TURN_TLS_PORT == 0 )) || fail "bt-nginx mode disables embedded TURN/TLS because browser clients require the public TURN/TLS endpoint on TCP 443"
   (( DD_TURN_UDP_PORT != 80 && DD_TURN_UDP_PORT != 443 )) || fail "DD_TURN_UDP_PORT must not use host UDP 80/443 in bt-nginx mode"
 else
   (( DD_TURN_TLS_PORT == 443 && DD_TURN_UDP_PORT == 443 )) || fail "built-in caddy ingress requires TURN TLS/UDP on 443"
@@ -188,13 +193,15 @@ fi
 (( DD_RPO_HOURS >= DD_BACKUP_INTERVAL_HOURS )) || fail "configured quiesced DR recovery-point interval exceeds DD_RPO_HOURS"
 (( DD_RTO_HOURS >= 1 )) || fail "DD_RTO_HOURS must be >= 1"
 
-turn_cert="$(secret_path turn_cert.pem)"
-turn_key="$(secret_path turn_key.pem)"
-openssl x509 -in "$turn_cert" -noout -checkend 86400 >/dev/null || fail "TURN certificate is invalid or expires within 24 hours"
-openssl x509 -in "$turn_cert" -noout -checkhost "$DD_TURN_DOMAIN" >/dev/null || fail "TURN certificate does not cover DD_TURN_DOMAIN"
-cert_pub="$(openssl x509 -in "$turn_cert" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256)"
-key_pub="$(openssl pkey -in "$turn_key" -pubout -outform DER 2>/dev/null | openssl dgst -sha256)"
-[[ "$cert_pub" == "$key_pub" ]] || fail "TURN certificate and private key do not match"
+if ! is_bt_ingress; then
+  turn_cert="$(secret_path turn_cert.pem)"
+  turn_key="$(secret_path turn_key.pem)"
+  openssl x509 -in "$turn_cert" -noout -checkend 86400 >/dev/null || fail "TURN certificate is invalid or expires within 24 hours"
+  openssl x509 -in "$turn_cert" -noout -checkhost "$DD_TURN_DOMAIN" >/dev/null || fail "TURN certificate does not cover DD_TURN_DOMAIN"
+  cert_pub="$(openssl x509 -in "$turn_cert" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | openssl dgst -sha256)"
+  key_pub="$(openssl pkey -in "$turn_key" -pubout -outform DER 2>/dev/null | openssl dgst -sha256)"
+  [[ "$cert_pub" == "$key_pub" ]] || fail "TURN certificate and private key do not match"
+fi
 
 log "validating Docker Compose model"
 compose_with_storage config -q
@@ -242,12 +249,14 @@ livekit_ports="$(compose_with_storage run --rm --no-deps --entrypoint /bin/sh li
 ')"
 printf '%s\n' "$livekit_ports" | grep -Fq '7881 - ICE/TCP' || fail "LiveKit config does not expose ICE/TCP 7881"
 printf '%s\n' "$livekit_ports" | grep -Fq "${DD_RTC_UDP_PORT_START}-${DD_RTC_UDP_PORT_END} - ICE/UDP range" || fail "LiveKit config does not expose the configured ICE/UDP range"
-printf '%s\n' "$livekit_ports" | grep -Fq "${DD_TURN_TLS_PORT} - TURN/TLS" || fail "LiveKit config does not expose TURN/TLS on TCP ${DD_TURN_TLS_PORT}"
+if (( DD_TURN_TLS_PORT > 0 )); then
+  printf '%s\n' "$livekit_ports" | grep -Fq "${DD_TURN_TLS_PORT} - TURN/TLS" || fail "LiveKit config does not expose TURN/TLS on TCP ${DD_TURN_TLS_PORT}"
+fi
 printf '%s\n' "$livekit_ports" | grep -Fq "${DD_TURN_UDP_PORT} - TURN/UDP" || fail "LiveKit config does not expose TURN/UDP on UDP ${DD_TURN_UDP_PORT}"
 
 log "preflight PASS"
 if is_bt_ingress; then
-  log "HUMAN-PENDING: configure BaoTa reverse proxies for API/RTC/Media and verify UDP ${DD_TURN_UDP_PORT}, TCP ${DD_TURN_TLS_PORT}/7881, RTC UDP range, and real cross-carrier/mobile call fallback"
+  log "HUMAN-PENDING: configure BaoTa reverse proxies for API/RTC/Media and verify UDP ${DD_TURN_UDP_PORT}, TCP 7881, RTC UDP range, and real cross-carrier/mobile call fallback; TURN/TLS is intentionally disabled in this mode"
 else
   log "HUMAN-PENDING: verify public DNS, host/cloud firewall, NAT forwarding, UDP 443, TCP 443/7881, RTC UDP range, and real cross-carrier/mobile call fallback from outside this host"
 fi

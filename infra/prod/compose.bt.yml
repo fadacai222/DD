@@ -1,15 +1,32 @@
 # BaoTa / external Nginx coexistence overlay.
 # Keeps host TCP 80/443 owned by the existing Nginx and exposes only loopback
-# HTTP backends plus the public WebRTC/TURN ports required by LiveKit.
+# HTTP backends plus the public WebRTC/TURN-UDP ports required by LiveKit.
 services:
   minio:
     ports:
       - "127.0.0.1:${DD_S3_HOST_PORT:-19000}:9000/tcp"
 
   livekit:
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: ${DD_RTC_UDP_PORT_START:-50000}
+          port_range_end: ${DD_RTC_UDP_PORT_END:-50100}
+          use_external_ip: true
+          skip_external_ip_validation: ${DD_LIVEKIT_SKIP_EXTERNAL_IP_VALIDATION:-false}
+          allow_tcp_fallback: true
+        redis:
+          address: redis:6379
+        turn:
+          enabled: true
+          udp_port: ${DD_TURN_UDP_PORT:-3478}
+          tls_port: 0
+          domain: ${DD_TURN_DOMAIN:?DD_TURN_DOMAIN is required}
+          ttl_seconds: 300
     ports:
       - "127.0.0.1:${DD_LIVEKIT_HOST_PORT:-17880}:7880/tcp"
-      - "${DD_TURN_TLS_PORT:-5349}:${DD_TURN_TLS_PORT:-5349}/tcp"
 
   api:
     ports:
