@@ -356,7 +356,7 @@ TURN/TLS unavailable
 
 当前 realtime 只能在进程活跃/系统允许时可靠收到来电提示。
 
-P10 完成后，离线/后台 Call invite 应通过最小 Push hint 唤醒客户端，再通过正式 Call API 获取真实状态；Push payload 不能成为 Call 状态机本身。
+P10 完成后，离线/后台 Call invite 应通过最小 Push hint 唤醒客户端，再通过正式 Call API 获取真实状态；Push payload 不能成为 Call 状态机本身。正式 `/api/v1/calls` 的 realtime 也遵循同一原则：`event_available` 只作为 availability hint，客户端收到 `call-created/call-updated/call-timeout` 后通过 `/api/v1/calls/active` 恢复权威状态，不能再依赖旧 `/api/calls` 直接发送的 `call.incoming` payload。
 
 ---
 

@@ -11,6 +11,7 @@ DD follows Semantic Versioning for formal releases. Formal Git tags use the exac
 
 ### Changed
 - iOS cloud-client stabilization now retries one safe read after a transient native HTTP disconnect, preserves stored Auth on non-authoritative network failures, adds explicit Messaging recovery, routes personal avatar selection through the native Photos picker, distinguishes contact-required calls from true call-control authorization failures, regenerates iOS AppIcon assets from the canonical DD brand source in both Codemagic workflows, and ensures reject/cancel/hangup terminal call actions persist their chat system message in the same transaction.
+- Formal 1:1 call signaling now treats `event_available` call hints as a trigger to recover authoritative `/api/v1/calls/active` state, so production `/api/v1/calls` incoming calls are no longer silently ignored by the Flutter call controller; `CALL_RINGING` Push payloads and app resume use the same recovery path.
 - Production secret initialization now keeps the host secret directory root-only while making file-backed Compose secrets readable by DD's non-root API/Worker/migrate runtime; `deploy.sh` also verifies mounted-secret readability before touching persistent services.
 - Auth/Push account switching and logout now keep Push endpoint ownership fail-closed: ordinary `401/SESSION_EXPIRED` is not treated as device revocation, stale refresh completions are account/epoch isolated, and local Auth is only forgotten after endpoint deletion or authoritative device revocation is confirmed.
 - CallKit answer/decline/cancel/end uses server-confirmed two-phase action completion; outgoing ringing cancellation maps to `hangup`, incoming decline maps to `reject`, and failed/timed-out actions no longer falsely succeed in the system UI.
@@ -18,7 +19,7 @@ DD follows Semantic Versioning for formal releases. Formal Git tags use the exac
 
 ### Validation
 - Full-history Secret Scan is merge-aware: Git log options emit first-parent merge patches so merge commits are counted instead of being silently omitted while the commit-count guard remains fail closed.
-- U30 integrated local gate after the production-cloud iOS stabilization batch: `dart analyze --fatal-infos` 0 issue; iOS/Push/Media/QR/Calls directed contracts remain green; Flutter full suite 455 PASS / 5 SKIP; `go test ./...` and `go vet ./...` PASS; PostgreSQL 18.4 applied 33 migrations with Auth and Push lifecycle integration PASS; release/native-scan contracts and full-history Secret Scan PASS.
+- U30 integrated local gate after the production-cloud iOS stabilization batch: `dart analyze --fatal-infos` 0 issue; iOS/Push/Media/QR/Calls directed contracts remain green; Flutter full suite 457 PASS / 5 SKIP; `go test ./...` and `go vet ./...` PASS; PostgreSQL 18.4 applied 33 migrations with Auth and Push lifecycle integration PASS; release/native-scan contracts and full-history Secret Scan PASS.
 - Real macOS/Xcode compile/archive, Apple/Firebase signing material, App Store Connect/TestFlight processing, APNs device delivery and iPhone/iPad acceptance remain cloud/secret/human pending.
 
 ## [0.4.0] - 2026-08-12

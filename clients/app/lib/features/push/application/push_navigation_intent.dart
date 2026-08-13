@@ -1,4 +1,4 @@
-enum PushNavigationTarget { conversation, moments, generic, ignored }
+enum PushNavigationTarget { conversation, call, moments, generic, ignored }
 
 final class PushNavigationIntent {
   const PushNavigationIntent({
@@ -27,6 +27,14 @@ final class PushNavigationIntent {
     final conversationId = data['conversationId']?.toString().trim() ?? '';
     final resourceId = data['resourceId']?.toString().trim() ?? '';
 
+    if (eventType == 'CALL_RINGING') {
+      return PushNavigationIntent(
+        target: PushNavigationTarget.call,
+        conversationId: conversationId,
+        resourceId: resourceId,
+        eventType: eventType,
+      );
+    }
     if (eventType.startsWith('MOMENT_')) {
       return PushNavigationIntent(
         target: PushNavigationTarget.moments,

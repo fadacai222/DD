@@ -80,6 +80,22 @@ void main() {
       expect(group.conversationId, 'group-1');
     });
 
+    test('routes incoming call payloads to the call recovery path', () {
+      final call = PushNavigationIntent.fromData(
+        const <String, dynamic>{
+          'eventType': 'CALL_RINGING',
+          'conversationId': 'direct-1',
+          'resourceId': 'call-1',
+          'recipientUserId': currentUserId,
+        },
+        currentUserId: currentUserId,
+      );
+
+      expect(call.target, PushNavigationTarget.call);
+      expect(call.resourceId, 'call-1');
+      expect(call.conversationId, 'direct-1');
+    });
+
     test('routes moment interaction and generic fallback safely', () {
       final moment = PushNavigationIntent.fromData(
         const <String, dynamic>{

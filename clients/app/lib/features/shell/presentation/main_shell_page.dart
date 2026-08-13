@@ -122,6 +122,17 @@ class _MainShellPageState extends State<MainShellPage>
     unawaited(_refreshNotificationPreviewPreference());
     _notificationService = AppNotificationService.shared;
     unawaited(_notificationService.initialize(requestPermission: false));
+    _callMediaController = CallDebugController();
+    _callController = TwoPartyCallController(
+      _callMediaController,
+      accessTokenProvider: () async => widget.session.tokens.accessToken,
+    );
+    _callController.addListener(_handleCallState);
+    _callStartup = _callController.start(
+      apiBaseUrl: widget.origin.toString(),
+      participantIdentity: widget.session.user.id,
+      participantName: widget.session.user.displayName,
+    );
     _pushRegistrationService = PushRegistrationService.shared;
     _pushCallbackOwner = _pushRegistrationService.bindCallbacks(
       onNotificationOpened: _handlePushNotificationOpened,
@@ -152,17 +163,6 @@ class _MainShellPageState extends State<MainShellPage>
         .listen(_momentActivityController.handleRealtimeReason);
     unawaited(_momentActivityController.refresh());
     unawaited(_messagingCoordinator.initialize());
-    _callMediaController = CallDebugController();
-    _callController = TwoPartyCallController(
-      _callMediaController,
-      accessTokenProvider: () async => widget.session.tokens.accessToken,
-    );
-    _callController.addListener(_handleCallState);
-    _callStartup = _callController.start(
-      apiBaseUrl: widget.origin.toString(),
-      participantIdentity: widget.session.user.id,
-      participantName: widget.session.user.displayName,
-    );
   }
 
   @override
@@ -192,6 +192,7 @@ class _MainShellPageState extends State<MainShellPage>
     if (state == AppLifecycleState.resumed) {
       unawaited(_momentActivityController.refresh());
       unawaited(_pushRegistrationService.onAppResumed());
+      unawaited(_recoverCallFromExternalSignal(clearWhenMissing: true));
       _syncNotificationBadge();
     }
   }
@@ -322,6 +323,10 @@ class _MainShellPageState extends State<MainShellPage>
       currentUserId: widget.session.user.id,
     );
     if (intent.target == PushNavigationTarget.ignored) return;
+    if (intent.target == PushNavigationTarget.call) {
+      unawaited(_recoverCallFromExternalSignal());
+      return;
+    }
     if (intent.target == PushNavigationTarget.moments) {
       unawaited(_momentActivityController.refresh());
       return;
@@ -360,6 +365,8 @@ class _MainShellPageState extends State<MainShellPage>
           return;
         }
         _conversationsController.openConversation(conversation.id);
+      case PushNavigationTarget.call:
+        await _recoverCallFromExternalSignal();
       case PushNavigationTarget.moments:
         setState(() => _index = 2);
         await _momentActivityController.refresh();
@@ -371,6 +378,16 @@ class _MainShellPageState extends State<MainShellPage>
       case PushNavigationTarget.ignored:
         return;
     }
+  }
+
+  Future<void> _recoverCallFromExternalSignal({
+    bool clearWhenMissing = false,
+  }) async {
+    final ready = await _callStartup;
+    if (!mounted || !ready) return;
+    await _callController.recoverFromExternalSignal(
+      clearWhenMissing: clearWhenMissing,
+    );
   }
 
   void _syncNotificationBadge() {

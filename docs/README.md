@@ -42,7 +42,7 @@
 
 ## 3. 2026-08-13 当前一句话状态
 
-DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 五条并行支线已经在独立总集成 worktree 合流：iOS 15.0 Platform Foundation、Push/APNs/Auth lease、Media/File/Camera/QR、LiveKit/CallKit/Audio 和 Release/Codemagic 已完成公共 Xcode Sources/`NativeServiceRegistrar`/AppDelegate 接线。本地总门禁为 `dart analyze --fatal-infos` 0 issue、iOS/Push/Media/QR/Calls 定向合同持续通过、Flutter 455 PASS / 5 SKIP、Go test/vet PASS、PostgreSQL 18.4 的 33 migrations + Auth/Push integration PASS、Release/native scan pipeline 与 full-history Secret Scan PASS。**这仍不等于产品 release-green**：真实 macOS/Xcode compile/archive、Apple/Firebase Secret、APNs/TestFlight/iPhone/iPad，以及 Android/Windows 历史真人回归、公网网络、生产签名与 Environment reviewer 仍需项目所有者或真人环境验收。
+DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 五条并行支线已经在独立总集成 worktree 合流：iOS 15.0 Platform Foundation、Push/APNs/Auth lease、Media/File/Camera/QR、LiveKit/CallKit/Audio 和 Release/Codemagic 已完成公共 Xcode Sources/`NativeServiceRegistrar`/AppDelegate 接线。本地总门禁为 `dart analyze --fatal-infos` 0 issue、iOS/Push/Media/QR/Calls 定向合同持续通过、Flutter 457 PASS / 5 SKIP、Go test/vet PASS、PostgreSQL 18.4 的 33 migrations + Auth/Push integration PASS、Release/native scan pipeline 与 full-history Secret Scan PASS。**这仍不等于产品 release-green**：真实 macOS/Xcode compile/archive、Apple/Firebase Secret、APNs/TestFlight/iPhone/iPad，以及 Android/Windows 历史真人回归、公网网络、生产签名与 Environment reviewer 仍需项目所有者或真人环境验收。
 
 当前功能主体：
 

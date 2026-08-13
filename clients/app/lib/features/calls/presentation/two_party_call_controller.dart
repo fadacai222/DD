@@ -105,6 +105,9 @@ final class TwoPartyCallController extends ChangeNotifier {
     return call.peerIdentityFor(_identity);
   }
 
+  Future<void> recoverFromExternalSignal({bool clearWhenMissing = false}) =>
+      _recoverActiveCall(clearWhenMissing: clearWhenMissing);
+
   Future<bool> start({
     required String apiBaseUrl,
     required String participantIdentity,
@@ -317,6 +320,10 @@ final class TwoPartyCallController extends ChangeNotifier {
   }
 
   void _handleRealtimeEvent(RealtimeEvent event) {
+    if (event.type == 'event_available') {
+      _handleAvailabilityHint(event);
+      return;
+    }
     if (event.type != 'call.incoming' && event.type != 'call.updated') return;
     unawaited(
       ClientLog.info(
@@ -343,6 +350,21 @@ final class TwoPartyCallController extends ChangeNotifier {
     } catch (error) {
       _setError('收到无效通话事件：${_safeError(error)}', preserveCall: true);
     }
+  }
+
+  void _handleAvailabilityHint(RealtimeEvent event) {
+    final reason = event.payload['reason']?.toString().trim() ?? '';
+    if (reason != 'call-created' &&
+        reason != 'call-updated' &&
+        reason != 'call-timeout') {
+      return;
+    }
+    unawaited(
+      ClientLog.info(
+        'Call availability hint received: reason=$reason, eventId=${event.eventId}',
+      ),
+    );
+    unawaited(_recoverActiveCall(clearWhenMissing: reason != 'call-created'));
   }
 
   Future<void> _recoverActiveCall({bool clearWhenMissing = false}) async {
