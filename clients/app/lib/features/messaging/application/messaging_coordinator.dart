@@ -83,6 +83,11 @@ final class MessagingCoordinator extends ChangeNotifier {
   bool _busy = false;
   bool _syncing = false;
   bool _disposed = false;
+  bool _initialized = false;
+  bool _forceRealtimeRecoveryPending = false;
+  bool _forcingRealtimeRecovery = false;
+  Future<void>? _initializeInFlight;
+  Future<void>? _recoveryInFlight;
   String? _activeConversationId;
   String? _errorMessage;
 
@@ -236,8 +241,23 @@ final class MessagingCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> initialize() async {
-    if (_disposed) return;
+  Future<void> initialize() {
+    if (_disposed || _initialized) return Future<void>.value();
+    final active = _initializeInFlight;
+    if (active != null) return active;
+
+    late final Future<void> operation;
+    operation = _initializeOnce().whenComplete(() {
+      if (identical(_initializeInFlight, operation)) {
+        _initializeInFlight = null;
+      }
+    });
+    _initializeInFlight = operation;
+    return operation;
+  }
+
+  Future<void> _initializeOnce() async {
+    if (_disposed || _initialized) return;
     _setBusy(true);
     try {
       await _mediaTransfers.restoreHistory();
@@ -250,7 +270,7 @@ final class MessagingCoordinator extends ChangeNotifier {
           ? 'emoji'
           : local.stickerPanelTabKey.trim();
       _heardVoiceMessageIds = List.unmodifiable(local.heardVoiceMessageIds);
-      _eventSubscription = _realtime.events.listen((event) {
+      _eventSubscription ??= _realtime.events.listen((event) {
         if (event.type == 'event_available') {
           final reason = event.payload['reason']?.toString().trim() ?? '';
           if (reason.isNotEmpty && !_eventAvailableReasonController.isClosed) {
@@ -259,13 +279,16 @@ final class MessagingCoordinator extends ChangeNotifier {
           unawaited(syncNow());
         }
       });
-      _stateSubscription = _realtime.states.listen((state) {
-        if (state == RealtimeConnectionState.connected) {
+      _stateSubscription ??= _realtime.states.listen((state) {
+        if (state == RealtimeConnectionState.connected &&
+            _initializeInFlight == null &&
+            _recoveryInFlight == null) {
           unawaited(flushPending());
           unawaited(syncNow());
         }
         _notify();
       });
+      _initialized = true;
       await refreshConversations();
       await flushPending();
       await syncNow();
@@ -281,25 +304,68 @@ final class MessagingCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> recover() async {
-    if (_disposed || _busy) return;
+  Future<void> recover() => _enqueueRecovery(forceRealtimeReconnect: false);
+
+  Future<void> onAppResumed() => _enqueueRecovery(forceRealtimeReconnect: true);
+
+  Future<void> _enqueueRecovery({required bool forceRealtimeReconnect}) {
+    if (_disposed) return Future<void>.value();
+    if (forceRealtimeReconnect && !_forcingRealtimeRecovery) {
+      _forceRealtimeRecoveryPending = true;
+    }
+
+    final initializing = _initializeInFlight;
+    if (initializing != null) {
+      return initializing.then(
+        (_) => _enqueueRecovery(forceRealtimeReconnect: false),
+      );
+    }
+
+    final active = _recoveryInFlight;
+    if (active != null) {
+      return active.then((_) {
+        if (_disposed || !_forceRealtimeRecoveryPending) {
+          return Future<void>.value();
+        }
+        return _enqueueRecovery(forceRealtimeReconnect: false);
+      });
+    }
+
+    late final Future<void> operation;
+    operation = _runRecovery().whenComplete(() {
+      if (identical(_recoveryInFlight, operation)) {
+        _recoveryInFlight = null;
+      }
+    });
+    _recoveryInFlight = operation;
+    return operation;
+  }
+
+  Future<void> _runRecovery() async {
+    if (_disposed) return;
     _setBusy(true);
     _errorMessage = null;
     _notify();
     try {
+      final forceRealtimeReconnect = _forceRealtimeRecoveryPending;
+      _forceRealtimeRecoveryPending = false;
+      _forcingRealtimeRecovery = forceRealtimeReconnect;
+      try {
+        if (forceRealtimeReconnect) {
+          await _realtime.reconnectNow();
+        } else if (_realtime.state == RealtimeConnectionState.disconnected) {
+          await _realtime.connect();
+        }
+      } catch (_) {
+        // REST + cursor sync stay usable even when realtime recovery fails.
+      }
       await refreshConversations();
       await flushPending();
       await syncNow();
-      if (_realtime.state == RealtimeConnectionState.disconnected) {
-        try {
-          await _realtime.connect();
-        } catch (_) {
-          // REST + cursor sync remain usable while realtime reconnects.
-        }
-      }
     } catch (error) {
       _setError(_friendlyError(error));
     } finally {
+      _forcingRealtimeRecovery = false;
       _setBusy(false);
     }
   }

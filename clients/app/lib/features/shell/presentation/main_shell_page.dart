@@ -196,6 +196,7 @@ class _MainShellPageState extends State<MainShellPage>
     _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
       unawaited(_momentActivityController.refresh());
+      unawaited(_messagingCoordinator.onAppResumed());
       unawaited(_pushRegistrationService.onAppResumed());
       unawaited(_recoverCallFromExternalSignal(clearWhenMissing: true));
       _syncNotificationBadge();

@@ -63,7 +63,8 @@ final class RealtimeClient {
   Timer? _heartbeatDeadlineTimer;
   String? _pendingHeartbeatRequestId;
   bool _stopped = true;
-  bool _isConnecting = false;
+  Future<void>? _connectInFlight;
+  Future<void>? _reconnectNowInFlight;
   int _reconnectAttempt = 0;
   RealtimeConnectionState _state = RealtimeConnectionState.disconnected;
 
@@ -102,10 +103,25 @@ final class RealtimeClient {
     return decoded;
   }
 
-  Future<void> connect() async {
+  Future<void> connect() {
     _stopped = false;
     _reconnectTimer?.cancel();
-    await _connectOnce();
+    _reconnectTimer = null;
+    return _startConnectIfNeeded();
+  }
+
+  Future<void> reconnectNow() {
+    final active = _reconnectNowInFlight;
+    if (active != null) return active;
+
+    late final Future<void> operation;
+    operation = _reconnectImmediately().whenComplete(() {
+      if (identical(_reconnectNowInFlight, operation)) {
+        _reconnectNowInFlight = null;
+      }
+    });
+    _reconnectNowInFlight = operation;
+    return operation;
   }
 
   Future<void> disconnect() async {
@@ -142,6 +158,15 @@ final class RealtimeClient {
       await channel.sink.close(status.normalClosure, 'client shutdown');
     }
 
+    final connecting = _connectInFlight;
+    if (connecting != null) {
+      try {
+        await connecting;
+      } catch (_) {
+        // disconnect() already converted the in-flight connect into shutdown.
+      }
+    }
+
     _setState(RealtimeConnectionState.disconnected);
   }
 
@@ -161,6 +186,14 @@ final class RealtimeClient {
 
   Future<void> dispose() async {
     await disconnect();
+    final reconnecting = _reconnectNowInFlight;
+    if (reconnecting != null) {
+      try {
+        await reconnecting;
+      } catch (_) {
+        // Best effort shutdown; no reconnect work may outlive the controllers.
+      }
+    }
     if (_ownsHttpClient) {
       _httpClient.close();
     }
@@ -169,12 +202,69 @@ final class RealtimeClient {
     await _errorController.close();
   }
 
-  Future<void> _connectOnce() async {
-    if (_stopped || _isConnecting) {
-      return;
+  Future<void> _startConnectIfNeeded() {
+    if (_stopped ||
+        (_state == RealtimeConnectionState.connected && _channel != null)) {
+      return Future<void>.value();
+    }
+    final active = _connectInFlight;
+    if (active != null) return active;
+
+    late final Future<void> operation;
+    operation = _connectOnce().whenComplete(() {
+      if (identical(_connectInFlight, operation)) {
+        _connectInFlight = null;
+      }
+    });
+    _connectInFlight = operation;
+    return operation;
+  }
+
+  Future<void> _reconnectImmediately() async {
+    _stopped = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+
+    final connecting = _connectInFlight;
+    if (connecting != null) {
+      try {
+        await connecting;
+      } catch (_) {
+        // The immediate reconnect below is the recovery attempt that matters.
+      }
+      if (_stopped) return;
     }
 
-    _isConnecting = true;
+    _setState(RealtimeConnectionState.connecting);
+    _stopHeartbeat();
+
+    final subscription = _subscription;
+    _subscription = null;
+    final channel = _channel;
+    _channel = null;
+
+    try {
+      await subscription?.cancel();
+    } catch (_) {
+      // A stale channel may fail while its listener is being detached.
+    }
+    if (channel != null) {
+      try {
+        await channel.sink
+            .close(status.normalClosure, 'client resume revalidation')
+            .timeout(const Duration(seconds: 1));
+      } catch (_) {
+        // The stale transport is already detached; do not block recovery on it.
+      }
+    }
+
+    if (_stopped) return;
+    await _startConnectIfNeeded();
+  }
+
+  Future<void> _connectOnce() async {
+    if (_stopped) return;
+
     _setState(RealtimeConnectionState.connecting);
     WebSocketChannel? candidate;
 
@@ -253,7 +343,6 @@ final class RealtimeClient {
       _connectTimeoutTimer?.cancel();
       _connectTimeoutTimer = null;
       _connectReadyCompleter = null;
-      _isConnecting = false;
     }
   }
 
@@ -422,7 +511,7 @@ final class RealtimeClient {
     final delaySeconds = min(30, 1 << exponent);
     _reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
       _reconnectTimer = null;
-      unawaited(_connectOnce());
+      unawaited(_startConnectIfNeeded());
     });
   }
 
