@@ -2748,10 +2748,11 @@
       "SearchUserResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["user", "relationship"],
+        "required": ["user", "relationship", "effectiveDisplayName"],
         "properties": {
           "user": {"$ref": "#/components/schemas/PublicContactUser"},
-          "relationship": {"type": "string", "enum": ["SELF", "NONE", "CONTACT", "PENDING_OUTGOING", "PENDING_INCOMING"]}
+          "relationship": {"type": "string", "enum": ["SELF", "NONE", "CONTACT", "PENDING_OUTGOING", "PENDING_INCOMING"]},
+          "effectiveDisplayName": {"type": "string", "minLength": 1, "maxLength": 80}
         }
       },
       "SearchUserResponse": {
@@ -2761,10 +2762,11 @@
       "MentionSuggestion": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["user", "relationship"],
+        "required": ["user", "relationship", "effectiveDisplayName"],
         "properties": {
           "user": {"$ref": "#/components/schemas/PublicContactUser"},
-          "relationship": {"type": "string", "enum": ["CONVERSATION_PEER", "CONTACT", "NONE"]}
+          "effectiveDisplayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "relationship": {"type": "string", "enum": ["GROUP_MEMBER", "CONVERSATION_PEER", "CONTACT", "NONE"]}
         }
       },
       "MentionSuggestionListData": {
@@ -2896,7 +2898,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative moment display name: private contact remark when available, otherwise public displayName."}
         }
       },
       "MomentComment": {
@@ -3170,7 +3172,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative group preview fallback. Group-member nickname remains a separate higher-priority field when present."}
         }
       },
       "GroupCallUser": {
@@ -3345,7 +3347,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "minLength": 3, "maxLength": 32},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative name for messaging previews. Direct peers prefer the authenticated viewer's private contact remark; group-context previews prefer group nickname, then viewer remark, then public displayName."}
         }
       },
       "MessageEntity": {

@@ -65,13 +65,15 @@ type PublicUser struct {
 }
 
 type SearchResult struct {
-	User         PublicUser `json:"user"`
-	Relationship string     `json:"relationship"`
+	User                 PublicUser `json:"user"`
+	Relationship         string     `json:"relationship"`
+	EffectiveDisplayName string     `json:"effectiveDisplayName"`
 }
 
 type MentionSuggestion struct {
-	User         PublicUser `json:"user"`
-	Relationship string     `json:"relationship"`
+	User                 PublicUser `json:"user"`
+	Relationship         string     `json:"relationship"`
+	EffectiveDisplayName string     `json:"effectiveDisplayName"`
 }
 
 type ContactRequest struct {
@@ -140,11 +142,14 @@ func (service *Service) SearchByHandle(ctx context.Context, principal account.Pr
 	}
 
 	var user PublicUser
+	var effectiveDisplayName string
 	err = service.pool.QueryRow(ctx, `
-		SELECT id, handle_normalized, display_name, bio
-		FROM users
-		WHERE handle_normalized = $1 AND status = 'ACTIVE'
-	`, handle).Scan(&user.ID, &user.Handle, &user.DisplayName, &user.Bio)
+		SELECT u.id,u.handle_normalized,u.display_name,u.bio,
+		       COALESCE(NULLIF(viewer_contact.remark,''),u.display_name)
+		FROM users u
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
+		WHERE u.handle_normalized=$2 AND u.status='ACTIVE'
+	`, principal.UserID, handle).Scan(&user.ID, &user.Handle, &user.DisplayName, &user.Bio, &effectiveDisplayName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SearchResult{}, ErrNotFound
 	}
@@ -156,7 +161,7 @@ func (service *Service) SearchByHandle(ctx context.Context, principal account.Pr
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("parse searched user id: %w", err)
 	}
-	return service.relationshipForUser(ctx, principal, user, targetID)
+	return service.relationshipForUser(ctx, principal, user, targetID, effectiveDisplayName)
 }
 
 func (service *Service) GetUserByID(ctx context.Context, principal account.Principal, userID uuid.UUID) (SearchResult, error) {
@@ -164,18 +169,21 @@ func (service *Service) GetUserByID(ctx context.Context, principal account.Princ
 		return SearchResult{}, ErrNotFound
 	}
 	var user PublicUser
+	var effectiveDisplayName string
 	err := service.pool.QueryRow(ctx, `
-		SELECT id,handle_normalized,display_name,bio
-		FROM users
-		WHERE id=$1 AND status='ACTIVE'
-	`, userID).Scan(&user.ID, &user.Handle, &user.DisplayName, &user.Bio)
+		SELECT u.id,u.handle_normalized,u.display_name,u.bio,
+		       COALESCE(NULLIF(viewer_contact.remark,''),u.display_name)
+		FROM users u
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
+		WHERE u.id=$2 AND u.status='ACTIVE'
+	`, principal.UserID, userID).Scan(&user.ID, &user.Handle, &user.DisplayName, &user.Bio, &effectiveDisplayName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SearchResult{}, ErrNotFound
 	}
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("load public user profile: %w", err)
 	}
-	return service.relationshipForUser(ctx, principal, user, userID)
+	return service.relationshipForUser(ctx, principal, user, userID, effectiveDisplayName)
 }
 
 func (service *Service) SuggestMentions(ctx context.Context, principal account.Principal, rawQuery string, conversationID *uuid.UUID, limit int) ([]MentionSuggestion, error) {
@@ -225,6 +233,7 @@ func (service *Service) SuggestMentions(ctx context.Context, principal account.P
 			WHERE c.id=$3::uuid AND c.type='GROUP'
 		)
 		SELECT u.id::text,u.handle_normalized,u.display_name,u.bio,
+		       COALESCE(NULLIF(gmp.nickname,''),NULLIF(contact.remark,''),u.display_name),
 		       CASE
 		         WHEN cgm.user_id IS NOT NULL THEN 'GROUP_MEMBER'
 		         WHEN cp.user_id IS NOT NULL THEN 'CONVERSATION_PEER'
@@ -236,11 +245,15 @@ func (service *Service) SuggestMentions(ctx context.Context, principal account.P
 		LEFT JOIN current_group_members cgm ON cgm.user_id=u.id
 		LEFT JOIN contacts contact
 		  ON contact.owner_user_id=$1 AND contact.contact_user_id=u.id
+		LEFT JOIN group_member_profiles gmp
+		  ON gmp.conversation_id=$3::uuid AND gmp.user_id=u.id
 		WHERE u.status='ACTIVE'
 		  AND u.id<>$1
 		  AND (
 		    u.handle_normalized LIKE $2 || '%'
 		    OR lower(u.display_name) LIKE '%' || lower($2) || '%'
+		    OR lower(COALESCE(contact.remark,'')) LIKE '%' || lower($2) || '%'
+		    OR lower(COALESCE(gmp.nickname,'')) LIKE '%' || lower($2) || '%'
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1 FROM blocks b
@@ -268,6 +281,7 @@ func (service *Service) SuggestMentions(ctx context.Context, principal account.P
 			&item.User.Handle,
 			&item.User.DisplayName,
 			&item.User.Bio,
+			&item.EffectiveDisplayName,
 			&item.Relationship,
 		); err != nil {
 			return nil, fmt.Errorf("scan mention suggestion: %w", err)
@@ -300,9 +314,9 @@ func normalizeMentionSuggestionQuery(raw string) (string, error) {
 	return query, nil
 }
 
-func (service *Service) relationshipForUser(ctx context.Context, principal account.Principal, user PublicUser, targetID uuid.UUID) (SearchResult, error) {
+func (service *Service) relationshipForUser(ctx context.Context, principal account.Principal, user PublicUser, targetID uuid.UUID, effectiveDisplayName string) (SearchResult, error) {
 	if targetID == principal.UserID {
-		return SearchResult{User: user, Relationship: "SELF"}, nil
+		return SearchResult{User: user, Relationship: "SELF", EffectiveDisplayName: effectiveDisplayName}, nil
 	}
 
 	if blocked, err := service.IsBlockedBetween(ctx, principal.UserID, targetID); err != nil {
@@ -343,7 +357,7 @@ func (service *Service) relationshipForUser(ctx context.Context, principal accou
 	case incomingPending:
 		relationship = "PENDING_INCOMING"
 	}
-	return SearchResult{User: user, Relationship: relationship}, nil
+	return SearchResult{User: user, Relationship: relationship, EffectiveDisplayName: effectiveDisplayName}, nil
 }
 
 func (service *Service) SendRequest(ctx context.Context, principal account.Principal, raw SendRequestInput) (ContactRequest, error) {

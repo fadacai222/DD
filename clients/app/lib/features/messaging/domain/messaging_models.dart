@@ -1,3 +1,5 @@
+import '../../../shared/identity/effective_display_name.dart' as identity;
+
 final class MessagingUserPreview {
   const MessagingUserPreview({
     required this.id,
@@ -15,6 +17,9 @@ final class MessagingUserPreview {
   final String id;
   final String handle;
   final String displayName;
+
+  String get effectiveDisplayName =>
+      identity.effectiveDisplayName(displayName: displayName, handle: handle);
 }
 
 final class MessagingGroupPreview {

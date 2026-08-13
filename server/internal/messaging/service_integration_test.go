@@ -37,12 +37,13 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 	}
 	alice, aliceDevice := insertMessagingTestUser(t, ctx, pool, "ma"+suffix, "Alice")
 	bob, bobDevice := insertMessagingTestUser(t, ctx, pool, "mb"+suffix, "Bob")
+	carol, carolDevice := insertMessagingTestUser(t, ctx, pool, "mc"+suffix, "Carol")
 	eve, eveDevice := insertMessagingTestUser(t, ctx, pool, "me"+suffix, "Eve")
-	userIDs := []uuid.UUID{alice, bob, eve}
+	userIDs := []uuid.UUID{alice, bob, carol, eve}
 	defer cleanupMessagingUsers(t, pool, userIDs)
 
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO contacts(owner_user_id,contact_user_id) VALUES ($1,$2),($2,$1)
+		INSERT INTO contacts(owner_user_id,contact_user_id,remark) VALUES ($1,$2,'Boss'),($2,$1,'')
 	`, alice, bob); err != nil {
 		t.Fatalf("create contacts: %v", err)
 	}
@@ -54,6 +55,7 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 	}
 	alicePrincipal := account.Principal{UserID: alice, DeviceID: aliceDevice}
 	bobPrincipal := account.Principal{UserID: bob, DeviceID: bobDevice}
+	carolPrincipal := account.Principal{UserID: carol, DeviceID: carolDevice}
 	evePrincipal := account.Principal{UserID: eve, DeviceID: eveDevice}
 
 	// P4-002: concurrent direct-conversation creation must converge to one logical row.
@@ -93,6 +95,50 @@ func TestMessagingLifecycleWithPostgres(t *testing.T) {
 	var conversationCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE direct_pair_key=$1`, directPairKey(alice, bob)).Scan(&conversationCount); err != nil || conversationCount != 1 {
 		t.Fatalf("direct conversation count=%d err=%v", conversationCount, err)
+	}
+
+	aliceConversation, err := service.GetConversation(ctx, alicePrincipal, conversationUUID)
+	if err != nil || aliceConversation.Peer == nil || aliceConversation.Peer.DisplayName != "Boss" {
+		t.Fatalf("alice viewer-relative peer=%#v err=%v", aliceConversation.Peer, err)
+	}
+	bobViewerConversation, err := service.GetConversation(ctx, bobPrincipal, conversationUUID)
+	if err != nil || bobViewerConversation.Peer == nil || bobViewerConversation.Peer.DisplayName != "Alice" {
+		t.Fatalf("bob must not see alice private remark peer=%#v err=%v", bobViewerConversation.Peer, err)
+	}
+	carolConversation, err := service.EnsureDirectConversation(ctx, carolPrincipal, bob)
+	if err != nil || carolConversation.Peer == nil || carolConversation.Peer.DisplayName != "Bob" {
+		t.Fatalf("carol without remark must see public bob peer=%#v err=%v", carolConversation.Peer, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='New Boss',updated_at=now() WHERE owner_user_id=$1 AND contact_user_id=$2`, alice, bob); err != nil {
+		t.Fatalf("update alice remark: %v", err)
+	}
+	aliceConversation, err = service.GetConversation(ctx, alicePrincipal, conversationUUID)
+	if err != nil || aliceConversation.Peer == nil || aliceConversation.Peer.DisplayName != "New Boss" {
+		t.Fatalf("updated remark not reflected peer=%#v err=%v", aliceConversation.Peer, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='',updated_at=now() WHERE owner_user_id=$1 AND contact_user_id=$2`, alice, bob); err != nil {
+		t.Fatalf("clear alice remark: %v", err)
+	}
+	aliceConversation, err = service.GetConversation(ctx, alicePrincipal, conversationUUID)
+	if err != nil || aliceConversation.Peer == nil || aliceConversation.Peer.DisplayName != "Bob" {
+		t.Fatalf("empty remark must fall back to public name peer=%#v err=%v", aliceConversation.Peer, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO contacts(owner_user_id,contact_user_id,remark) VALUES($1,$2,'Temporary')`, carol, bob); err != nil {
+		t.Fatalf("create carol contact remark: %v", err)
+	}
+	carolConversation, err = service.GetConversation(ctx, carolPrincipal, uuid.MustParse(carolConversation.ID))
+	if err != nil || carolConversation.Peer == nil || carolConversation.Peer.DisplayName != "Temporary" {
+		t.Fatalf("carol remark not reflected peer=%#v err=%v", carolConversation.Peer, err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM contacts WHERE owner_user_id=$1 AND contact_user_id=$2`, carol, bob); err != nil {
+		t.Fatalf("delete carol contact: %v", err)
+	}
+	carolConversation, err = service.GetConversation(ctx, carolPrincipal, uuid.MustParse(carolConversation.ID))
+	if err != nil || carolConversation.Peer == nil || carolConversation.Peer.DisplayName != "Bob" {
+		t.Fatalf("deleted contact must fall back to public name peer=%#v err=%v", carolConversation.Peer, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='Boss',updated_at=now() WHERE owner_user_id=$1 AND contact_user_id=$2`, alice, bob); err != nil {
+		t.Fatalf("restore alice remark: %v", err)
 	}
 
 	// P4-005: 100 retries with the same device/clientMessageId must all return one message.

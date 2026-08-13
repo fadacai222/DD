@@ -321,7 +321,7 @@ func (service *Service) LeaveGroupCall(
 	if err := tx.Commit(ctx); err != nil {
 		return GroupCall{}, nil, fmt.Errorf("commit leave group call: %w", err)
 	}
-	call, err := service.loadGroupCall(ctx, groupID, callID)
+	call, err := service.loadGroupCall(ctx, principal.UserID, groupID, callID)
 	return call, recipients, err
 }
 
@@ -353,22 +353,24 @@ func (service *Service) GetGroupCall(
 	if err := service.requireActiveGroupMember(ctx, groupID, principal.UserID); err != nil {
 		return GroupCall{}, err
 	}
-	return service.loadGroupCall(ctx, groupID, callID)
+	return service.loadGroupCall(ctx, principal.UserID, groupID, callID)
 }
 
 func (service *Service) loadGroupCall(
 	ctx context.Context,
-	groupID, callID uuid.UUID,
+	viewerID, groupID, callID uuid.UUID,
 ) (GroupCall, error) {
 	var call GroupCall
 	var startedByID, startedByHandle, startedByName string
 	if err := service.pool.QueryRow(ctx, `
 		SELECT s.id::text,s.conversation_id::text,s.kind,s.status,
-		       u.id::text,u.handle_normalized,u.display_name,s.started_at,s.max_participants
+		       u.id::text,u.handle_normalized,COALESCE(NULLIF(gmp.nickname,''),NULLIF(viewer_contact.remark,''),u.display_name),s.started_at,s.max_participants
 		FROM group_call_sessions s
 		JOIN users u ON u.id=s.started_by_user_id
+		LEFT JOIN group_member_profiles gmp ON gmp.conversation_id=s.conversation_id AND gmp.user_id=u.id
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$3 AND viewer_contact.contact_user_id=u.id
 		WHERE s.id=$1 AND s.conversation_id=$2
-	`, callID, groupID).Scan(
+	`, callID, groupID, viewerID).Scan(
 		&call.ID,
 		&call.GroupID,
 		&call.Kind,
@@ -385,12 +387,12 @@ func (service *Service) loadGroupCall(
 	}
 	call.StartedBy = UserPreview{ID: startedByID, Handle: startedByHandle, DisplayName: startedByName}
 	rows, err := service.pool.Query(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name,p.joined_at
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF((SELECT nickname FROM group_member_profiles WHERE conversation_id=$3 AND user_id=u.id),''),NULLIF((SELECT remark FROM contacts WHERE owner_user_id=$2 AND contact_user_id=u.id),''),u.display_name),p.joined_at
 		FROM group_call_participants p
 		JOIN users u ON u.id=p.user_id
 		WHERE p.session_id=$1 AND p.left_at IS NULL
 		ORDER BY p.joined_at ASC,u.id ASC
-	`, callID)
+	`, callID, viewerID, groupID)
 	if err != nil {
 		return GroupCall{}, fmt.Errorf("list group call participants: %w", err)
 	}

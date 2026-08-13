@@ -64,12 +64,17 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 	if _, err := expireOverdueForUsersTx(ctx, tx, []uuid.UUID{principal.UserID, calleeID}, now); err != nil {
 		return Call{}, err
 	}
-	var callerName, calleeName string
+	var callerName, calleeName, callerNameForCallee string
 	if err := tx.QueryRow(ctx, `
-		SELECT caller.display_name,callee.display_name
-		FROM users caller, users callee
-		WHERE caller.id=$1 AND caller.status='ACTIVE' AND callee.id=$2 AND callee.status='ACTIVE'
-	`, principal.UserID, calleeID).Scan(&callerName, &calleeName); errors.Is(err, pgx.ErrNoRows) {
+		SELECT caller.display_name,
+		       COALESCE(NULLIF(caller_contact.remark,''),callee.display_name),
+		       COALESCE(NULLIF(callee_contact.remark,''),caller.display_name)
+		FROM users caller
+		JOIN users callee ON callee.id=$2 AND callee.status='ACTIVE'
+		LEFT JOIN contacts caller_contact ON caller_contact.owner_user_id=$1 AND caller_contact.contact_user_id=$2
+		LEFT JOIN contacts callee_contact ON callee_contact.owner_user_id=$2 AND callee_contact.contact_user_id=$1
+		WHERE caller.id=$1 AND caller.status='ACTIVE'
+	`, principal.UserID, calleeID).Scan(&callerName, &calleeName, &callerNameForCallee); errors.Is(err, pgx.ErrNoRows) {
 		return Call{}, ErrNotFound
 	} else if err != nil {
 		return Call{}, fmt.Errorf("load call participants: %w", err)
@@ -132,7 +137,7 @@ func (service *Service) Create(ctx context.Context, principal account.Principal,
 		"callId":         callID.String(),
 		"conversationId": conversationID.String(),
 		"callerUserId":   principal.UserID.String(),
-		"callerName":     callerName,
+		"callerName":     callerNameForCallee,
 		"kind":           kind,
 	})
 	if err != nil {
@@ -168,12 +173,16 @@ func (service *Service) GetActive(ctx context.Context, principal account.Princip
 		return nil, err
 	}
 	row := service.pool.QueryRow(ctx, `
-		SELECT c.id::text,c.room_name,c.caller_user_id::text,caller.display_name,
-		       c.callee_user_id::text,callee.display_name,c.kind,c.status,c.created_at,
-		       c.accepted_at,c.ended_at,COALESCE(c.end_reason,''),c.ring_expires_at
+		SELECT c.id::text,c.room_name,c.caller_user_id::text,
+		       COALESCE(NULLIF(viewer_caller.remark,''),caller.display_name),
+		       c.callee_user_id::text,
+		       COALESCE(NULLIF(viewer_callee.remark,''),callee.display_name),
+		       c.kind,c.status,c.created_at,c.accepted_at,c.ended_at,COALESCE(c.end_reason,''),c.ring_expires_at
 		FROM calls c
 		JOIN users caller ON caller.id=c.caller_user_id
 		JOIN users callee ON callee.id=c.callee_user_id
+		LEFT JOIN contacts viewer_caller ON viewer_caller.owner_user_id=$1 AND viewer_caller.contact_user_id=c.caller_user_id
+		LEFT JOIN contacts viewer_callee ON viewer_callee.owner_user_id=$1 AND viewer_callee.contact_user_id=c.callee_user_id
 		WHERE (
 		  c.status='ringing' AND (
 		    (c.caller_user_id=$1 AND c.caller_device_id=$2)
@@ -283,7 +292,7 @@ func (service *Service) ApplyAction(ctx context.Context, principal account.Princ
 			return Call{}, err
 		}
 	}
-	call, err := service.scanCall(tx.QueryRow(ctx, callSelectByIDSQL, callID))
+	call, err := service.scanCall(tx.QueryRow(ctx, callSelectByIDSQL, callID, principal.UserID))
 	if err != nil {
 		return Call{}, fmt.Errorf("load call after action: %w", err)
 	}
@@ -307,7 +316,7 @@ func (service *Service) AuthorizeToken(ctx context.Context, principal account.Pr
 		}
 		return TokenAuthorization{}, ErrConflict
 	}
-	call, err := service.scanCall(service.pool.QueryRow(ctx, callSelectByIDSQL, callID))
+	call, err := service.scanCall(service.pool.QueryRow(ctx, callSelectByIDSQL, callID, principal.UserID))
 	if err != nil {
 		return TokenAuthorization{}, fmt.Errorf("load call token context: %w", err)
 	}
@@ -346,7 +355,7 @@ func (service *Service) Timeout(ctx context.Context, callID uuid.UUID) (Call, bo
 	if err := writeCallSystemMessageTx(ctx, tx, callID, state, "timeout", now); err != nil {
 		return Call{}, false, err
 	}
-	call, err := service.scanCall(tx.QueryRow(ctx, callSelectByIDSQL, callID))
+	call, err := service.scanCall(tx.QueryRow(ctx, callSelectByIDSQL, callID, state.callerUserID))
 	if err != nil {
 		return Call{}, false, fmt.Errorf("load timed out call: %w", err)
 	}
@@ -414,12 +423,16 @@ func (service *Service) scanCall(row pgx.Row) (Call, error) {
 }
 
 const callSelectByIDSQL = `
-	SELECT c.id::text,c.room_name,c.caller_user_id::text,caller.display_name,
-	       c.callee_user_id::text,callee.display_name,c.kind,c.status,c.created_at,
+	SELECT c.id::text,c.room_name,c.caller_user_id::text,
+	       COALESCE(NULLIF(viewer_caller.remark,''),caller.display_name),
+	       c.callee_user_id::text,
+	       COALESCE(NULLIF(viewer_callee.remark,''),callee.display_name),c.kind,c.status,c.created_at,
 	       c.accepted_at,c.ended_at,COALESCE(c.end_reason,''),c.ring_expires_at
 	FROM calls c
 	JOIN users caller ON caller.id=c.caller_user_id
 	JOIN users callee ON callee.id=c.callee_user_id
+	LEFT JOIN contacts viewer_caller ON viewer_caller.owner_user_id=$2 AND viewer_caller.contact_user_id=c.caller_user_id
+	LEFT JOIN contacts viewer_callee ON viewer_callee.owner_user_id=$2 AND viewer_callee.contact_user_id=c.callee_user_id
 	WHERE c.id=$1
 `
 

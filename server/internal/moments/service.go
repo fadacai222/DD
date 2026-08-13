@@ -116,12 +116,14 @@ func (service *Service) GetActivitySummary(ctx context.Context, principal accoun
 	rows, err := service.pool.Query(ctx, `
 		WITH visible_activity AS (
 		  SELECT activity.id,activity.kind,
-		         actor.id AS actor_id,actor.handle_normalized,actor.display_name,
+		         actor.id AS actor_id,actor.handle_normalized,
+		         COALESCE(NULLIF(viewer_contact.remark,''),actor.display_name) AS display_name,
 		         activity.moment_id,activity.source_comment_id,
 		         COALESCE(mc.text,'') AS comment_text,activity.created_at,activity.read_at
 		  FROM moment_activity_notifications activity
 		  JOIN moments moment ON moment.id=activity.moment_id AND moment.status='ACTIVE'
 		  JOIN users actor ON actor.id=activity.actor_user_id AND actor.status='ACTIVE'
+		  LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=actor.id
 		  LEFT JOIN moment_comments mc ON mc.id=activity.source_comment_id AND mc.deleted_at IS NULL
 		  WHERE activity.recipient_user_id=$1
 		    AND `+momentVisibilitySQL("moment", "$1")+`
@@ -244,10 +246,12 @@ func (service *Service) Get(ctx context.Context, principal account.Principal, mo
 	var result Moment
 	var authorID uuid.UUID
 	if err := service.pool.QueryRow(ctx, `
-		SELECT m.id::text,m.author_user_id,u.handle_normalized,u.display_name,m.text,m.visibility,m.created_at,
+		SELECT m.id::text,m.author_user_id,u.handle_normalized,
+		       COALESCE(NULLIF(viewer_author.remark,''),u.display_name),m.text,m.visibility,m.created_at,
 		       EXISTS(SELECT 1 FROM moment_likes ml WHERE ml.moment_id=m.id AND ml.user_id=$2)
 		FROM moments m
 		JOIN users u ON u.id=m.author_user_id AND u.status='ACTIVE'
+		LEFT JOIN contacts viewer_author ON viewer_author.owner_user_id=$2 AND viewer_author.contact_user_id=u.id
 		WHERE m.id=$1 AND m.status='ACTIVE' AND `+momentVisibilitySQL("m", "$2"), momentID, principal.UserID).Scan(
 		&result.ID,
 		&authorID,
@@ -285,9 +289,10 @@ func (service *Service) Get(ctx context.Context, principal account.Principal, mo
 	}
 
 	likeRows, err := service.pool.Query(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name)
 		FROM moment_likes ml
 		JOIN users u ON u.id=ml.user_id AND u.status='ACTIVE'
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2::uuid AND viewer_contact.contact_user_id=u.id
 		WHERE ml.moment_id=$1
 		  AND ($2::uuid=$3::uuid OR u.id=$2::uuid OR u.id=$3::uuid OR EXISTS(
 		    SELECT 1 FROM contacts c WHERE c.owner_user_id=$2::uuid AND c.contact_user_id=u.id
@@ -316,7 +321,7 @@ func (service *Service) Get(ctx context.Context, principal account.Principal, mo
 	}
 
 	commentRows, err := service.pool.Query(ctx, `
-		SELECT mc.id::text,u.id::text,u.handle_normalized,u.display_name,
+		SELECT mc.id::text,u.id::text,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name),
 		       CASE WHEN mc.reply_to_comment_id IS NOT NULL AND EXISTS(
 		         SELECT 1 FROM moment_comments reply
 		         JOIN users reply_user ON reply_user.id=reply.author_user_id AND reply_user.status='ACTIVE'
@@ -331,6 +336,7 @@ func (service *Service) Get(ctx context.Context, principal account.Principal, mo
 		       mc.text,mc.created_at
 		FROM moment_comments mc
 		JOIN users u ON u.id=mc.author_user_id AND u.status='ACTIVE'
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2::uuid AND viewer_contact.contact_user_id=u.id
 		WHERE mc.moment_id=$1 AND mc.deleted_at IS NULL
 		  AND ($2::uuid=$3::uuid OR u.id=$2::uuid OR u.id=$3::uuid OR EXISTS(
 		    SELECT 1 FROM contacts c WHERE c.owner_user_id=$2::uuid AND c.contact_user_id=u.id
@@ -625,7 +631,7 @@ func (service *Service) SetPreference(ctx context.Context, principal account.Pri
 	defer tx.Rollback(ctx)
 	var target UserPreview
 	if err := tx.QueryRow(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF(c.remark,''),u.display_name)
 		FROM users u
 		JOIN contacts c ON c.owner_user_id=$1 AND c.contact_user_id=u.id
 		WHERE u.id=$2 AND u.status='ACTIVE'
@@ -656,11 +662,12 @@ func (service *Service) SetPreference(ctx context.Context, principal account.Pri
 
 func (service *Service) ListPreferences(ctx context.Context, principal account.Principal) ([]Preference, error) {
 	rows, err := service.pool.Query(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name,p.hide_target,p.hide_from_target,p.updated_at
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name),p.hide_target,p.hide_from_target,p.updated_at
 		FROM moment_relationship_preferences p
 		JOIN users u ON u.id=p.target_user_id AND u.status='ACTIVE'
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
 		WHERE p.owner_user_id=$1
-		ORDER BY lower(u.display_name),u.id
+		ORDER BY lower(COALESCE(NULLIF(viewer_contact.remark,''),u.display_name)),u.id
 	`, principal.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("list moment preferences: %w", err)
@@ -688,7 +695,7 @@ func (service *Service) GetProfile(ctx context.Context, principal account.Princi
 	var profile Profile
 	var canView bool
 	err := service.pool.QueryRow(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name,
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name),
 		       COALESCE(u.moment_cover_media_id::text,''),u.moment_cover_revision,
 		       (u.id=$1 OR (
 		         EXISTS(SELECT 1 FROM contacts c WHERE c.owner_user_id=$1 AND c.contact_user_id=u.id)
@@ -697,6 +704,7 @@ func (service *Service) GetProfile(ctx context.Context, principal account.Princi
 		         AND NOT EXISTS(SELECT 1 FROM moment_relationship_preferences p WHERE p.owner_user_id=u.id AND p.target_user_id=$1 AND p.hide_from_target=true)
 		       ))
 		FROM users u
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
 		WHERE u.id=$2 AND u.status='ACTIVE'
 	`, principal.UserID, targetID).Scan(
 		&profile.User.ID,

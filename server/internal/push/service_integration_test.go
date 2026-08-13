@@ -105,6 +105,9 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 	`, messageID, conversationID, senderID, senderDevice, `{"text":"hello from push"}`, now); err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO contacts(owner_user_id,contact_user_id,remark) VALUES($1,$2,'Push Alice')`, recipientID, senderID); err != nil {
+		t.Fatalf("seed recipient-private sender remark: %v", err)
+	}
 	foreignDedupe := "push-foreign:" + suffix
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO push_jobs(recipient_user_id,event_type,resource_id,conversation_id,actor_user_id,dedupe_key,payload_json,status,available_at,created_at)
@@ -133,7 +136,7 @@ func TestPushLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("processed=%d deliveries=%d", processed, len(provider.deliveries))
 	}
 	delivery := provider.deliveries[0]
-	if delivery.Title != "Alice" || delivery.Body != "hello from push" || delivery.ConversationID != conversationID.String() {
+	if delivery.Title != "Push Alice" || delivery.Body != "hello from push" || delivery.ConversationID != conversationID.String() {
 		t.Fatalf("delivery=%+v", delivery)
 	}
 	if delivery.Badge != 1 || delivery.Data["badge"] != "1" || delivery.Data["recipientUserId"] != recipientID.String() || delivery.Data["previewMode"] != PreviewFull {

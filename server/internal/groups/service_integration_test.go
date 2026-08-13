@@ -70,6 +70,23 @@ func TestGroupLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("unexpected created group: %+v", created)
 	}
 	assertGroupConversationState(t, ctx, pool, groupID, "GROUP", 3)
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='Boss' WHERE owner_user_id=$1 AND contact_user_id=$2`, alice, bob); err != nil {
+		t.Fatalf("set alice private group-member remark: %v", err)
+	}
+	aliceMembers, err := service.ListMembers(ctx, principals[alice], groupID)
+	if err != nil {
+		t.Fatalf("alice list members: %v", err)
+	}
+	if member := groupMemberByID(aliceMembers, bob); member == nil || member.User.DisplayName != "Boss" {
+		t.Fatalf("alice group member preview must use private remark: %#v", member)
+	}
+	carolMembers, err := service.ListMembers(ctx, principals[carol], groupID)
+	if err != nil {
+		t.Fatalf("carol list members: %v", err)
+	}
+	if member := groupMemberByID(carolMembers, bob); member == nil || member.User.DisplayName != "Group Bob" {
+		t.Fatalf("carol must not see alice private remark: %#v", member)
+	}
 
 	if _, err := service.Get(ctx, principals[eve], groupID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("non-member get err=%v want ErrNotFound", err)
@@ -89,6 +106,13 @@ func TestGroupLifecycleWithPostgres(t *testing.T) {
 	if err != nil || bobMember.Nickname != nickname {
 		t.Fatalf("set nickname member=%+v err=%v", bobMember, err)
 	}
+	aliceMembers, err = service.ListMembers(ctx, principals[alice], groupID)
+	if err != nil {
+		t.Fatalf("alice list members after nickname: %v", err)
+	}
+	if member := groupMemberByID(aliceMembers, bob); member == nil || member.Nickname != "Bobby" || member.User.DisplayName != "Boss" {
+		t.Fatalf("group nickname and viewer remark must remain distinct: %#v", member)
+	}
 	otherNickname := "forced"
 	if _, err := service.UpdateMember(ctx, principals[bob], groupID, carol, UpdateMemberInput{Nickname: &otherNickname}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("admin changing another nickname err=%v want forbidden", err)
@@ -104,6 +128,16 @@ func TestGroupLifecycleWithPostgres(t *testing.T) {
 	}
 	if !hasEntityType(adminMessage.Message.Content, "MENTION_ALL") {
 		t.Fatalf("admin @all must bind MENTION_ALL: %+v", adminMessage.Message.Content)
+	}
+	aliceGroupConversation, err := messagingService.GetConversation(ctx, principals[alice], groupID)
+	if err != nil || aliceGroupConversation.LastMessageSender == nil || aliceGroupConversation.LastMessageSender.DisplayName != "Bobby" {
+		t.Fatalf("group sender priority must be nickname > remark > public sender=%#v err=%v", aliceGroupConversation.LastMessageSender, err)
+	}
+	if aliceGroupConversation.Group == nil {
+		t.Fatal("alice group conversation missing group preview")
+	}
+	if member := messagingPreviewByID(aliceGroupConversation.Group.AvatarMembers, bob); member == nil || member.DisplayName != "Bobby" {
+		t.Fatalf("group avatar member priority must be nickname > remark > public: %#v", member)
 	}
 	memberMessage, err := messagingService.SendMessage(ctx, principals[carol], groupID, messaging.SendMessageInput{
 		ClientMessageID: "group-member-0001",
@@ -206,6 +240,24 @@ func TestGroupLifecycleWithPostgres(t *testing.T) {
 	if groupSyncEvents == 0 {
 		t.Fatal("expected durable GROUP sync events")
 	}
+}
+
+func messagingPreviewByID(items []messaging.UserPreview, userID uuid.UUID) *messaging.UserPreview {
+	for index := range items {
+		if items[index].ID == userID.String() {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func groupMemberByID(items []GroupMember, userID uuid.UUID) *GroupMember {
+	for index := range items {
+		if items[index].User.ID == userID.String() {
+			return &items[index]
+		}
+	}
+	return nil
 }
 
 func hasEntityType(content *messaging.TextContent, entityType string) bool {
