@@ -354,6 +354,11 @@ final class TwoPartyCallController extends ChangeNotifier {
 
   void _handleAvailabilityHint(RealtimeEvent event) {
     final reason = event.payload['reason']?.toString().trim() ?? '';
+    handleRealtimeReason(reason, eventId: event.eventId);
+  }
+
+  void handleRealtimeReason(String rawReason, {int eventId = 0}) {
+    final reason = rawReason.trim();
     if (reason != 'call-created' &&
         reason != 'call-updated' &&
         reason != 'call-timeout') {
@@ -361,7 +366,7 @@ final class TwoPartyCallController extends ChangeNotifier {
     }
     unawaited(
       ClientLog.info(
-        'Call availability hint received: reason=$reason, eventId=${event.eventId}',
+        'Call availability hint received: reason=$reason, eventId=$eventId',
       ),
     );
     unawaited(_recoverActiveCall(clearWhenMissing: reason != 'call-created'));

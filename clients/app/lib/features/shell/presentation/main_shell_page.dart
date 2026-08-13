@@ -160,9 +160,14 @@ class _MainShellPageState extends State<MainShellPage>
     _momentActivityController.addListener(_syncNotificationBadge);
     _eventAvailableReasonSubscription = _messagingCoordinator
         .eventAvailableReasons
-        .listen(_momentActivityController.handleRealtimeReason);
+        .listen(_handleEventAvailableReason);
     unawaited(_momentActivityController.refresh());
     unawaited(_messagingCoordinator.initialize());
+  }
+
+  void _handleEventAvailableReason(String reason) {
+    _momentActivityController.handleRealtimeReason(reason);
+    _callController.handleRealtimeReason(reason);
   }
 
   @override

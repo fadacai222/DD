@@ -46,6 +46,33 @@ void main() {
     expect(controller.isIncoming, isTrue);
   });
 
+  test('shared realtime call-created reason recovers an incoming ringing call', () async {
+    final api = _FakeCallSessionApi();
+    final controller = TwoPartyCallController(
+      _FakeCallMedia(),
+      api: api,
+      signalingFactory: ({required apiBaseUri, required participantIdentity}) =>
+          _FakeSignalingClient(),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.start(
+      apiBaseUrl: 'http://127.0.0.1:18473',
+      participantIdentity: 'bob',
+      participantName: 'Bob',
+    );
+    expect(controller.currentCall, isNull);
+    expect(api.fetchActiveCount, 1);
+
+    api.activeCall = api.ringingCall;
+    controller.handleRealtimeReason('call-created');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(api.fetchActiveCount, 2);
+    expect(controller.currentCall?.id, api.ringingCall.id);
+    expect(controller.isIncoming, isTrue);
+  });
+
   testWidgets('incoming call does not overflow on a short Android viewport', (
     tester,
   ) async {

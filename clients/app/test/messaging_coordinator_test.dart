@@ -539,6 +539,51 @@ void main() {
     expect(gateway.markedReads, [('conversation-1', 1)]);
   });
 
+  test('durable CALL_RINGING sync surfaces call recovery', () async {
+    final gateway = _FakeMessagingGateway()
+      ..syncPages.add(
+        SyncPage(
+          items: [
+            SyncEventItem(
+              eventId: 'event-call-ring-1',
+              cursor: 1,
+              type: 'CALL_RINGING',
+              resourceId: 'call-1',
+              conversationId: 'conversation-1',
+              occurredAt: DateTime.utc(2026, 8, 14),
+            ),
+          ],
+          nextCursor: 1,
+          hasMore: false,
+        ),
+      );
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-call-sync',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-call-sync',
+      gateway: gateway,
+      localStore: _MemoryMessagingStore(),
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+
+    final reasonFuture = coordinator.eventAvailableReasons.first;
+    await coordinator.syncNow();
+    expect(
+      await reasonFuture.timeout(const Duration(seconds: 1)),
+      'call-created',
+    );
+  });
+
   test('targeted block relationship event is surfaced immediately', () async {
     final gateway = _FakeMessagingGateway()
       ..syncPages.add(

@@ -841,6 +841,10 @@ final class MessagingCoordinator extends ChangeNotifier {
           if (conversationId != null && conversationId.isNotEmpty) {
             changedConversations.add(conversationId);
           }
+          if (event.type == 'CALL_RINGING' &&
+              !_eventAvailableReasonController.isClosed) {
+            _eventAvailableReasonController.add('call-created');
+          }
           if (event.type == 'RELATIONSHIP_BLOCKED_BY_PEER' &&
               !_relationshipController.isClosed) {
             _relationshipController.add(
