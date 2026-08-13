@@ -147,13 +147,11 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("unexpected targeted block event type=%s target=%s payload=%s", blockEventType, blockTarget, blockPayload)
 	}
 	assertRelationshipCount(t, ctx, pool, `SELECT count(*) FROM contacts WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob, 0)
-	blockedByPeer, err := service.SearchByHandle(ctx, alicePrincipal, bobHandle)
-	if err != nil || blockedByPeer.Relationship != "BLOCKED_BY_PEER" {
-		t.Fatalf("blocked-by-peer search=%#v err=%v", blockedByPeer, err)
+	if _, err := service.SearchByHandle(ctx, alicePrincipal, bobHandle); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("blocked-by-peer search must preserve block privacy with ErrNotFound, err=%v", err)
 	}
-	blockedByMe, err := service.SearchByHandle(ctx, bobPrincipal, aliceHandle)
-	if err != nil || blockedByMe.Relationship != "BLOCKED_BY_ME" {
-		t.Fatalf("blocked-by-me search=%#v err=%v", blockedByMe, err)
+	if _, err := service.SearchByHandle(ctx, bobPrincipal, aliceHandle); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("blocked-by-me search must preserve block privacy with ErrNotFound, err=%v", err)
 	}
 	if _, err := service.SendRequest(ctx, alicePrincipal, SendRequestInput{TargetHandle: bobHandle}); !errors.Is(err, ErrBlocked) {
 		t.Fatalf("blocked request should fail explicitly, error=%v", err)
