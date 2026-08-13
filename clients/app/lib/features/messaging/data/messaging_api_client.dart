@@ -54,6 +54,8 @@ abstract interface class MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   });
 
@@ -319,8 +321,13 @@ final class MessagingApiClient implements MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) async {
+    if (livePhoto != (livePhotoMotionMediaId?.trim().isNotEmpty == true)) {
+      throw const FormatException('Live Photo paired media is incomplete');
+    }
     final response = await _authorized(
       origin,
       '/api/v1/conversations/$conversationId/messages',
@@ -329,7 +336,14 @@ final class MessagingApiClient implements MessagingGateway {
       body: {
         'clientMessageId': clientMessageId,
         'type': 'IMAGE',
-        'content': {'mediaId': mediaId, 'width': width, 'height': height},
+        'content': {
+          'mediaId': mediaId,
+          'width': width,
+          'height': height,
+          if (livePhoto) 'livePhoto': true,
+          if (livePhotoMotionMediaId?.trim().isNotEmpty == true)
+            'livePhotoMotionMediaId': livePhotoMotionMediaId!.trim(),
+        },
         'replyToMessageId': ?replyToMessageId,
       },
     );

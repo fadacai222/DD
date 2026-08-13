@@ -53,6 +53,30 @@ void main() {
     expect(content.mentionedUserIds, isEmpty);
   });
 
+  test('IMAGE Live Photo preserves paired motion metadata while legacy IMAGE degrades safely', () {
+    final live = TextMessageContent.fromJson({
+      'mediaId': 'media-still-1',
+      'livePhoto': true,
+      'livePhotoMotionMediaId': 'media-motion-1',
+      'width': 3024,
+      'height': 4032,
+    });
+    final legacy = TextMessageContent.fromJson({
+      'mediaId': 'media-still-2',
+      'width': 1080,
+      'height': 1440,
+    });
+
+    expect(live.isImage, isTrue);
+    expect(live.isLivePhoto, isTrue);
+    expect(live.livePhotoMotionMediaId, 'media-motion-1');
+    expect(live.hasLivePhotoMotion, isTrue);
+    expect(legacy.isImage, isTrue);
+    expect(legacy.isLivePhoto, isFalse);
+    expect(legacy.livePhotoMotionMediaId, isNull);
+    expect(legacy.hasLivePhotoMotion, isFalse);
+  });
+
   test('VIDEO message preserves poster metadata and edit fields', () {
     final message = ChatMessage.fromJson({
       'id': 'message-video-1',
@@ -124,6 +148,26 @@ void main() {
     expect(conversation.canWrite, isTrue);
     expect(conversation.latestUnreadMentionMessageId, 'message-mention-9');
     expect(conversation.latestUnreadMentionSequence, 9);
+  });
+
+  test('pending Live Photo IMAGE preserves pair across persistence', () {
+    final pending = PendingTextMessage.fromJson({
+      'clientMessageId': 'pending-live-0001',
+      'conversationId': 'conversation-1',
+      'type': 'IMAGE',
+      'mediaId': 'media-still-1',
+      'livePhoto': true,
+      'livePhotoMotionMediaId': 'media-motion-1',
+      'width': 3024,
+      'height': 4032,
+      'createdAt': '2026-08-14T03:00:00Z',
+    });
+
+    expect(pending.isImage, isTrue);
+    expect(pending.livePhoto, isTrue);
+    expect(pending.livePhotoMotionMediaId, 'media-motion-1');
+    expect(pending.toJson()['livePhoto'], isTrue);
+    expect(pending.toJson()['livePhotoMotionMediaId'], 'media-motion-1');
   });
 
   test('pending VIDEO survives persistence and is classified as media', () {

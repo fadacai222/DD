@@ -100,7 +100,7 @@ func TestDataRightsLifecycleWithPostgres(t *testing.T) {
 	principal1 := account.Principal{UserID: user1, DeviceID: device1}
 	principal2 := account.Principal{UserID: user2, DeviceID: device2}
 
-	conversationID, groupID, privateMediaID, privateObjectKey := seedDataRightsBusinessData(t, ctx, pool, user1, device1, user2, device2, now, suffix)
+	conversationID, groupID, privateMediaID, privateObjectKey, sharedMotionMediaID := seedDataRightsBusinessData(t, ctx, pool, user1, device1, user2, device2, now, suffix)
 	_ = conversationID
 
 	firstExport, err := service.RequestExport(ctx, principal1, "export-"+suffix)
@@ -227,8 +227,7 @@ func TestDataRightsLifecycleWithPostgres(t *testing.T) {
 	if mentionRows != 0 {
 		t.Fatalf("account deletion left %d durable mention rows", mentionRows)
 	}
-	t.Log("durable mention rows removed during account deletion")
-	if _, err := authService.AuthenticateAccessToken(ctx, access.Raw); !errors.Is(err, account.ErrUnauthorized) {
+	if _, err := authService.AuthenticateAccessToken(ctx, access.Raw); !errors.Is(err, account.ErrUnauthorized) && !errors.Is(err, account.ErrDeviceSessionRevoked) {
 		t.Fatalf("deleted account access token error=%v", err)
 	}
 	var activeDevices, refreshTokens, pushEndpoints, moments, passwords int
@@ -281,6 +280,13 @@ func TestDataRightsLifecycleWithPostgres(t *testing.T) {
 	}
 	if messageCount == 0 {
 		t.Fatal("shared messages should be retained and attributed to anonymized Deleted Account identity")
+	}
+	var retainedMotionRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_objects WHERE id=$1 AND owner_user_id IS NULL`, sharedMotionMediaID).Scan(&retainedMotionRows); err != nil {
+		t.Fatal(err)
+	}
+	if retainedMotionRows != 1 {
+		t.Fatalf("shared Live Photo motion rows=%d want=1 after account deletion", retainedMotionRows)
 	}
 	var privateMediaRows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_objects WHERE id=$1`, privateMediaID).Scan(&privateMediaRows); err != nil {
@@ -335,7 +341,7 @@ func insertDataRightsTestUser(t *testing.T, ctx context.Context, pool *pgxpool.P
 	return userID, deviceID
 }
 
-func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool.Pool, user1, device1, user2, device2 uuid.UUID, now time.Time, suffix string) (uuid.UUID, uuid.UUID, uuid.UUID, string) {
+func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool.Pool, user1, device1, user2, device2 uuid.UUID, now time.Time, suffix string) (uuid.UUID, uuid.UUID, uuid.UUID, string, uuid.UUID) {
 	t.Helper()
 	conversationID := uuid.New()
 	pair := user1.String() + ":" + user2.String()
@@ -345,8 +351,18 @@ func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool
 	if _, err := pool.Exec(ctx, `INSERT INTO conversation_members(conversation_id,user_id,role,status,joined_at) VALUES($1,$2,'MEMBER','ACTIVE',$4),($1,$3,'MEMBER','ACTIVE',$4)`, conversationID, user1, user2, now); err != nil {
 		t.Fatal(err)
 	}
+	sharedStillMediaID := uuid.New()
+	sharedMotionMediaID := uuid.New()
+	stillDigest := sha256.Sum256([]byte("u12-shared-live-still-" + suffix))
+	motionDigest := sha256.Sum256([]byte("u12-shared-live-motion-" + suffix))
+	if _, err := pool.Exec(ctx, `INSERT INTO media_objects(id,owner_user_id,storage_key,original_name,mime_type,size_bytes,sha256,purpose,status,encryption_mode,created_at,ready_at) VALUES($1,$3,$4,'shared-live.heic','image/heic',4000,$6,'CHAT_IMAGE','READY','NONE',$8,$8),($2,$3,$5,'shared-live.mov','video/quicktime',8000,$7,'CHAT_VIDEO','READY','NONE',$8,$8)`, sharedStillMediaID, sharedMotionMediaID, user1, "chat-image/u12/"+sharedStillMediaID.String(), "chat-video/u12/"+sharedMotionMediaID.String(), fmt.Sprintf("%x", stillDigest[:]), fmt.Sprintf("%x", motionDigest[:]), now); err != nil {
+		t.Fatal(err)
+	}
 	messageID := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at) VALUES($1,$2,1,$3,$4,$5,'TEXT',$6::jsonb,$7)`, messageID, conversationID, user1, device1, "u12-msg-"+suffix, `{"text":"retained shared message"}`, now); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at) VALUES($1,$2,1,$3,$4,$5,'IMAGE',jsonb_build_object('mediaId',$6::text,'livePhoto',true,'livePhotoMotionMediaId',$7::text,'width',3024,'height',4032),$8)`, messageID, conversationID, user1, device1, "u12-msg-"+suffix, sharedStillMediaID, sharedMotionMediaID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO message_media(message_id,media_id,role,created_at) VALUES($1,$2,'PRIMARY',$4),($1,$3,'MOTION',$4)`, messageID, sharedStillMediaID, sharedMotionMediaID, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -360,6 +376,7 @@ func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool
 	if _, err := pool.Exec(ctx, `INSERT INTO groups(conversation_id,name,created_by_user_id,status,created_at,updated_at) VALUES($1,'U12 Group',$2,'ACTIVE',$3,$3)`, groupID, user1, now); err != nil {
 		t.Fatal(err)
 	}
+
 	groupMessageID := uuid.New()
 	groupContent := fmt.Sprintf(`{"text":"@u1 retained mention","entities":[{"type":"MENTION","offset":0,"length":3,"userId":"%s","handle":"u1"}]}`, user1)
 	if _, err := pool.Exec(ctx, `INSERT INTO messages(id,conversation_id,sequence,sender_user_id,sender_device_id,client_message_id,type,content_json,created_at) VALUES($1,$2,1,$3,$4,$5,'TEXT',$6::jsonb,$7)`, groupMessageID, groupID, user2, device2, "u12-mention-"+suffix, groupContent, now); err != nil {
@@ -394,7 +411,7 @@ func seedDataRightsBusinessData(t *testing.T, ctx context.Context, pool *pgxpool
 	if _, err := pool.Exec(ctx, `INSERT INTO calls(caller_user_id,callee_user_id,caller_device_id,conversation_id,room_name,kind,status,created_at,ring_expires_at) VALUES($1,$2,$3,$4,$5,'audio','ringing',$6,$7)`, user1, user2, device1, conversationID, "u12-call-"+suffix, now, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	return conversationID, groupID, privateMediaID, privateObjectKey
+	return conversationID, groupID, privateMediaID, privateObjectKey, sharedMotionMediaID
 }
 
 func findArtifactByRequestID(t *testing.T, store *integrationArtifactStore, requestID string) []byte {

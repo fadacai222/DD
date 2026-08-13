@@ -20,6 +20,15 @@ void main() {
     expect(picker, contains('UIDocumentPickerViewController'));
     expect(picker, contains('PHPickerViewController'));
     expect(picker, contains('loadFileRepresentation'));
+    expect(picker, contains('provider.canLoadObject(ofClass: PHLivePhoto.self)'));
+    expect(picker, contains('PHAssetResource.assetResources(for: livePhoto)'));
+    expect(picker, contains('.pairedVideo'));
+    expect(picker, contains('.fullSizePairedVideo'));
+    expect(picker, contains('PHAssetResourceManager.default().writeData'));
+    expect(picker, contains('LIVE_PHOTO_COMPONENT_COPY_FAILED'));
+    expect(picker, contains('self.removeCachedFiles(from: still)'));
+    expect(picker, contains('LIVE_PHOTO_TOO_LARGE'));
+    expect(picker, contains('totalSize > maxBytes'));
     expect(picker, contains('FileManager.default.copyItem'));
     expect(picker, isNot(contains('Data(contentsOf:')));
     expect(picker, isNot(contains('readAsBytes')));

@@ -3438,6 +3438,8 @@
           "entities": {"type": "array", "maxItems": 64, "readOnly": true, "items": {"$ref": "#/components/schemas/MessageEntity"}, "description": "Server-generated structured entities. Client-supplied entity bindings are ignored and mentions are rebound from text."},
           "mediaId": {"type": "string", "format": "uuid"},
           "posterMediaId": {"type": "string", "format": "uuid", "description": "Poster/thumbnail media for VIDEO messages."},
+          "livePhoto": {"type": "boolean", "description": "True only for IMAGE messages that preserve an iOS Live Photo motion component."},
+          "livePhotoMotionMediaId": {"type": "string", "format": "uuid", "description": "Paired CHAT_VIDEO media for a Live Photo IMAGE; requires livePhoto=true and a distinct still mediaId."},
           "width": {"type": "integer", "minimum": 1, "maximum": 20000},
           "height": {"type": "integer", "minimum": 1, "maximum": 20000},
           "fileName": {"type": "string", "maxLength": 255, "readOnly": true},

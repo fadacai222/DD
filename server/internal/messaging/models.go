@@ -55,16 +55,18 @@ type MessageEntity struct {
 }
 
 type TextContent struct {
-	Text          string          `json:"text,omitempty"`
-	Entities      []MessageEntity `json:"entities,omitempty"`
-	MediaID       string          `json:"mediaId,omitempty"`
-	PosterMediaID string          `json:"posterMediaId,omitempty"`
-	Width         int             `json:"width,omitempty"`
-	Height        int             `json:"height,omitempty"`
-	FileName      string          `json:"fileName,omitempty"`
-	MIMEType      string          `json:"mimeType,omitempty"`
-	SizeBytes     int64           `json:"sizeBytes,omitempty"`
-	DurationMS    int             `json:"durationMs,omitempty"`
+	Text                   string          `json:"text,omitempty"`
+	Entities               []MessageEntity `json:"entities,omitempty"`
+	MediaID                string          `json:"mediaId,omitempty"`
+	PosterMediaID          string          `json:"posterMediaId,omitempty"`
+	LivePhoto              bool            `json:"livePhoto,omitempty"`
+	LivePhotoMotionMediaID string          `json:"livePhotoMotionMediaId,omitempty"`
+	Width                  int             `json:"width,omitempty"`
+	Height                 int             `json:"height,omitempty"`
+	FileName               string          `json:"fileName,omitempty"`
+	MIMEType               string          `json:"mimeType,omitempty"`
+	SizeBytes              int64           `json:"sizeBytes,omitempty"`
+	DurationMS             int             `json:"durationMs,omitempty"`
 }
 
 type Message struct {
@@ -253,6 +255,21 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		if input.Content.Text != "" || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 {
 			return SendMessageInput{}, ErrInvalidInput
 		}
+		if input.Type == "IMAGE" {
+			hasMotion := strings.TrimSpace(input.Content.LivePhotoMotionMediaID) != ""
+			if input.Content.LivePhoto != hasMotion {
+				return SendMessageInput{}, ErrInvalidInput
+			}
+			if input.Content.LivePhoto {
+				motionMediaID, err := normalizeMediaID(input.Content.LivePhotoMotionMediaID)
+				if err != nil || motionMediaID == mediaID {
+					return SendMessageInput{}, ErrInvalidInput
+				}
+				input.Content.LivePhotoMotionMediaID = motionMediaID
+			}
+		} else if input.Content.LivePhoto || input.Content.LivePhotoMotionMediaID != "" {
+			return SendMessageInput{}, ErrInvalidInput
+		}
 		if input.Type == "STICKER_PACK" && input.Content.PosterMediaID != "" {
 			return SendMessageInput{}, ErrInvalidInput
 		}
@@ -262,7 +279,7 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		if err != nil {
 			return SendMessageInput{}, err
 		}
-		if input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 {
+		if input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.DurationMS != 0 || input.Content.LivePhoto || input.Content.LivePhotoMotionMediaID != "" {
 			return SendMessageInput{}, ErrInvalidInput
 		}
 		input.Content.MediaID = mediaID
@@ -271,7 +288,7 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 		if err != nil {
 			return SendMessageInput{}, err
 		}
-		if input.Content.DurationMS < 250 || input.Content.DurationMS > 10*60*1000 || input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.PosterMediaID != "" {
+		if input.Content.DurationMS < 250 || input.Content.DurationMS > 10*60*1000 || input.Content.Text != "" || input.Content.Width != 0 || input.Content.Height != 0 || input.Content.FileName != "" || input.Content.MIMEType != "" || input.Content.SizeBytes != 0 || input.Content.PosterMediaID != "" || input.Content.LivePhoto || input.Content.LivePhotoMotionMediaID != "" {
 			return SendMessageInput{}, ErrInvalidInput
 		}
 		input.Content.MediaID = mediaID
@@ -288,7 +305,8 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 			input.Content.Height < 1 || input.Content.Height > 20000 ||
 			input.Content.DurationMS < 1 || input.Content.DurationMS > 24*60*60*1000 ||
 			input.Content.Text != "" || input.Content.FileName != "" ||
-			input.Content.MIMEType != "" || input.Content.SizeBytes != 0 {
+			input.Content.MIMEType != "" || input.Content.SizeBytes != 0 ||
+			input.Content.LivePhoto || input.Content.LivePhotoMotionMediaID != "" {
 			return SendMessageInput{}, ErrInvalidInput
 		}
 		input.Content.MediaID = mediaID
@@ -305,7 +323,7 @@ func normalizeSendInput(input SendMessageInput) (SendMessageInput, error) {
 }
 
 func hasMediaFields(content *TextContent) bool {
-	return content.MediaID != "" || content.PosterMediaID != "" || content.Width != 0 || content.Height != 0 || content.FileName != "" || content.MIMEType != "" || content.SizeBytes != 0 || content.DurationMS != 0
+	return content.MediaID != "" || content.PosterMediaID != "" || content.LivePhoto || content.LivePhotoMotionMediaID != "" || content.Width != 0 || content.Height != 0 || content.FileName != "" || content.MIMEType != "" || content.SizeBytes != 0 || content.DurationMS != 0
 }
 
 func normalizeMediaID(raw string) (string, error) {

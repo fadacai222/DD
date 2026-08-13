@@ -101,6 +101,8 @@ final class TextMessageContent {
     this.text = '',
     this.mediaId,
     this.posterMediaId,
+    this.livePhoto = false,
+    this.livePhotoMotionMediaId,
     this.width,
     this.height,
     this.fileName,
@@ -118,6 +120,10 @@ final class TextMessageContent {
     posterMediaId: json['posterMediaId'] is String
         ? json['posterMediaId'] as String
         : null,
+    livePhoto: json['livePhoto'] == true,
+    livePhotoMotionMediaId: json['livePhotoMotionMediaId'] is String
+        ? json['livePhotoMotionMediaId'] as String
+        : null,
     width: json['width'] is int ? json['width'] as int : null,
     height: json['height'] is int ? json['height'] as int : null,
     fileName: json['fileName'] is String ? json['fileName'] as String : null,
@@ -130,6 +136,8 @@ final class TextMessageContent {
   final String text;
   final String? mediaId;
   final String? posterMediaId;
+  final bool livePhoto;
+  final String? livePhotoMotionMediaId;
   final int? width;
   final int? height;
   final String? fileName;
@@ -163,6 +171,9 @@ final class TextMessageContent {
       height! > 0;
 
   bool get hasMedia => mediaId != null && mediaId!.isNotEmpty;
+  bool get isLivePhoto => livePhoto && hasLivePhotoMotion;
+  bool get hasLivePhotoMotion =>
+      livePhotoMotionMediaId != null && livePhotoMotionMediaId!.isNotEmpty;
   bool get hasVideoPoster =>
       posterMediaId != null &&
       posterMediaId!.isNotEmpty &&
@@ -495,6 +506,8 @@ final class PendingTextMessage {
     this.text = '',
     this.mediaId,
     this.posterMediaId,
+    this.livePhoto = false,
+    this.livePhotoMotionMediaId,
     this.width,
     this.height,
     this.fileName,
@@ -518,6 +531,10 @@ final class PendingTextMessage {
     posterMediaId: json['posterMediaId'] is String
         ? json['posterMediaId'] as String
         : null,
+    livePhoto: json['livePhoto'] == true,
+    livePhotoMotionMediaId: json['livePhotoMotionMediaId'] is String
+        ? json['livePhotoMotionMediaId'] as String
+        : null,
     width: json['width'] is int ? json['width'] as int : null,
     height: json['height'] is int ? json['height'] as int : null,
     fileName: json['fileName'] is String ? json['fileName'] as String : null,
@@ -537,6 +554,8 @@ final class PendingTextMessage {
   final String text;
   final String? mediaId;
   final String? posterMediaId;
+  final bool livePhoto;
+  final String? livePhotoMotionMediaId;
   final int? width;
   final int? height;
   final String? fileName;
@@ -570,6 +589,8 @@ final class PendingTextMessage {
     text: text,
     mediaId: mediaId,
     posterMediaId: posterMediaId,
+    livePhoto: livePhoto,
+    livePhotoMotionMediaId: livePhotoMotionMediaId,
     width: width,
     height: height,
     fileName: fileName,
@@ -588,6 +609,9 @@ final class PendingTextMessage {
     if (text.isNotEmpty) 'text': text,
     if (mediaId != null) 'mediaId': mediaId,
     if (posterMediaId != null) 'posterMediaId': posterMediaId,
+    if (livePhoto) 'livePhoto': true,
+    if (livePhotoMotionMediaId != null)
+      'livePhotoMotionMediaId': livePhotoMotionMediaId,
     if (width != null) 'width': width,
     if (height != null) 'height': height,
     if (fileName != null) 'fileName': fileName,

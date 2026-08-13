@@ -2712,6 +2712,8 @@ final class _ChatGateway implements MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) async {
     final message = ChatMessage(
@@ -2724,6 +2726,8 @@ final class _ChatGateway implements MessagingGateway {
       type: 'IMAGE',
       content: TextMessageContent(
         mediaId: mediaId,
+        livePhoto: livePhoto,
+        livePhotoMotionMediaId: livePhotoMotionMediaId,
         width: width,
         height: height,
       ),

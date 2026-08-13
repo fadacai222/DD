@@ -471,13 +471,17 @@ final class MessagingCoordinator extends ChangeNotifier {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) async {
     if (mediaId.trim().isEmpty ||
         width < 1 ||
         width > 20000 ||
         height < 1 ||
-        height > 20000) {
+        height > 20000 ||
+        livePhoto != (livePhotoMotionMediaId?.trim().isNotEmpty == true) ||
+        (livePhoto && livePhotoMotionMediaId!.trim() == mediaId.trim())) {
       throw const FormatException('图片消息参数无效。');
     }
     final pending = PendingTextMessage(
@@ -485,6 +489,8 @@ final class MessagingCoordinator extends ChangeNotifier {
       conversationId: conversationId,
       type: 'IMAGE',
       mediaId: mediaId.trim(),
+      livePhoto: livePhoto,
+      livePhotoMotionMediaId: livePhotoMotionMediaId?.trim(),
       width: width,
       height: height,
       createdAt: DateTime.now().toUtc(),
@@ -587,6 +593,8 @@ final class MessagingCoordinator extends ChangeNotifier {
             type: item.type,
             text: item.text,
             mediaId: item.mediaId,
+            livePhoto: item.livePhoto,
+            livePhotoMotionMediaId: item.livePhotoMotionMediaId,
             width: item.width,
             height: item.height,
             fileName: item.fileName,
@@ -994,6 +1002,8 @@ final class MessagingCoordinator extends ChangeNotifier {
             mediaId: mediaId,
             width: width,
             height: height,
+            livePhoto: pending.livePhoto,
+            livePhotoMotionMediaId: pending.livePhotoMotionMediaId,
             replyToMessageId: pending.replyToMessageId,
           ),
         );

@@ -117,6 +117,7 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 
 	var primaryMediaID *uuid.UUID
 	var thumbnailMediaID *uuid.UUID
+	var livePhotoMotionMediaID *uuid.UUID
 	if mediaPurpose, ok := mediaPurposeForMessageType(input.Type); ok {
 		parsedMediaID := uuid.MustParse(input.Content.MediaID)
 		var originalName string
@@ -168,6 +169,40 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 		input.Content.MIMEType = mimeType
 		input.Content.SizeBytes = sizeBytes
 		primaryMediaID = &parsedMediaID
+
+		if input.Type == "IMAGE" && input.Content.LivePhoto {
+			parsedMotionID := uuid.MustParse(input.Content.LivePhotoMotionMediaID)
+			var motionErr error
+			if input.forwardSourceID != nil {
+				motionErr = tx.QueryRow(ctx, `
+					SELECT mo.id
+					FROM media_objects mo
+					JOIN message_media mm ON mm.media_id=mo.id AND mm.role='MOTION'
+					JOIN messages source ON source.id=mm.message_id
+					JOIN conversation_members cm ON cm.conversation_id=source.conversation_id
+					WHERE mo.id=$1 AND mo.status='READY' AND mo.purpose='CHAT_VIDEO' AND mo.deleted_at IS NULL
+					  AND source.id=$3 AND source.recalled_at IS NULL AND source.deleted_at IS NULL
+					  AND cm.user_id=$2 AND cm.status='ACTIVE'
+					  AND NOT EXISTS(
+						SELECT 1 FROM message_local_deletions d
+						WHERE d.user_id=$2 AND d.message_id=source.id
+					  )
+				`, parsedMotionID, principal.UserID, *input.forwardSourceID).Scan(&parsedMotionID)
+			} else {
+				motionErr = tx.QueryRow(ctx, `
+					SELECT id FROM media_objects
+					WHERE id=$1 AND owner_user_id=$2 AND status='READY'
+					  AND purpose='CHAT_VIDEO' AND deleted_at IS NULL
+				`, parsedMotionID, principal.UserID).Scan(&parsedMotionID)
+			}
+			if errors.Is(motionErr, pgx.ErrNoRows) {
+				return SendResult{}, ErrForbidden
+			}
+			if motionErr != nil {
+				return SendResult{}, fmt.Errorf("authorize Live Photo motion media: %w", motionErr)
+			}
+			livePhotoMotionMediaID = &parsedMotionID
+		}
 
 		if input.Type == "STICKER_PACK" {
 			if input.forwardSourceID != nil {
@@ -293,6 +328,14 @@ func (service *Service) sendMessageOnce(ctx context.Context, principal account.P
 			VALUES($1,$2,'THUMBNAIL',$3)
 		`, messageID, *thumbnailMediaID, now); err != nil {
 			return SendResult{}, fmt.Errorf("attach message thumbnail: %w", err)
+		}
+	}
+	if livePhotoMotionMediaID != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_media(message_id,media_id,role,created_at)
+			VALUES($1,$2,'MOTION',$3)
+		`, messageID, *livePhotoMotionMediaID, now); err != nil {
+			return SendResult{}, fmt.Errorf("attach Live Photo motion media: %w", err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_message_id=$2 WHERE id=$1`, conversationID, messageID); err != nil {

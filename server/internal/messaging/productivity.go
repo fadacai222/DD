@@ -353,7 +353,21 @@ func forwardableContent(source Message) (*TextContent, error) {
 			Text:     content.Text,
 			Entities: cloneMessageEntities(content.Entities),
 		}, nil
-	case "IMAGE", "GIF", "STICKER", "STICKER_PACK":
+	case "IMAGE":
+		if content.MediaID == "" || content.Width <= 0 || content.Height <= 0 {
+			return nil, ErrConflict
+		}
+		if content.LivePhoto != (content.LivePhotoMotionMediaID != "") {
+			return nil, ErrConflict
+		}
+		return &TextContent{
+			MediaID:                content.MediaID,
+			LivePhoto:              content.LivePhoto,
+			LivePhotoMotionMediaID: content.LivePhotoMotionMediaID,
+			Width:                  content.Width,
+			Height:                 content.Height,
+		}, nil
+	case "GIF", "STICKER", "STICKER_PACK":
 		if content.MediaID == "" || content.Width <= 0 || content.Height <= 0 {
 			return nil, ErrConflict
 		}

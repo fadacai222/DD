@@ -951,6 +951,8 @@ final class _ConversationGateway implements MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) => throw UnimplementedError();
 

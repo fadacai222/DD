@@ -976,6 +976,8 @@ final class _FakeMessagingGateway implements MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) async {
     if (failNextSend) {

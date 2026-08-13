@@ -82,6 +82,11 @@ func TestOpenAPIIncludesMessageEditingAndVideoContracts(t *testing.T) {
 	if _, ok := contentProperties["posterMediaId"]; !ok {
 		t.Fatal("OpenAPI MessageContent must include posterMediaId for VIDEO")
 	}
+	for _, property := range []string{"livePhoto", "livePhotoMotionMediaId"} {
+		if _, ok := contentProperties[property]; !ok {
+			t.Fatalf("OpenAPI MessageContent must include %s for Live Photo IMAGE", property)
+		}
+	}
 	entities := mustMap(t, contentProperties["entities"], "MessageContent.entities")
 	if entities["readOnly"] != true {
 		t.Fatal("OpenAPI MessageContent.entities must be server-authoritative/readOnly")
