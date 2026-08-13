@@ -32,16 +32,59 @@ workflows:
       - name: Install CocoaPods dependencies when present
         script: find ios -name "Podfile" -execdir pod install \;
       - name: Build unsigned iOS Release app
-        script: flutter build ios --release --no-codesign
+        script: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          attempt=1
+          while true; do
+            log="$(mktemp)"
+            set +e
+            flutter build ios --release --no-codesign --no-pub 2>&1 | tee "$log"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 0 ]; then
+              rm -f "$log"
+              break
+            fi
+            if [ "$attempt" -ge 3 ] || ! grep -Eiq 'downloadError|could not connect to server|unable to connect to server|could not resolve host|connection reset|network connection was lost|timed out|failed to download|RPC failed' "$log"; then
+              rm -f "$log"
+              exit "$status"
+            fi
+            echo "Transient SwiftPM/network download failure; retrying iOS build ($attempt/3)..." >&2
+            rm -f "$log"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
       - name: Validate unsigned Release archive
         script: |
-          xcodebuild archive \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -sdk iphoneos \
-            -archivePath build/ios/DD-unsigned.xcarchive \
-            CODE_SIGNING_ALLOWED=NO
+          #!/usr/bin/env bash
+          set -euo pipefail
+          attempt=1
+          while true; do
+            log="$(mktemp)"
+            set +e
+            xcodebuild archive \
+              -workspace ios/Runner.xcworkspace \
+              -scheme Runner \
+              -configuration Release \
+              -sdk iphoneos \
+              -archivePath build/ios/DD-unsigned.xcarchive \
+              CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$log"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 0 ]; then
+              rm -f "$log"
+              break
+            fi
+            if [ "$attempt" -ge 3 ] || ! grep -Eiq 'downloadError|could not connect to server|unable to connect to server|could not resolve host|connection reset|network connection was lost|timed out|failed to download|RPC failed' "$log"; then
+              rm -f "$log"
+              exit "$status"
+            fi
+            echo "Transient SwiftPM/network download failure; retrying unsigned archive ($attempt/3)..." >&2
+            rm -f "$log"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
       - name: Package unsigned IPA for manual re-signing
         script: |
           set -euo pipefail
