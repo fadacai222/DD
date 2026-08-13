@@ -16,13 +16,18 @@ import (
 )
 
 type Service struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool      *pgxpool.Pool
+	now       func() time.Time
+	groupCall groupCallConfig
 }
 
 type Config struct {
-	Pool *pgxpool.Pool
-	Now  func() time.Time
+	Pool                     *pgxpool.Pool
+	Now                      func() time.Time
+	LiveKitURL               string
+	LiveKitAPIKey            string
+	LiveKitAPISecret         string
+	GroupCallMaxParticipants int
 }
 
 func NewService(config Config) (*Service, error) {
@@ -33,7 +38,16 @@ func NewService(config Config) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{pool: config.Pool, now: now}, nil
+	return &Service{
+		pool: config.Pool,
+		now:  now,
+		groupCall: newGroupCallConfig(
+			config.LiveKitURL,
+			config.LiveKitAPIKey,
+			config.LiveKitAPISecret,
+			config.GroupCallMaxParticipants,
+		),
+	}, nil
 }
 
 func (service *Service) Create(ctx context.Context, principal account.Principal, raw CreateGroupInput) (Group, error) {

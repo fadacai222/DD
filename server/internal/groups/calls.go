@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,10 +44,33 @@ type GroupCallJoin struct {
 	Token      string    `json:"token"`
 }
 
+type groupCallConfig struct {
+	media           groupCallMediaConfig
+	maxParticipants int
+}
+
 type groupCallMediaConfig struct {
 	url       string
 	apiKey    string
 	apiSecret string
+}
+
+func newGroupCallConfig(liveKitURL, liveKitAPIKey, liveKitAPISecret string, maxParticipants int) groupCallConfig {
+	return groupCallConfig{
+		media: groupCallMediaConfig{
+			url:       strings.TrimSpace(liveKitURL),
+			apiKey:    strings.TrimSpace(liveKitAPIKey),
+			apiSecret: strings.TrimSpace(liveKitAPISecret),
+		},
+		maxParticipants: normalizeGroupCallParticipantLimit(maxParticipants),
+	}
+}
+
+func (config groupCallConfig) runtime() (groupCallMediaConfig, error) {
+	if config.media.url == "" || config.media.apiKey == "" || config.media.apiSecret == "" {
+		return groupCallMediaConfig{}, ErrGroupCallUnavailable
+	}
+	return config.media, nil
 }
 
 func (service *Service) StartGroupCall(
@@ -62,11 +83,11 @@ func (service *Service) StartGroupCall(
 	if kind != "AUDIO" && kind != "VIDEO" {
 		return GroupCallJoin{}, nil, ErrInvalidInput
 	}
-	mediaConfig, err := loadGroupCallMediaConfig()
+	mediaConfig, err := service.groupCall.runtime()
 	if err != nil {
 		return GroupCallJoin{}, nil, err
 	}
-	maxParticipants := groupCallParticipantLimit()
+	maxParticipants := service.groupCall.maxParticipants
 	now := service.now().UTC()
 	tx, err := service.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -145,7 +166,7 @@ func (service *Service) JoinGroupCall(
 	principal account.Principal,
 	groupID, callID uuid.UUID,
 ) (GroupCallJoin, []uuid.UUID, error) {
-	mediaConfig, err := loadGroupCallMediaConfig()
+	mediaConfig, err := service.groupCall.runtime()
 	if err != nil {
 		return GroupCallJoin{}, nil, err
 	}
@@ -727,26 +748,9 @@ func writeGroupCallSystemMessageTx(
 	return nil
 }
 
-func loadGroupCallMediaConfig() (groupCallMediaConfig, error) {
-	config := groupCallMediaConfig{
-		url:       strings.TrimSpace(os.Getenv("LIVEKIT_URL")),
-		apiKey:    strings.TrimSpace(os.Getenv("LIVEKIT_API_KEY")),
-		apiSecret: strings.TrimSpace(os.Getenv("LIVEKIT_API_SECRET")),
-	}
-	if config.url == "" || config.apiKey == "" || config.apiSecret == "" {
-		return groupCallMediaConfig{}, ErrGroupCallUnavailable
-	}
-	return config, nil
-}
-
-func groupCallParticipantLimit() int {
+func normalizeGroupCallParticipantLimit(value int) int {
 	const defaultLimit = 32
-	raw := strings.TrimSpace(os.Getenv("DD_GROUP_CALL_MAX_PARTICIPANTS"))
-	if raw == "" {
-		return defaultLimit
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 2 || value > MaximumGroupMembers {
+	if value < 2 || value > MaximumGroupMembers {
 		return defaultLimit
 	}
 	return value

@@ -33,6 +33,7 @@ import (
 	"example.com/selfhosted-im/server/internal/qrcode"
 	"example.com/selfhosted-im/server/internal/realtimebus"
 	"example.com/selfhosted-im/server/internal/stickers"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var version = "dev"
@@ -122,7 +123,7 @@ func main() {
 			os.Exit(2)
 		}
 		authService = accountService
-		groupService, groupErr := groups.NewService(groups.Config{Pool: pool})
+		groupService, groupErr := groups.NewService(groupsConfigFromAppConfig(config, pool))
 		if groupErr != nil {
 			err = groupErr
 			logger.Error("groups service initialization failed", "error", err)
@@ -300,6 +301,16 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+func groupsConfigFromAppConfig(config appconfig.Config, pool *pgxpool.Pool) groups.Config {
+	return groups.Config{
+		Pool:                     pool,
+		LiveKitURL:               config.LiveKitURL,
+		LiveKitAPIKey:            config.LiveKitAPIKey,
+		LiveKitAPISecret:         config.LiveKitAPISecret,
+		GroupCallMaxParticipants: config.GroupCallLimit,
+	}
 }
 
 func mapReadinessChecks(checks map[string]httpapi.ReadinessCheck) map[string]observability.ReadinessCheck {

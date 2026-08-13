@@ -11,9 +11,11 @@ import (
 )
 
 const (
-	defaultPort              = 18473
-	defaultLiveKitPublicPort = 7880
-	minimumProductionSecret  = 32
+	defaultPort                     = 18473
+	defaultLiveKitPublicPort        = 7880
+	defaultGroupCallMaxParticipants = 32
+	maximumGroupCallParticipants    = 500
+	minimumProductionSecret         = 32
 )
 
 type Environment string
@@ -42,6 +44,7 @@ type Config struct {
 	AllowedHTTPOrigins  []string
 	LiveKitURL          string
 	LiveKitPublicPort   int
+	GroupCallLimit      int
 	LiveKitAPIKey       string
 	LiveKitAPISecret    string
 	DatabaseURL         string
@@ -78,6 +81,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	groupCallMaxParticipants := parseGroupCallMaxParticipants(os.Getenv("DD_GROUP_CALL_MAX_PARTICIPANTS"))
 
 	allowedOrigins := splitNonEmpty(os.Getenv("IM_ALLOWED_ORIGINS"))
 	allowedHTTPOrigins := splitNonEmpty(os.Getenv("IM_ALLOWED_HTTP_ORIGINS"))
@@ -176,6 +180,7 @@ func Load() (Config, error) {
 		AllowedHTTPOrigins:  allowedHTTPOrigins,
 		LiveKitURL:          strings.TrimSpace(os.Getenv("LIVEKIT_URL")),
 		LiveKitPublicPort:   liveKitPublicPort,
+		GroupCallLimit:      groupCallMaxParticipants,
 		LiveKitAPIKey:       liveKitAPIKey,
 		LiveKitAPISecret:    liveKitAPISecret,
 		DatabaseURL:         databaseURL,
@@ -332,6 +337,18 @@ func parseEnvironment(raw string) (Environment, error) {
 	default:
 		return "", fmt.Errorf("IM_ENV must be development, test, or production")
 	}
+}
+
+func parseGroupCallMaxParticipants(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultGroupCallMaxParticipants
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 2 || value > maximumGroupCallParticipants {
+		return defaultGroupCallMaxParticipants
+	}
+	return value
 }
 
 func parsePort(name, raw string, defaultValue int, requireFiveDigits bool) (int, error) {

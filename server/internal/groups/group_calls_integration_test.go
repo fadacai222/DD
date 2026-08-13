@@ -18,10 +18,6 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("DD_GROUPS_TEST_DATABASE_URL is not set")
 	}
-	t.Setenv("LIVEKIT_URL", "ws://127.0.0.1:7880")
-	t.Setenv("LIVEKIT_API_KEY", "group-call-test-key")
-	t.Setenv("LIVEKIT_API_SECRET", "group-call-test-secret")
-	t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", "3")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -48,7 +44,13 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 		}
 	}
 
-	service, err := NewService(Config{Pool: pool})
+	service, err := NewService(Config{
+		Pool:                     pool,
+		LiveKitURL:               "ws://127.0.0.1:7880",
+		LiveKitAPIKey:            "group-call-test-key",
+		LiveKitAPISecret:         "group-call-test-secret",
+		GroupCallMaxParticipants: 3,
+	})
 	if err != nil {
 		t.Fatalf("new groups service: %v", err)
 	}

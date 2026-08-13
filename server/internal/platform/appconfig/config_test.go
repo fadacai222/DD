@@ -24,6 +24,9 @@ func TestLoadDevelopmentDefaults(t *testing.T) {
 	if config.LiveKitPublicPort != 7880 {
 		t.Fatalf("LiveKitPublicPort = %d, want 7880", config.LiveKitPublicPort)
 	}
+	if config.GroupCallLimit != 32 {
+		t.Fatalf("GroupCallLimit = %d, want 32", config.GroupCallLimit)
+	}
 	if len(config.AllowedOrigins) == 0 || len(config.AllowedHTTPOrigins) == 0 {
 		t.Fatal("development defaults must restrict origins to loopback patterns")
 	}
@@ -293,6 +296,30 @@ func TestLoadKeepsAuthAndAdminSecretsIndependent(t *testing.T) {
 	}
 }
 
+func TestLoadGroupCallParticipantLimitUsesConfiguredValueAndSafeDefault(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", "12")
+	config, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if config.GroupCallLimit != 12 {
+		t.Fatalf("GroupCallLimit = %d, want 12", config.GroupCallLimit)
+	}
+
+	for _, invalid := range []string{"1", "501", "oops"} {
+		clearConfigEnvironment(t)
+		t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", invalid)
+		config, err := Load()
+		if err != nil {
+			t.Fatalf("Load() with invalid participant limit %q error = %v", invalid, err)
+		}
+		if config.GroupCallLimit != 32 {
+			t.Fatalf("invalid %q GroupCallLimit = %d, want 32", invalid, config.GroupCallLimit)
+		}
+	}
+}
+
 func TestLoadReadsSecretFileAndRejectsAmbiguousSecretSources(t *testing.T) {
 	clearConfigEnvironment(t)
 	secretPath := filepath.Join(t.TempDir(), "livekit-secret")
@@ -362,6 +389,7 @@ func clearConfigEnvironment(t *testing.T) {
 		"LIVEKIT_API_KEY_FILE",
 		"LIVEKIT_API_SECRET",
 		"LIVEKIT_API_SECRET_FILE",
+		"DD_GROUP_CALL_MAX_PARTICIPANTS",
 		"DATABASE_URL",
 		"DATABASE_URL_FILE",
 		"REDIS_URL",
