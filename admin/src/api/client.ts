@@ -63,6 +63,141 @@ export interface UserItem {
   createdAt: string;
   updatedAt: string;
 }
+export interface UserPushEndpoint {
+  provider: string;
+  environment: string;
+  status: string;
+  failureCount: number;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastFailureCode?: string;
+}
+export interface UserDeviceDetail {
+  id: string;
+  name: string;
+  platform: string;
+  appVersion: string;
+  isVerified: boolean;
+  createdAt: string;
+  lastSeenAt: string;
+  revokedAt?: string;
+  push: UserPushEndpoint[];
+}
+export interface UserDetail extends UserItem {
+  bio: string;
+  avatarMediaId?: string;
+  emailVerifiedAt: string;
+  deletedAt?: string;
+  counts: { contacts: number; groups: number; messages: number; moments: number; activeSessions: number };
+  devices: UserDeviceDetail[];
+}
+export interface DashboardSummary {
+  totalUsers: number;
+  todayRegistrations: number;
+  onlineUsers: number;
+  activeDevices24h: number;
+  totalMessages: number;
+  todayMessages: number;
+  totalGroups: number;
+  totalMoments: number;
+  todayMoments: number;
+  totalCalls: number;
+  todayCalls: number;
+  activeCalls: number;
+  mediaObjects: number;
+  mediaBytes: number;
+  pendingPushJobs: number;
+  pendingVoiceTranscriptions: number;
+  pendingOutboxEvents: number;
+}
+export interface DashboardSnapshot {
+  generatedAt: string;
+  presenceDefinition: string;
+  summary: DashboardSummary;
+  trend: Array<{ date: string; registrations: number; messages: number; calls: number; moments: number }>;
+}
+export interface GroupItem {
+  conversationId: string;
+  name: string;
+  announcement: string;
+  joinMode: string;
+  status: string;
+  createdByUserId: string;
+  createdByHandle: string;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+  dissolvedAt?: string;
+}
+export interface MomentItem {
+  id: string;
+  authorUserId: string;
+  authorHandle: string;
+  authorDisplayName: string;
+  text: string;
+  visibility: string;
+  status: string;
+  mediaCount: number;
+  likeCount: number;
+  commentCount: number;
+  createdAt: string;
+  deletedAt?: string;
+}
+export interface ServiceHealthItem {
+  name: string;
+  status: 'UP' | 'DOWN' | 'CONFIGURED' | 'NOT_CONFIGURED' | 'UNKNOWN';
+  detail?: string;
+  checkedAt?: string;
+}
+export interface StorageSnapshot {
+  generatedAt: string;
+  readyObjects: number;
+  readyBytes: number;
+  uploadingObjects: number;
+  failedObjects: number;
+  quarantinedObjects: number;
+  deletedObjects: number;
+  expiredIncompleteUploads: number;
+  byPurpose: Array<{ purpose: string; objectCount: number; bytes: number }>;
+}
+export interface PushSnapshot {
+  generatedAt: string;
+  pendingJobs: number;
+  retryingJobs: number;
+  sentJobs24h: number;
+  droppedJobs24h: number;
+  endpointFailures24h: number;
+  oldestPendingAt?: string;
+  endpoints: Array<{ provider: string; status: string; count: number }>;
+}
+export interface RTCSnapshot {
+  generatedAt: string;
+  directCallsToday: number;
+  activeDirectCalls: number;
+  acceptedDirectCalls24h: number;
+  averageDirectSeconds24h: number;
+  groupCallsToday: number;
+  activeGroupCalls: number;
+  activeGroupParticipants: number;
+}
+export interface SystemSettings {
+  registrationMode: 'open' | 'invite' | 'approval' | 'closed';
+  persistedRegistrationMode?: string;
+  registrationOpenAvailable: boolean;
+  source: 'ENVIRONMENT' | 'ADMIN_OVERRIDE';
+  updatedAt?: string;
+}
+export interface AdminAccountItem {
+  id: string;
+  email: string;
+  role: AdminRole;
+  status: 'ACTIVE' | 'DISABLED';
+  mfaEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string;
+  activeSessions: number;
+}
 export type TelegramIntegrationSource = 'NONE' | 'ENVIRONMENT' | 'ADMIN_OVERRIDE';
 export interface TelegramIntegrationStatus {
   configured: boolean;
@@ -172,13 +307,95 @@ export class ApiClient {
     return response.data.items;
   }
 
+  async getDashboard(): Promise<DashboardSnapshot> {
+    const response = await this.request<SuccessEnvelope<DashboardSnapshot>>('/api/v1/admin/dashboard');
+    return response.data;
+  }
+
+  async getUser(userId: string): Promise<UserDetail> {
+    const response = await this.request<SuccessEnvelope<UserDetail>>(`/api/v1/admin/users/${encodeURIComponent(userId)}`);
+    return response.data;
+  }
+
+  async listGroups(query = '', status = ''): Promise<GroupItem[]> {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set('q', query.trim());
+    if (status) params.set('status', status);
+    const suffix = params.size ? `?${params.toString()}` : '';
+    const response = await this.request<SuccessEnvelope<{ items: GroupItem[] }>>(`/api/v1/admin/groups${suffix}`);
+    return response.data.items;
+  }
+
+  async listMoments(query = '', status = ''): Promise<MomentItem[]> {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set('q', query.trim());
+    if (status) params.set('status', status);
+    const suffix = params.size ? `?${params.toString()}` : '';
+    const response = await this.request<SuccessEnvelope<{ items: MomentItem[] }>>(`/api/v1/admin/moments${suffix}`);
+    return response.data.items;
+  }
+
+  async getStorageSnapshot(): Promise<StorageSnapshot> {
+    const response = await this.request<SuccessEnvelope<StorageSnapshot>>('/api/v1/admin/storage');
+    return response.data;
+  }
+
+  async getPushSnapshot(): Promise<PushSnapshot> {
+    const response = await this.request<SuccessEnvelope<PushSnapshot>>('/api/v1/admin/push');
+    return response.data;
+  }
+
+  async getRTCSnapshot(): Promise<RTCSnapshot> {
+    const response = await this.request<SuccessEnvelope<RTCSnapshot>>('/api/v1/admin/rtc');
+    return response.data;
+  }
+
+  async getSystemSettings(): Promise<SystemSettings> {
+    const response = await this.request<SuccessEnvelope<SystemSettings>>('/api/v1/admin/settings');
+    return response.data;
+  }
+
+  async setRegistrationMode(mode: 'open' | 'closed', reason: string): Promise<SystemSettings> {
+    const response = await this.request<SuccessEnvelope<SystemSettings>>('/api/v1/admin/settings/registration', { method: 'PUT', body: { mode, reason }, csrf: true });
+    return response.data;
+  }
+
+  async listAdminAccounts(): Promise<AdminAccountItem[]> {
+    const response = await this.request<SuccessEnvelope<{ items: AdminAccountItem[] }>>('/api/v1/admin/admins');
+    return response.data.items;
+  }
+
+  async createAdminAccount(email: string, password: string, role: AdminRole): Promise<AdminAccountItem> {
+    const response = await this.request<SuccessEnvelope<AdminAccountItem>>('/api/v1/admin/admins', { method: 'POST', body: { email, password, role }, csrf: true });
+    return response.data;
+  }
+
+  async updateAdminAccount(id: string, role: AdminRole, status: 'ACTIVE' | 'DISABLED', reason: string): Promise<AdminAccountItem> {
+    const response = await this.request<SuccessEnvelope<AdminAccountItem>>(`/api/v1/admin/admins/${encodeURIComponent(id)}`, { method: 'PATCH', body: { role, status, reason }, csrf: true });
+    return response.data;
+  }
+
+  async resetAdminMFA(id: string, reason: string): Promise<void> {
+    await this.request<SuccessEnvelope<{ reset: boolean }>>(`/api/v1/admin/admins/${encodeURIComponent(id)}/mfa-reset`, { method: 'POST', body: { reason }, csrf: true });
+  }
+
+  async getServiceHealth(): Promise<{ items: ServiceHealthItem[]; generatedAt: string }> {
+    const response = await this.request<SuccessEnvelope<{ items: ServiceHealthItem[]; generatedAt: string }>>('/api/v1/admin/services/health');
+    return response.data;
+  }
+
   async moderateUser(userId: string, action: 'suspend' | 'unsuspend', reason: string): Promise<UserItem> {
     const response = await this.request<SuccessEnvelope<{ user: UserItem }>>(`/api/v1/admin/users/${encodeURIComponent(userId)}/${action}`, { method: 'POST', body: { reason }, csrf: true });
     return response.data.user;
   }
 
-  async listAudit(): Promise<AuditItem[]> {
-    const response = await this.request<SuccessEnvelope<{ items: AuditItem[] }>>('/api/v1/admin/audit');
+  async listAudit(filters: { action?: string; targetType?: string; actorAdminId?: string } = {}): Promise<AuditItem[]> {
+    const params = new URLSearchParams();
+    if (filters.action?.trim()) params.set('action', filters.action.trim());
+    if (filters.targetType?.trim()) params.set('targetType', filters.targetType.trim());
+    if (filters.actorAdminId?.trim()) params.set('actorAdminId', filters.actorAdminId.trim());
+    const suffix = params.size ? `?${params.toString()}` : '';
+    const response = await this.request<SuccessEnvelope<{ items: AuditItem[] }>>(`/api/v1/admin/audit${suffix}`);
     return response.data.items;
   }
 
