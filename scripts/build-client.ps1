@@ -15,6 +15,7 @@ $RootWindowsShortcut = Join-Path $Root 'DD-Windows.lnk'
 $RootWindowsZip = Join-Path $Root 'DD-Windows.zip'
 $RootWebShortcut = Join-Path $Root 'DD-Web.lnk'
 $RootAndroidApk = Join-Path $Root 'DD-Android.apk'
+$PublishedWindowsExe = ''
 
 if (-not (Test-Path -LiteralPath $FlutterExe)) {
     throw "Flutter not found: $FlutterExe"
@@ -159,14 +160,17 @@ function Remove-WindowsGeneratedDirectory {
 }
 
 function Reset-WindowsFlutterGeneratedState {
-    param([Parameter(Mandatory = $true)][string]$AppRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [string]$BuildDirName = 'build'
+    )
 
     Write-Host 'Repairing stale Flutter Windows generated state...'
 
     # Always clear through the short subst path. Removing these trees through the
     # original Chinese/long project path can partially fail on deep CMake/NuGet
     # paths and leave a mixed-drive cache behind.
-    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot 'build\windows')
+    Remove-WindowsGeneratedDirectory (Join-Path $AppRoot "$BuildDirName\windows")
     Remove-WindowsGeneratedDirectory (Join-Path $AppRoot 'windows\flutter\ephemeral')
 
     # Flutter 3.44 native-asset hooks persist absolute project paths outside the
@@ -181,16 +185,53 @@ function Reset-WindowsFlutterGeneratedState {
 function Build-Windows {
     Assert-WindowsATL
     $BuildStartedAtUtc = [DateTime]::UtcNow
+    $BuildDirName = 'build'
+    $PreviousFlutterBuildDir = 'build'
+    $ChangedFlutterBuildDir = $false
+    $DefaultWindowsExe = Join-Path $AppPath 'build\windows\x64\runner\Release\im_client.exe'
+    foreach ($Process in @(Get-Process -Name 'im_client' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($Process.Path -ieq $DefaultWindowsExe) {
+                $BuildDirName = 'build_win_fresh'
+                break
+            }
+        }
+        catch {
+            # A process owned by another session may not expose Path. Ignore it.
+        }
+    }
     $Drive = Get-FreeSubstDrive
+    if ($BuildDirName -ne 'build') {
+        $ConfigText = @(& $FlutterExe config --list 2>$null)
+        foreach ($Line in $ConfigText) {
+            if ([string]$Line -match '^\s*build-dir:\s*(\S+)\s*$') {
+                $PreviousFlutterBuildDir = $Matches[1]
+                break
+            }
+        }
+        Write-Host "Standard Windows release is in use; building into $BuildDirName instead."
+        & $FlutterExe config "--build-dir=$BuildDirName" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & $FlutterExe config "--build-dir=$PreviousFlutterBuildDir" | Out-Null
+            throw "Unable to select isolated Flutter build directory: $BuildDirName"
+        }
+        $ChangedFlutterBuildDir = $true
+    }
     & subst.exe $Drive $Root
     if ($LASTEXITCODE -ne 0) {
+        if ($ChangedFlutterBuildDir) {
+            & $FlutterExe config "--build-dir=$PreviousFlutterBuildDir" | Out-Null
+        }
         throw "Failed to map $Drive to the project root."
     }
 
     try {
         $MappedApp = "$Drive\clients\app"
+        if ($BuildDirName -ne 'build') {
+            Remove-WindowsGeneratedDirectory (Join-Path $MappedApp "$BuildDirName\windows")
+        }
         if (-not (Test-WindowsFlutterGeneratedState -AppRoot $MappedApp)) {
-            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp
+            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp -BuildDirName $BuildDirName
         }
 
         try {
@@ -201,11 +242,11 @@ function Build-Windows {
                 throw
             }
             Write-Host 'Windows generated files disappeared during build; resetting the Windows cache and retrying once...'
-            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp
+            Reset-WindowsFlutterGeneratedState -AppRoot $MappedApp -BuildDirName $BuildDirName
             Invoke-Flutter @('build', 'windows', '--release', '--no-pub') $MappedApp 'Windows release build failed after cache repair.'
         }
 
-        $WindowsExe = Join-Path $MappedApp 'build\windows\x64\runner\Release\im_client.exe'
+        $WindowsExe = Join-Path $MappedApp "$BuildDirName\windows\x64\runner\Release\im_client.exe"
         if (-not (Test-Path -LiteralPath $WindowsExe)) {
             throw 'Windows build reported success, but im_client.exe was not produced.'
         }
@@ -216,6 +257,9 @@ function Build-Windows {
         Write-Host "Fresh Windows artifact: $WindowsExe ($($Artifact.LastWriteTime))"
     }
     finally {
+        if ($ChangedFlutterBuildDir) {
+            & $FlutterExe config "--build-dir=$PreviousFlutterBuildDir" | Out-Null
+        }
         Set-Location 'C:\'
         & subst.exe $Drive /D | Out-Null
     }
@@ -334,14 +378,20 @@ function Set-RootShortcut {
 }
 
 function Publish-RootClientArtifacts {
-    $WindowsExe = Join-Path $AppPath 'build\windows\x64\runner\Release\im_client.exe'
-    if (-not (Test-Path -LiteralPath $WindowsExe)) {
-        $FreshWindowsExe = Join-Path $AppPath 'build_win_fresh\windows\x64\runner\Release\im_client.exe'
-        if (Test-Path -LiteralPath $FreshWindowsExe) {
-            $WindowsExe = $FreshWindowsExe
-        }
+    $WindowsCandidates = @(
+        (Join-Path $AppPath 'build\windows\x64\runner\Release\im_client.exe'),
+        (Join-Path $AppPath 'build_win_fresh\windows\x64\runner\Release\im_client.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object {
+        Get-Item -LiteralPath $_
+    } | Sort-Object LastWriteTimeUtc -Descending
+    $WindowsExe = if ($WindowsCandidates.Count -gt 0) {
+        $WindowsCandidates[0].FullName
+    }
+    else {
+        Join-Path $AppPath 'build\windows\x64\runner\Release\im_client.exe'
     }
     if (Test-Path -LiteralPath $WindowsExe) {
+        $script:PublishedWindowsExe = $WindowsExe
         $WindowsRelease = Split-Path -Parent $WindowsExe
         Set-RootShortcut `
             -ShortcutPath $RootWindowsShortcut `
@@ -439,7 +489,9 @@ switch ($Target) {
 Publish-RootClientArtifacts
 
 Write-Host 'Build complete.'
-Write-Host "Windows: $AppPath\build\windows\x64\runner\Release\im_client.exe"
+if (-not [string]::IsNullOrWhiteSpace($PublishedWindowsExe)) {
+    Write-Host "Windows: $PublishedWindowsExe"
+}
 Write-Host "Windows package: $RootWindowsZip"
 Write-Host "Web:     $AppPath\build\web"
 Write-Host "Android: $RootAndroidApk"

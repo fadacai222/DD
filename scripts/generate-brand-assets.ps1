@@ -8,14 +8,23 @@ Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($SourceLogo)) {
-    $LogoCandidates = @(Get-ChildItem -LiteralPath $Root -Filter 'logo.png' -File -Recurse | Where-Object {
-        $_.FullName -notmatch '[\\/]build[\\/]' -and
-        $_.FullName -notmatch '[\\/]brand-assets[\\/]'
-    })
-    if ($LogoCandidates.Count -eq 0) {
-        throw "No logo.png was found under project root: $Root"
+    $KnownLogoPaths = @(
+        (Join-Path $Root 'logo.png'),
+        (Join-Path $Root 'assets\logo.png'),
+        (Join-Path $Root 'download-site\assets\logo.png')
+    )
+    $SourceLogo = $KnownLogoPaths | Where-Object {
+        Test-Path -LiteralPath $_ -PathType Leaf
+    } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($SourceLogo)) {
+        $SourceLogo = Get-ChildItem -LiteralPath $Root -Directory -ErrorAction Stop |
+            ForEach-Object { Join-Path $_.FullName 'logo.png' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
     }
-    $SourceLogo = $LogoCandidates[0].FullName
+    if ([string]::IsNullOrWhiteSpace($SourceLogo)) {
+        throw "No stable logo.png candidate was found. Pass -SourceLogo explicitly."
+    }
 }
 $SourceLogo = (Resolve-Path -LiteralPath $SourceLogo).Path
 
