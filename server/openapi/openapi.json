@@ -1265,7 +1265,7 @@
         "summary": "Replace automatic voice transcription preference",
         "tags": ["Messaging"],
         "security": [{"bearerAuth": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceTranscriptionPreferencesRequest"}}}},
         "responses": {
           "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
@@ -1277,7 +1277,7 @@
         "summary": "Update automatic voice transcription preference",
         "tags": ["Messaging"],
         "security": [{"bearerAuth": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceTranscriptionPreferencesRequest"}}}},
         "responses": {
           "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
