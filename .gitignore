@@ -5,6 +5,8 @@
 Thumbs.db
 *.tmp
 *.log
+*.bundle
+/tasks/2026-08-14-bugfix/resolutions/wave2-ai07-ai10-datarights.patch
 **/nul
 
 # Secrets

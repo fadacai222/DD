@@ -1,6 +1,6 @@
 # DD 文档中心｜开发唯一入口
 
-> 更新时间：2026-08-13（U30 iOS 五支线总集成 + 全仓 Markdown 状态复核；历史真人验收仍按原状态保留）
+> 更新时间：2026-08-15（Wave2 已集成至 `6ac4e6e`；Admin Telegram Relay 已提交；Wave3 真人修复待复测）
 >
 > 适用仓库：`C:\Users\admin\Desktop\复刻微信`
 >
@@ -40,9 +40,17 @@
 
 ---
 
-## 3. 2026-08-13 当前一句话状态
+## 3. 2026-08-15 当前一句话状态
 
 DD 已从基础 IM 进入大功能扩展后的收敛阶段。2026-08-13 U30 iOS 五条并行支线已经在独立总集成 worktree 合流：iOS 15.0 Platform Foundation、Push/APNs/Auth lease、Media/File/Camera/QR、LiveKit/CallKit/Audio 和 Release/Codemagic 已完成公共 Xcode Sources/`NativeServiceRegistrar`/AppDelegate 接线。本地总门禁为 `dart analyze --fatal-infos` 0 issue、iOS/Push/Media/QR/Calls 定向合同持续通过、Flutter 459 PASS / 5 SKIP、Go test/vet PASS、PostgreSQL 18.4 的 33 migrations + Auth/Push integration PASS、Release/native scan pipeline 与 full-history Secret Scan PASS。**这仍不等于产品 release-green**：真实 macOS/Xcode compile/archive、Apple/Firebase Secret、APNs/TestFlight/iPhone/iPad，以及 Android/Windows 历史真人回归、公网网络、生产签名与 Environment reviewer 仍需项目所有者或真人环境验收。
+
+### 2026-08-15 Wave2 / Wave3 收敛状态
+
+Wave1 已物理合流并继续形成 Wave2 集成分支 `integrate/2026-08-14-wave2 @ 6ac4e6e6c2d37a234cde3219bb4ce5685a0c5298`。Wave2 包含 viewer-relative 备注名、durable group mentions、Voice 播放/STT foundation、Windows clipboard image adapter 与 iOS Live Photo paired media；全量门禁曾达到 Flutter 525 PASS / 5 条件 SKIP / 0 FAIL、analyzer 0、Go test/vet PASS、Windows Release 与 Android Debug 构建 PASS。
+
+2026-08-14 真人复测后，Wave3 单写者已针对聊天热点继续修复：备注保存后刷新会话事实、群昵称弹窗 `_dependents.isEmpty` 红屏、置顶会话透明导致快捷按钮透出、语音转文字改成长按菜单，以及 Android 来电通知的 CALL channel / full-screen intent。当前客户端自动证据为 Flutter 530 PASS / 5 条件 SKIP / 0 FAIL、analyzer 0，相关 server 定向 test/vet PASS；这些仍统一属于 `FIXED-PENDING-RETEST`，不能冒充真人通过。
+
+当前真人阻塞仍包括：Android 真后台 Push、语音转文字 provider、群通话生产链。生产环境已补入 `dd-chat-3701e` 的 FCM service-account secret，LiveKit runtime secret 校验通过；STT endpoint/model 仍为空，生产 API/Worker 仍需从 `0.4.0-cloud.3` 升级到 Wave2 代码后再复测。Admin Telegram Sticker Relay 已在 `master` 提交为 `195eae7`，另有 `integrate/2026-08-15-admin` 用于把该能力接到 Wave2 基线。
 
 当前功能主体：
 
