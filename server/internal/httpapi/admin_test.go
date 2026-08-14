@@ -23,19 +23,19 @@ func (*boundaryUserAuthService) AuthenticateAccessToken(context.Context, string)
 
 type boundaryAdminService struct {
 	AdminService
-	principal      admin.Principal
-	session        admin.SessionResult
-	csrfOK         bool
-	moderate       func(admin.Principal) error
-	integrationSet func(admin.Principal, string, string) (admin.IntegrationSecretStatus, error)
-	dashboard      admin.DashboardSnapshot
-	groups         []admin.GroupSummary
-	moments        []admin.MomentSummary
-	userDetail     admin.UserDetail
-	storage        admin.StorageSnapshot
-	push           admin.PushSnapshot
-	rtc            admin.RTCSnapshot
-	runtimeSetting admin.RuntimeSetting
+	principal       admin.Principal
+	session         admin.SessionResult
+	csrfOK          bool
+	moderate        func(admin.Principal) error
+	integrationSet  func(admin.Principal, string, string) (admin.IntegrationSecretStatus, error)
+	dashboard       admin.DashboardSnapshot
+	groups          []admin.GroupSummary
+	moments         []admin.MomentSummary
+	userDetail      admin.UserDetail
+	storage         admin.StorageSnapshot
+	push            admin.PushSnapshot
+	rtc             admin.RTCSnapshot
+	runtimeSetting  admin.RuntimeSetting
 	setRegistration func(admin.Principal, string, string) (admin.RuntimeSetting, error)
 }
 
@@ -88,12 +88,16 @@ func (fake *boundaryAdminService) ListAuditEventsFiltered(context.Context, admin
 }
 
 func (fake *boundaryAdminService) LoadRuntimeSetting(context.Context, string) (admin.RuntimeSetting, error) {
-	if fake.runtimeSetting.Key == "" { return admin.RuntimeSetting{}, admin.ErrNotFound }
+	if fake.runtimeSetting.Key == "" {
+		return admin.RuntimeSetting{}, admin.ErrNotFound
+	}
 	return fake.runtimeSetting, nil
 }
 
 func (fake *boundaryAdminService) SetRegistrationMode(_ context.Context, principal admin.Principal, mode, reason string, _ admin.ClientContext) (admin.RuntimeSetting, error) {
-	if fake.setRegistration != nil { return fake.setRegistration(principal, mode, reason) }
+	if fake.setRegistration != nil {
+		return fake.setRegistration(principal, mode, reason)
+	}
 	return admin.RuntimeSetting{Key: admin.SettingRegistrationMode, Value: mode, UpdatedAt: time.Now()}, nil
 }
 
@@ -186,20 +190,20 @@ func TestAdminControlPlaneReadRoutesUseAdminSessionAndNeverRequireOrdinaryBearer
 	principal := admin.Principal{AdminID: uuid.New(), SessionID: uuid.New(), Email: "ops@example.test", Role: admin.RoleSuperAdmin, ExpiresAt: time.Now().Add(time.Hour)}
 	userID := uuid.NewString()
 	fake := &boundaryAdminService{
-		principal: principal,
-		session: admin.SessionResult{Admin: admin.Identity{ID: principal.AdminID.String(), Email: principal.Email, Role: principal.Role}, SessionID: principal.SessionID.String()},
-		dashboard: admin.DashboardSnapshot{Summary: admin.DashboardSummary{TotalUsers: 42, OnlineUsers: 7}},
-		groups: []admin.GroupSummary{{ConversationID: uuid.NewString(), Name: "Ops Group", Status: "ACTIVE", MemberCount: 3}},
-		moments: []admin.MomentSummary{{ID: uuid.NewString(), AuthorUserID: userID, AuthorHandle: "ops", Text: "hello", Status: "ACTIVE"}},
+		principal:  principal,
+		session:    admin.SessionResult{Admin: admin.Identity{ID: principal.AdminID.String(), Email: principal.Email, Role: principal.Role}, SessionID: principal.SessionID.String()},
+		dashboard:  admin.DashboardSnapshot{Summary: admin.DashboardSummary{TotalUsers: 42, OnlineUsers: 7}},
+		groups:     []admin.GroupSummary{{ConversationID: uuid.NewString(), Name: "Ops Group", Status: "ACTIVE", MemberCount: 3}},
+		moments:    []admin.MomentSummary{{ID: uuid.NewString(), AuthorUserID: userID, AuthorHandle: "ops", Text: "hello", Status: "ACTIVE"}},
 		userDetail: admin.UserDetail{UserSummary: admin.UserSummary{ID: userID, Email: "user@example.test", Handle: "ops", DisplayName: "Ops", Status: "ACTIVE"}, Counts: admin.UserActivityCounts{Groups: 2}},
-		storage: admin.StorageSnapshot{ReadyObjects: 12, ReadyBytes: 4096},
-		push: admin.PushSnapshot{PendingJobs: 3, RetryingJobs: 1},
-		rtc: admin.RTCSnapshot{ActiveDirectCalls: 2, ActiveGroupCalls: 1},
+		storage:    admin.StorageSnapshot{ReadyObjects: 12, ReadyBytes: 4096},
+		push:       admin.PushSnapshot{PendingJobs: 3, RetryingJobs: 1},
+		rtc:        admin.RTCSnapshot{ActiveDirectCalls: 2, ActiveGroupCalls: 1},
 	}
 	handler := NewHandler(Config{AdminService: fake, ReadinessChecks: map[string]ReadinessCheck{"postgres": func(context.Context) error { return nil }}})
 
 	for _, tc := range []struct {
-		path string
+		path     string
 		contains string
 	}{
 		{"/api/v1/admin/dashboard", `"totalUsers":42`},
@@ -236,7 +240,7 @@ func TestAdminServiceHealthDoesNotPretendUnknownDependenciesAreHealthy(t *testin
 		AdminService: fake,
 		ReadinessChecks: map[string]ReadinessCheck{
 			"postgres": func(context.Context) error { return nil },
-			"redis": func(context.Context) error { return context.DeadlineExceeded },
+			"redis":    func(context.Context) error { return context.DeadlineExceeded },
 		},
 	})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/services/health", nil)
@@ -252,14 +256,18 @@ func TestAdminServiceHealthDoesNotPretendUnknownDependenciesAreHealthy(t *testin
 func TestAdminRegistrationSettingChangesRuntimeMode(t *testing.T) {
 	principal := admin.Principal{AdminID: uuid.New(), SessionID: uuid.New(), Email: "root@example.test", Role: admin.RoleSuperAdmin, ExpiresAt: time.Now().Add(time.Hour)}
 	controller, err := account.NewRegistrationController("closed", true)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	persisted := false
 	fake := &boundaryAdminService{
 		principal: principal,
-		session: admin.SessionResult{Admin: admin.Identity{ID: principal.AdminID.String(), Email: principal.Email, Role: principal.Role}, SessionID: principal.SessionID.String()},
-		csrfOK: true,
+		session:   admin.SessionResult{Admin: admin.Identity{ID: principal.AdminID.String(), Email: principal.Email, Role: principal.Role}, SessionID: principal.SessionID.String()},
+		csrfOK:    true,
 		setRegistration: func(got admin.Principal, mode, reason string) (admin.RuntimeSetting, error) {
-			if got.AdminID != principal.AdminID || mode != "open" || reason != "open beta" { t.Fatalf("registration update principal=%v mode=%q reason=%q", got.AdminID, mode, reason) }
+			if got.AdminID != principal.AdminID || mode != "open" || reason != "open beta" {
+				t.Fatalf("registration update principal=%v mode=%q reason=%q", got.AdminID, mode, reason)
+			}
 			persisted = true
 			return admin.RuntimeSetting{Key: admin.SettingRegistrationMode, Value: mode, UpdatedAt: time.Now()}, nil
 		},
@@ -271,17 +279,23 @@ func TestAdminRegistrationSettingChangesRuntimeMode(t *testing.T) {
 	request.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: "dda_test"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !persisted || controller.Mode() != "open" { t.Fatalf("registration update status=%d persisted=%v mode=%q body=%s", response.Code, persisted, controller.Mode(), response.Body.String()) }
+	if response.Code != http.StatusOK || !persisted || controller.Mode() != "open" {
+		t.Fatalf("registration update status=%d persisted=%v mode=%q body=%s", response.Code, persisted, controller.Mode(), response.Body.String())
+	}
 
 	instance := httptest.NewRecorder()
 	handler.ServeHTTP(instance, httptest.NewRequest(http.MethodGet, "/api/v1/instance", nil))
-	if instance.Code != http.StatusOK || !strings.Contains(instance.Body.String(), `"registrationMode":"open"`) { t.Fatalf("instance mode status=%d body=%s", instance.Code, instance.Body.String()) }
+	if instance.Code != http.StatusOK || !strings.Contains(instance.Body.String(), `"registrationMode":"open"`) {
+		t.Fatalf("instance mode status=%d body=%s", instance.Code, instance.Body.String())
+	}
 }
 
 func TestAdminRegistrationSettingRejectsOpenWithoutMailDependencies(t *testing.T) {
 	principal := admin.Principal{AdminID: uuid.New(), SessionID: uuid.New(), Email: "root@example.test", Role: admin.RoleSuperAdmin, ExpiresAt: time.Now().Add(time.Hour)}
 	controller, err := account.NewRegistrationController("closed", false)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	fake := &boundaryAdminService{principal: principal, csrfOK: true, session: admin.SessionResult{Admin: admin.Identity{ID: principal.AdminID.String(), Role: principal.Role}}}
 	handler := NewHandler(Config{AdminService: fake, RegistrationControl: controller})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings/registration", strings.NewReader(`{"mode":"open","reason":"try open"}`))
@@ -290,7 +304,9 @@ func TestAdminRegistrationSettingRejectsOpenWithoutMailDependencies(t *testing.T
 	request.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: "dda_test"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "REGISTRATION_OPEN_UNAVAILABLE") || controller.Mode() != "closed" { t.Fatalf("open unavailable status=%d mode=%q body=%s", response.Code, controller.Mode(), response.Body.String()) }
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "REGISTRATION_OPEN_UNAVAILABLE") || controller.Mode() != "closed" {
+		t.Fatalf("open unavailable status=%d mode=%q body=%s", response.Code, controller.Mode(), response.Body.String())
+	}
 }
 
 func TestAdminErrorMapsInvalidMFA(t *testing.T) {

@@ -119,15 +119,15 @@ func NewService(config Config) (*Service, error) {
 		return nil, fmt.Errorf("create password timing hash: %w", err)
 	}
 	return &Service{
-		pool:              config.Pool,
-		codec:             config.Codec,
-		hasher:            config.Hasher,
-		sessions:          config.Sessions,
-		mailer:            config.Mailer,
+		pool:                   config.Pool,
+		codec:                  config.Codec,
+		hasher:                 config.Hasher,
+		sessions:               config.Sessions,
+		mailer:                 config.Mailer,
 		registrationMode:       mode,
 		registrationModeSource: config.RegistrationModeSource,
 		now:                    now,
-		dummyPasswordHash: dummyHash,
+		dummyPasswordHash:      dummyHash,
 	}, nil
 }
 
