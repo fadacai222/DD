@@ -10,6 +10,7 @@ AndroidNotificationDetails buildAndroidBackgroundNotificationDetails({
   required String senderName,
   required String body,
   required Uint8List? avatarBytes,
+  bool isCall = false,
 }) => AndroidNotificationDetails(
   channelId,
   channelName,
@@ -17,10 +18,13 @@ AndroidNotificationDetails buildAndroidBackgroundNotificationDetails({
   channelDescription: channelDescription,
   importance: Importance.max,
   priority: Priority.max,
-  category: AndroidNotificationCategory.message,
+  category: isCall
+      ? AndroidNotificationCategory.call
+      : AndroidNotificationCategory.message,
   visibility: NotificationVisibility.private,
+  fullScreenIntent: isCall,
   largeIcon: avatarBytes == null ? null : ByteArrayAndroidBitmap(avatarBytes),
-  playSound: false,
+  playSound: isCall,
   styleInformation: MessagingStyleInformation(
     const Person(name: 'DD'),
     conversationTitle: senderName,

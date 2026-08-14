@@ -98,6 +98,44 @@ void main() {
     expect(tags.decoration?.border, isNot(isA<OutlineInputBorder>()));
   });
 
+  testWidgets('saving contact remark notifies dependent conversation views', (
+    tester,
+  ) async {
+    final gateway = _ProfileContactsGateway(relationship: 'CONTACT');
+    var refreshes = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PeerProfilePage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          userId: _bob.id,
+          handle: _bob.handle,
+          displayName: _bob.displayName,
+          contact: gateway.contact,
+          gateway: gateway,
+          onContactUpdated: () async => refreshes++,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('peer-profile-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('备注与标签'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('peer-profile-edit-remark')),
+      '老王测试号',
+    );
+    await tester.tap(find.byKey(const Key('peer-profile-save-contact')));
+    await tester.pumpAndSettle();
+
+    expect(gateway.contact.remark, '老王测试号');
+    expect(refreshes, 1);
+    expect(find.text('老王测试号'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('contact profile exposes a first-class moments entry', (
     tester,
   ) async {

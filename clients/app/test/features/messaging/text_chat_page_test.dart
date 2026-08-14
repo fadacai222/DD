@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/core/media/camera_capture_service.dart';
+import 'package:im_client/core/media/windows_clipboard_image_service.dart';
 import 'package:im_client/core/security/dd_secure_storage.dart';
 import 'package:im_client/features/calls/data/group_call_api_client.dart';
 import 'package:im_client/features/calls/domain/group_call_models.dart';
@@ -16,6 +17,7 @@ import 'package:im_client/features/groups/domain/group_models.dart';
 import 'package:im_client/features/messaging/application/media_transfer_controller.dart';
 import 'package:im_client/features/messaging/application/messaging_coordinator.dart';
 import 'package:im_client/features/messaging/data/media_auto_download_store.dart';
+import 'package:im_client/features/messaging/data/media_local_cache.dart';
 import 'package:im_client/features/messaging/data/messaging_api_client.dart';
 import 'package:im_client/features/messaging/data/messaging_local_store.dart';
 import 'package:im_client/features/messaging/data/sticker_api_client.dart';
@@ -1233,12 +1235,66 @@ void main() {
     expect(find.text('guide.pdf'), findsOneWidget);
     expect(find.text('1.0 MiB'), findsOneWidget);
     expect(find.text('5″'), findsOneWidget);
+    expect(
+      find.byKey(const Key('voice-unheard-dot-media-voice')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('voice-transcribe-media-voice')), findsNothing);
 
     await tester.tap(find.text('guide.pdf'));
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('打开文件'), findsOneWidget);
     expect(find.text('保存文件'), findsOneWidget);
     expect(find.text('系统分享'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('voice transcription is offered from long-press actions', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'voice-longpress-stt',
+          conversationId: 'conversation-1',
+          sequence: 1,
+          senderUserId: 'user-b',
+          senderDeviceId: 'device-b',
+          clientMessageId: 'voice-longpress-stt-client',
+          type: 'VOICE',
+          content: const TextMessageContent(
+            mediaId: '00000000-0000-0000-0000-000000000155',
+            durationMs: 3200,
+          ),
+          createdAt: DateTime.utc(2026, 8, 14, 2),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(lastReadSequence: 1),
+          currentUserId: 'user-a',
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+
+    expect(
+      find.byKey(const Key('voice-transcribe-voice-longpress-stt')),
+      findsNothing,
+    );
+    await tester.longPress(
+      find.byKey(const Key('message-voice-longpress-stt')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('转文字'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1316,6 +1372,69 @@ void main() {
       find.byKey(const Key('dismiss-upload-download-file-message-file-cancel')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Live Photo renders an explicit motion playback trigger', (
+    tester,
+  ) async {
+    const stillMediaId = '00000000-0000-0000-0000-000000000401';
+    final previewBytes = Uint8List.fromList(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      ),
+    );
+    final cache = MediaLocalCache(
+      namespace: 'user-a',
+      store: _MemoryMediaCacheStore(),
+    );
+    await cache.store(stillMediaId, previewBytes);
+    final harness = _Harness(
+      _ChatGateway(
+        history: [
+          ChatMessage(
+            id: 'live-photo-message-1',
+            conversationId: 'conversation-1',
+            sequence: 1,
+            senderUserId: 'user-b',
+            senderDeviceId: 'device-b',
+            clientMessageId: 'live-photo-client-1',
+            type: 'IMAGE',
+            content: const TextMessageContent(
+              mediaId: stillMediaId,
+              livePhoto: true,
+              livePhotoMotionMediaId:
+                  '00000000-0000-0000-0000-000000000402',
+              width: 640,
+              height: 480,
+            ),
+            createdAt: DateTime.utc(2026, 8, 14, 1),
+          ),
+        ],
+      ),
+    );
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _conversation(lastReadSequence: 1),
+          currentUserId: 'user-a',
+          mediaCache: cache,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('chat-image-live-photo-message-1')), findsOneWidget);
+    final trigger = find.byKey(
+      const Key('live-photo-motion-live-photo-message-1'),
+    );
+    expect(trigger, findsOneWidget);
+    expect(find.text('实况'), findsOneWidget);
+    expect(tester.widget<GestureDetector>(trigger).onTap, isNotNull);
     expect(tester.takeException(), isNull);
   });
 
@@ -2139,6 +2258,50 @@ void main() {
     }
   });
 
+  testWidgets('Windows Ctrl+V keeps plain text paste inside composer', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      final gateway = _ChatGateway();
+      final harness = _Harness(gateway);
+      addTearDown(harness.dispose);
+      final pasteDecider = WindowsClipboardPasteDecider(
+        adapter: WindowsClipboardImageAdapter(
+          gateway: _TestClipboardGateway(),
+        ),
+        platform: TargetPlatform.windows,
+        isWeb: false,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: TextChatPage(
+            coordinator: harness.coordinator,
+            conversation: _conversation(),
+            currentUserId: 'user-a',
+            windowsClipboardPasteDecider: pasteDecider,
+            windowsClipboardTextReader: () async => 'clipboard text',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 80));
+      final composer = find.byKey(const Key('chat-composer'));
+      await tester.tap(composer);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump(const Duration(milliseconds: 120));
+
+      final field = tester.widget<TextField>(composer);
+      expect(field.controller!.text, 'clipboard text');
+      expect(gateway.sentTexts, isEmpty);
+      expect(tester.takeException(), isNull);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('disabled image auto-download waits for explicit user tap', (
     tester,
   ) async {
@@ -2334,6 +2497,110 @@ void main() {
     },
   );
 
+  testWidgets('group chat keeps durable mention banner until user opens it', (
+    tester,
+  ) async {
+    final target = ChatMessage(
+      id: 'group-mention-target',
+      conversationId: 'group-1',
+      sequence: 1,
+      senderUserId: 'user-c',
+      senderDeviceId: 'device-c',
+      clientMessageId: 'group-mention-client-1',
+      type: 'TEXT',
+      content: const TextMessageContent(text: '@alice 轮到你值班'),
+      createdAt: DateTime.utc(2026, 8, 14, 1),
+    );
+    final harness = _Harness(_ChatGateway(history: [target]));
+    addTearDown(harness.dispose);
+    final conversation = ConversationItem(
+      id: 'group-1',
+      type: 'GROUP',
+      group: const MessagingGroupPreview(
+        id: 'group-1',
+        name: '研发群',
+        memberCount: 3,
+      ),
+      lastSequence: 1,
+      lastReadSequence: 0,
+      latestUnreadMentionMessageId: 'group-mention-target',
+      latestUnreadMentionSequence: 1,
+      unreadCount: 1,
+      canWrite: true,
+      preferences: const ConversationPreferences(isPinned: false),
+      createdAt: DateTime.utc(2026, 8, 14),
+      updatedAt: DateTime.utc(2026, 8, 14, 1),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: conversation,
+          currentUserId: 'user-a',
+          groupsGateway: _ChatGroupsGateway(),
+          groupCallGateway: _EmptyGroupCallGateway(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final banner = find.byKey(const Key('chat-unread-mention-banner'));
+    expect(banner, findsOneWidget);
+    expect(find.text('【有人@你】'), findsOneWidget);
+    await tester.tap(banner);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('chat-unread-mention-banner')), findsNothing);
+    expect(find.text('@alice 轮到你值班'), findsOneWidget);
+  });
+
+  testWidgets('long press group sender avatar inserts exact handle mention', (
+    tester,
+  ) async {
+    final gateway = _ChatGateway(
+      history: [
+        ChatMessage(
+          id: 'group-avatar-mention-1',
+          conversationId: 'group-1',
+          sequence: 1,
+          senderUserId: 'user-c',
+          senderDeviceId: 'device-c',
+          clientMessageId: 'group-avatar-client-1',
+          type: 'TEXT',
+          content: const TextMessageContent(text: '点我头像'),
+          createdAt: DateTime.utc(2026, 8, 14, 1),
+        ),
+      ],
+    );
+    final harness = _Harness(gateway);
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: TextChatPage(
+          coordinator: harness.coordinator,
+          conversation: _groupConversation(),
+          currentUserId: 'user-a',
+          groupsGateway: _ChatGroupsGateway(),
+          groupCallGateway: _EmptyGroupCallGateway(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(
+      find.byKey(const Key('group-sender-avatar-group-avatar-mention-1')),
+    );
+    await tester.pump();
+    final composer = tester.widget<TextField>(
+      find.byKey(const Key('chat-composer')),
+    );
+    expect(composer.controller!.text, '@chen ');
+    expect(composer.focusNode!.hasFocus, isTrue);
+  });
+
   testWidgets(
     'Windows group chat keeps idle group call actions in the plus sheet',
     (tester) async {
@@ -2435,6 +2702,32 @@ ConversationItem _conversation({
   createdAt: DateTime.utc(2026, 8, 8),
   updatedAt: DateTime.utc(2026, 8, 8),
 );
+
+final class _MemoryMediaCacheStore implements MediaCacheStore {
+  final Map<String, Uint8List> _values = <String, Uint8List>{};
+
+  @override
+  Future<void> delete(String cacheKey) async => _values.remove(cacheKey);
+
+  @override
+  Future<Uint8List?> read(String cacheKey) async => _values[cacheKey];
+
+  @override
+  Future<void> write(String cacheKey, Uint8List bytes) async {
+    _values[cacheKey] = Uint8List.fromList(bytes);
+  }
+}
+
+final class _TestClipboardGateway implements ClipboardGateway {
+  @override
+  Future<Uint8List?> readImageBytes() async => null;
+
+  @override
+  Future<List<String>> readFiles() async => const <String>[];
+
+  @override
+  Future<String?> readText() async => 'clipboard text';
+}
 
 final class _FakeCameraCapture implements CameraCaptureGateway {
   int captureCalls = 0;

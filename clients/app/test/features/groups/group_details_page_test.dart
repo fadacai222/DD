@@ -48,6 +48,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('editing my group nickname closes dialog without framework assertion', (
+    tester,
+  ) async {
+    final harness = _GroupDetailsHarness(role: 'MEMBER');
+    addTearDown(harness.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GroupDetailsPage(
+          coordinator: harness.coordinator,
+          groupId: 'group-1',
+          currentUserId: 'user-a',
+          gateway: harness.groups,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('group-details-nickname')));
+    await tester.pumpAndSettle();
+    expect(find.text('我在本群的昵称'), findsWidgets);
+
+    final field = find.byType(TextField).last;
+    await tester.enterText(field, '新的群昵称');
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+
+    expect(harness.groups.myNickname, '新的群昵称');
+    expect(find.text('新的群昵称'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('ordinary member sees self nickname and leave without admin controls', (
     tester,
   ) async {
@@ -118,6 +150,7 @@ final class _GroupDetailsGateway implements GroupsGateway {
   _GroupDetailsGateway({required this.role});
 
   final String role;
+  String myNickname = '测试昵称';
 
   @override
   Future<GroupInfo> getGroup({
@@ -133,7 +166,7 @@ final class _GroupDetailsGateway implements GroupsGateway {
     memberCount: 3,
     ownerUserId: role == 'OWNER' ? 'user-a' : 'user-owner',
     myRole: role,
-    myNickname: '测试昵称',
+    myNickname: myNickname,
     createdAt: DateTime.utc(2026, 8, 10),
     updatedAt: DateTime.utc(2026, 8, 10),
   );
@@ -151,7 +184,7 @@ final class _GroupDetailsGateway implements GroupsGateway {
         displayName: 'Alice',
       ),
       role: role,
-      nickname: '测试昵称',
+      nickname: myNickname,
       joinedAt: DateTime.utc(2026, 8, 10),
     ),
     GroupMemberItem(
@@ -175,6 +208,28 @@ final class _GroupDetailsGateway implements GroupsGateway {
       joinedAt: DateTime.utc(2026, 8, 10),
     ),
   ];
+
+  @override
+  Future<GroupMemberItem> updateMember({
+    required Uri origin,
+    required String accessToken,
+    required String groupId,
+    required String userId,
+    String? role,
+    String? nickname,
+  }) async {
+    if (nickname != null) myNickname = nickname;
+    return GroupMemberItem(
+      user: const GroupUserPreview(
+        id: 'user-a',
+        handle: 'alice',
+        displayName: 'Alice',
+      ),
+      role: this.role,
+      nickname: myNickname,
+      joinedAt: DateTime.utc(2026, 8, 10),
+    );
+  }
 
   @override
   Future<List<GroupJoinRequestItem>> listJoinRequests({

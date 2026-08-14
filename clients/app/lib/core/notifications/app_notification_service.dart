@@ -33,8 +33,11 @@ final class AppNotificationService {
   // v1 was created by some test builds with non-heads-up settings, so keep a
   // versioned id and migrate users to a fresh high-importance channel.
   static const String androidChannelId = 'dd_messages_v2';
+  static const String androidCallChannelId = 'dd_calls_v1';
   static const _channelName = 'DD 新消息';
   static const _channelDescription = '消息与会话提醒';
+  static const _callChannelName = 'DD 来电';
+  static const _callChannelDescription = '语音、视频和群通话来电提醒';
   static const AndroidNotificationChannel _androidChannel =
       AndroidNotificationChannel(
         androidChannelId,
@@ -42,6 +45,16 @@ final class AppNotificationService {
         description: _channelDescription,
         importance: Importance.max,
         playSound: false,
+        enableVibration: true,
+        showBadge: true,
+      );
+  static const AndroidNotificationChannel _androidCallChannel =
+      AndroidNotificationChannel(
+        androidCallChannelId,
+        _callChannelName,
+        description: _callChannelDescription,
+        importance: Importance.max,
+        playSound: true,
         enableVibration: true,
         showBadge: true,
       );
@@ -133,6 +146,7 @@ final class AppNotificationService {
   ) async {
     if (android == null) return;
     await android.createNotificationChannel(_androidChannel);
+    await android.createNotificationChannel(_androidCallChannel);
   }
 
   Future<AndroidNotificationDeliveryStatus> androidDeliveryStatus() async {
@@ -198,6 +212,7 @@ final class AppNotificationService {
     String? senderUserId,
     Uri? avatarUrl,
     Map<String, dynamic>? notificationData,
+    bool isCall = false,
   }) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
     final android = _plugin
@@ -209,6 +224,11 @@ final class AppNotificationService {
     try {
       await _ensureAndroidChannel(android);
       final body = preview.trim().isEmpty ? '你收到了一条新消息' : preview.trim();
+      final channelId = isCall ? androidCallChannelId : androidChannelId;
+      final channelName = isCall ? _callChannelName : _channelName;
+      final channelDescription = isCall
+          ? _callChannelDescription
+          : _channelDescription;
       Uint8List? avatarBytes;
       if (avatarUrl != null) {
         avatarBytes = await _loadAvatarUrl(avatarUrl);
@@ -222,13 +242,14 @@ final class AppNotificationService {
             : jsonEncode(notificationData),
         notificationDetails: NotificationDetails(
           android: buildAndroidBackgroundNotificationDetails(
-            channelId: androidChannelId,
-            channelName: _channelName,
-            channelDescription: _channelDescription,
+            channelId: channelId,
+            channelName: channelName,
+            channelDescription: channelDescription,
             smallIcon: androidSmallIcon,
             senderName: senderName,
             body: body,
             avatarBytes: avatarBytes,
+            isCall: isCall,
           ),
         ),
       );

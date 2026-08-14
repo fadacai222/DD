@@ -22,6 +22,7 @@ class PeerProfilePage extends StatefulWidget {
     this.onVideoCall,
     this.onOpenMoments,
     this.onOpenMomentPrivacy,
+    this.onContactUpdated,
     this.contact,
     this.gateway,
     this.embedded = false,
@@ -39,6 +40,7 @@ class PeerProfilePage extends StatefulWidget {
   final Future<void> Function()? onVideoCall;
   final Future<void> Function()? onOpenMoments;
   final Future<void> Function()? onOpenMomentPrivacy;
+  final Future<void> Function()? onContactUpdated;
   final ContactItem? contact;
   final ContactsGateway? gateway;
   final bool embedded;
@@ -332,6 +334,16 @@ class _PeerProfilePageState extends State<PeerProfilePage> {
       );
       if (!mounted) return;
       setState(() => _contact = updated);
+      try {
+        await widget.onContactUpdated?.call();
+      } catch (error, stackTrace) {
+        await ClientLog.error(
+          'Contact updated but dependent conversation refresh failed.',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('联系人资料已更新')));

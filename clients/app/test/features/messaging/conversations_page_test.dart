@@ -6,10 +6,83 @@ import 'package:im_client/features/messaging/data/messaging_local_store.dart';
 import 'package:im_client/features/messaging/domain/messaging_models.dart';
 import 'package:im_client/features/messaging/presentation/conversations_page.dart';
 import 'package:im_client/features/messaging/presentation/conversations_page_controller.dart';
+import 'package:im_client/features/messaging/presentation/text_chat_page.dart';
 import 'package:im_client/theme/app_theme.dart';
 import 'package:realtime_poc/realtime_poc.dart';
 
 void main() {
+  testWidgets('durable mention marker opens exact unread group message', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final gateway = _ConversationGateway(
+      conversationOverride: ConversationItem(
+        id: 'group-mention-1',
+        type: 'GROUP',
+        group: const MessagingGroupPreview(
+          id: 'group-mention-1',
+          name: '值班群',
+          memberCount: 6,
+        ),
+        lastSequence: 12,
+        lastReadSequence: 8,
+        latestUnreadMentionMessageId: 'message-mention-11',
+        latestUnreadMentionSequence: 11,
+        unreadCount: 4,
+        preferences: const ConversationPreferences(isPinned: false),
+        createdAt: DateTime.utc(2026, 8, 14),
+        updatedAt: DateTime.utc(2026, 8, 14, 1),
+      ),
+    );
+    final realtime = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:19999'),
+      clientId: 'device-a',
+      channelFactory: (_) => throw StateError('not used'),
+    );
+    final coordinator = MessagingCoordinator(
+      origin: Uri.parse('http://127.0.0.1:18473'),
+      accessToken: 'token',
+      currentUserId: 'user-a',
+      deviceId: 'device-a',
+      gateway: gateway,
+      localStore: _ConversationStore(),
+      realtimeClient: realtime,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await realtime.dispose();
+    });
+    await coordinator.refreshConversations();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: ConversationsPage(
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          accessToken: 'token',
+          currentUserId: 'user-a',
+          deviceId: 'device-a',
+          coordinator: coordinator,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final marker = find.byKey(
+      const Key('conversation-mention-group-mention-1'),
+    );
+    expect(marker, findsOneWidget);
+    expect(find.text('【有人@你】'), findsOneWidget);
+    await tester.tap(marker);
+    await tester.pumpAndSettle();
+    final chat = tester.widget<TextChatPage>(find.byType(TextChatPage));
+    expect(chat.initialMessageId, 'message-mention-11');
+  });
+
   testWidgets(
     'group conversation shows group marker and sender plus content preview',
     (tester) async {
@@ -581,6 +654,14 @@ void main() {
       findsOneWidget,
     );
     expect(tester.getTopLeft(tile).dx, closeTo(initialX, 1));
+    final tileMaterial = tester.widget<Material>(
+      find.ancestor(of: tile, matching: find.byType(Material)).first,
+    );
+    expect(
+      tileMaterial.color?.a,
+      1.0,
+      reason: 'Pinned conversation surface must stay opaque over swipe actions.',
+    );
   });
 
   testWidgets(

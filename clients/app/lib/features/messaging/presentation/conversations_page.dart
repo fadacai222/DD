@@ -66,6 +66,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
   late final DesktopInspectorController _inspector;
   String _query = '';
   String? _selectedConversationId;
+  String? _selectedInitialMessageId;
   bool _showArchived = false;
   int _handledNavigationSerial = 0;
 
@@ -228,7 +229,11 @@ class _ConversationsPageState extends State<ConversationsPage> {
               child: selected == null
                   ? _desktopEmptyState(context)
                   : TextChatPage(
-                      key: ValueKey('desktop-chat-${selected.id}'),
+                      key: ValueKey(
+                        _selectedInitialMessageId == null
+                            ? 'desktop-chat-${selected.id}'
+                            : 'desktop-chat-${selected.id}-${_selectedInitialMessageId!}',
+                      ),
                       coordinator: _coordinator,
                       conversation: selected,
                       currentUserId: widget.currentUserId,
@@ -240,6 +245,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
                       hostVisible: widget.hostVisible,
                       embedded: true,
                       savedMessagesMode: selected.type == 'SELF',
+                      initialMessageId: _selectedInitialMessageId,
                       inspectorController: _inspector,
                     ),
             ),
@@ -553,6 +559,19 @@ class _ConversationsPageState extends State<ConversationsPage> {
   }
 
   Widget _connectionDot() {
+    if (_coordinator.realtimeState == RealtimeConnectionState.connecting) {
+      return const Tooltip(
+        message: '实时连接中',
+        child: SizedBox.square(
+          key: Key('realtime-connecting-indicator'),
+          dimension: 12,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.8,
+            color: Color(0xFFF0A020),
+          ),
+        ),
+      );
+    }
     final (color, tooltip) = switch (_coordinator.realtimeState) {
       RealtimeConnectionState.connected => (DdColors.green, '实时已连接'),
       RealtimeConnectionState.connecting => (const Color(0xFFF0A020), '实时连接中'),
@@ -766,7 +785,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
           final peer = conversation.peer;
           final group = conversation.group;
           final last = conversation.lastMessage?.content?.text ?? '';
-          return (peer?.displayName.toLowerCase().contains(_query) ?? false) ||
+          return (peer?.effectiveDisplayName.toLowerCase().contains(_query) ?? false) ||
               (peer?.handle.toLowerCase().contains(_query) ?? false) ||
               (group?.name.toLowerCase().contains(_query) ?? false) ||
               last.toLowerCase().contains(_query);
@@ -789,7 +808,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
     final background = selected
         ? DdDesktopTokens.selectedSurface(brightness)
         : pinned
-        ? DdDesktopTokens.hoverSurface(brightness).withValues(alpha: 0.58)
+        ? DdDesktopTokens.hoverSurface(brightness)
         : desktop
         ? DdDesktopTokens.sidebarSurface(brightness)
         : Theme.of(context).colorScheme.surface;
@@ -846,6 +865,36 @@ class _ConversationsPageState extends State<ConversationsPage> {
                       const SizedBox(height: 5),
                       Row(
                         children: [
+                          if (conversation.latestUnreadMentionMessageId
+                                  ?.trim()
+                                  .isNotEmpty ==
+                              true) ...[
+                            GestureDetector(
+                              key: Key(
+                                'conversation-mention-${conversation.id}',
+                              ),
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => unawaited(
+                                _openConversation(
+                                  conversation,
+                                  desktop: desktop,
+                                  initialMessageId:
+                                      conversation.latestUnreadMentionMessageId,
+                                ),
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.only(right: 4),
+                                child: Text(
+                                  '【有人@你】',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: DdColors.danger,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                           if (draft.isNotEmpty)
                             const Text(
                               '[草稿] ',
@@ -948,7 +997,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
       return conversation.group?.name ?? '群聊';
     }
     if (conversation.type == 'SELF') return '我的收藏';
-    return conversation.peer?.displayName ?? '会话';
+    return conversation.peer?.effectiveDisplayName ?? '会话';
   }
 
   Widget _groupAvatar(ConversationItem conversation, String title) {
@@ -1166,9 +1215,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
     String? initialMessageId,
   }) async {
     if (desktop) {
-      if (_selectedConversationId != conversation.id) {
+      if (_selectedConversationId != conversation.id ||
+          _selectedInitialMessageId != initialMessageId) {
         _inspector.close();
-        setState(() => _selectedConversationId = conversation.id);
+        setState(() {
+          _selectedConversationId = conversation.id;
+          _selectedInitialMessageId = initialMessageId;
+        });
       }
       return;
     }
@@ -1461,9 +1514,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
     if (sender == null) return content;
     final senderName = sender.id == widget.currentUserId
         ? '我'
-        : (sender.displayName.trim().isNotEmpty
-              ? sender.displayName.trim()
-              : sender.handle.trim());
+        : sender.effectiveDisplayName;
     if (senderName.isEmpty) return content;
     return content.isEmpty ? senderName : '$senderName：$content';
   }

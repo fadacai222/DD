@@ -26,6 +26,7 @@ Future<void> ddFirebaseMessagingBackgroundHandler(RemoteMessage message) async {
           senderUserId: content.senderUserId.isEmpty ? null : content.senderUserId,
           avatarUrl: content.avatarUrl,
           notificationData: content.navigationData,
+          isCall: content.isCall,
         ),
   );
   await _logAndroidBackgroundPushResult(result);

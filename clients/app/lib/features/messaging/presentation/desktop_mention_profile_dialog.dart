@@ -19,6 +19,7 @@ Future<void> showDesktopMentionProfileDialog({
   Future<void> Function()? onVideoCall,
   Future<void> Function()? onOpenMoments,
   Future<void> Function()? onOpenMomentPrivacy,
+  Future<void> Function()? onContactUpdated,
 }) {
   return showGeneralDialog<void>(
     context: context,
@@ -62,6 +63,7 @@ Future<void> showDesktopMentionProfileDialog({
                 handle: handle,
                 displayName: displayName,
                 gateway: gateway,
+                onContactUpdated: onContactUpdated,
                 embedded: true,
                 desktopDialog: true,
                 onClose: () => Navigator.of(dialogContext).pop(),

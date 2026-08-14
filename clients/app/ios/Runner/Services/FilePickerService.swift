@@ -642,10 +642,15 @@ extension FilePickerService: PHPickerViewControllerDelegate {
         return
       }
       do {
-        let values = try destination.resourceValues(forKeys: [.fileSizeKey])
+        let normalized = try self.normalizeLivePhotoStillIfNeeded(
+          destination,
+          originalName: originalName,
+          component: component
+        )
+        let values = try normalized.url.resourceValues(forKeys: [.fileSizeKey])
         let size = Int64(values.fileSize ?? 0)
         if let maxBytes = self.maxBytes, size > maxBytes {
-          try? FileManager.default.removeItem(at: destination)
+          try? FileManager.default.removeItem(at: normalized.url)
           completion(.failure(PickerFailure(
             code: "FILE_TOO_LARGE",
             message: "Live Photo 的 \(component) 组件超过当前允许的大小。",
@@ -658,11 +663,11 @@ extension FilePickerService: PHPickerViewControllerDelegate {
           return
         }
         var payload: [String: Any] = [
-          "path": destination.path,
-          "name": originalName,
+          "path": normalized.url.path,
+          "name": normalized.name,
           "size": size,
         ]
-        if let mime = self.mimeType(forTypeIdentifier: resource.uniformTypeIdentifier) {
+        if let mime = normalized.mimeType ?? self.mimeType(forTypeIdentifier: resource.uniformTypeIdentifier) {
           payload["mimeType"] = mime
         }
         completion(.success(payload))
@@ -675,6 +680,24 @@ extension FilePickerService: PHPickerViewControllerDelegate {
         )))
       }
     }
+  }
+
+  private func normalizeLivePhotoStillIfNeeded(
+    _ source: URL,
+    originalName: String,
+    component: String
+  ) throws -> (url: URL, name: String, mimeType: String?) {
+    guard component == "still", let image = UIImage(contentsOfFile: source.path) else {
+      return (source, originalName, nil)
+    }
+    guard let jpeg = image.jpegData(compressionQuality: 0.92) else {
+      return (source, originalName, nil)
+    }
+    let output = source.deletingPathExtension().appendingPathExtension("jpg")
+    try jpeg.write(to: output, options: .atomic)
+    try? FileManager.default.removeItem(at: source)
+    let base = (originalName as NSString).deletingPathExtension
+    return (output, "\(base.isEmpty ? "DD-live-photo" : base).jpg", "image/jpeg")
   }
 
   private func removeCachedFiles(from payload: [String: Any]) {
