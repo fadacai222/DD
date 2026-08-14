@@ -82,6 +82,21 @@ type telegramFileJSON struct {
 	FileSize int64  `json:"file_size"`
 }
 
+func (provider *TelegramBotProvider) GetMe(ctx context.Context) (TelegramBotInfo, error) {
+	var result struct {
+		ID       int64  `json:"id"`
+		IsBot    bool   `json:"is_bot"`
+		Username string `json:"username"`
+	}
+	if err := provider.call(ctx, "getMe", nil, &result); err != nil {
+		return TelegramBotInfo{}, err
+	}
+	if result.ID <= 0 || !result.IsBot {
+		return TelegramBotInfo{}, ErrTelegramProviderUnavailable
+	}
+	return TelegramBotInfo{ID: result.ID, Username: strings.TrimSpace(result.Username)}, nil
+}
+
 func (provider *TelegramBotProvider) GetStickerSet(ctx context.Context, setName string) (TelegramStickerSet, error) {
 	setName, err := normalizeSetName(setName)
 	if err != nil {

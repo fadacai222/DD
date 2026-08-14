@@ -1,9 +1,11 @@
-# Default-deny Docker build context. The server image only needs the Go module
-# and realtime protocol fixtures used by server tests.
-**
+# Default-deny Docker build context. The API image needs the Go server,
+# the Admin web source compiled into /admin/, and realtime protocol fixtures used by tests.
+*
 
 !server/
 !server/**
+!admin/
+!admin/**
 !packages/
 !packages/realtime_protocol/
 !packages/realtime_protocol/fixtures/
@@ -18,6 +20,13 @@
 **/*.pem
 **/*.key
 **/*firebase-adminsdk*.json
+
+# Admin dependencies/build output are reproducible and must stay out of context.
+admin/node_modules/
+admin/node_modules/**
+admin/dist/
+admin/dist/**
+admin/*.tsbuildinfo
 
 # Local/generated Go output is not part of a reproducible server build.
 server/bin/

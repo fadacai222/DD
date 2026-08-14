@@ -23,13 +23,22 @@ const (
 type secretBox struct {
 	aead cipher.AEAD
 	key  []byte
+	aad  []byte
 }
 
 func newSecretBox(masterSecret string) (*secretBox, error) {
+	return newPurposeSecretBox(masterSecret, "dd-admin-mfa-v1")
+}
+
+func newPurposeSecretBox(masterSecret, purpose string) (*secretBox, error) {
 	if len(masterSecret) < 32 {
 		return nil, errors.New("admin secret must contain at least 32 bytes")
 	}
-	key := sha256.Sum256([]byte("dd-admin-mfa-v1\x00" + masterSecret))
+	purpose = strings.TrimSpace(purpose)
+	if purpose == "" {
+		return nil, errors.New("admin secret purpose is required")
+	}
+	key := sha256.Sum256([]byte(purpose + "\x00" + masterSecret))
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("initialize admin secret cipher: %w", err)
@@ -38,7 +47,7 @@ func newSecretBox(masterSecret string) (*secretBox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize admin secret gcm: %w", err)
 	}
-	return &secretBox{aead: aead, key: append([]byte(nil), key[:]...)}, nil
+	return &secretBox{aead: aead, key: append([]byte(nil), key[:]...), aad: []byte(purpose)}, nil
 }
 
 func (box *secretBox) encrypt(plaintext []byte) ([]byte, error) {
@@ -46,7 +55,7 @@ func (box *secretBox) encrypt(plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate admin secret nonce: %w", err)
 	}
-	sealed := box.aead.Seal(nil, nonce, plaintext, []byte("dd-admin-mfa-v1"))
+	sealed := box.aead.Seal(nil, nonce, plaintext, box.aad)
 	return append(nonce, sealed...), nil
 }
 
@@ -56,7 +65,7 @@ func (box *secretBox) decrypt(ciphertext []byte) ([]byte, error) {
 	}
 	nonce := ciphertext[:box.aead.NonceSize()]
 	sealed := ciphertext[box.aead.NonceSize():]
-	plaintext, err := box.aead.Open(nil, nonce, sealed, []byte("dd-admin-mfa-v1"))
+	plaintext, err := box.aead.Open(nil, nonce, sealed, box.aad)
 	if err != nil {
 		return nil, errors.New("admin secret ciphertext is invalid")
 	}

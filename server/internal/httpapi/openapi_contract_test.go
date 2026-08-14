@@ -194,6 +194,8 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/admin/users/{userId}/suspend":                       {"post"},
 		"/api/v1/admin/users/{userId}/unsuspend":                     {"post"},
 		"/api/v1/admin/audit":                                        {"get"},
+		"/api/v1/admin/integrations/telegram-sticker":                {"get", "put"},
+		"/api/v1/admin/integrations/telegram-sticker/test":           {"post"},
 		"/api/v1/me":                                                 {"get", "patch"},
 		"/api/v1/me/email/send-code":                                 {"post"},
 		"/api/v1/me/email":                                           {"patch"},

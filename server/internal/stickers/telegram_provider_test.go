@@ -207,3 +207,60 @@ func TestTelegramBotProviderRejectsOversizedDownloadLimit(t *testing.T) {
 		t.Fatalf("oversized maxBytes error = %v, want %v", err, ErrInvalidInput)
 	}
 }
+
+func TestTelegramProviderManagerValidatesAndHotSwapsToken(t *testing.T) {
+	const oldToken = "111111:old-token"
+	const newToken = "222222:new-token"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/bot" + oldToken + "/getMe":
+			fmt.Fprint(response, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"old_bot"}}`)
+		case "/bot" + newToken + "/getMe":
+			fmt.Fprint(response, `{"ok":true,"result":{"id":2,"is_bot":true,"username":"new_bot"}}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	manager, err := NewTelegramProviderManager(TelegramBotProviderConfig{Token: oldToken, BaseURL: server.URL, HTTPClient: server.Client()}, TelegramIntegrationSourceEnvironment, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := manager.Test(context.Background()); err != nil || info.Username != "old_bot" {
+		t.Fatalf("initial Test() = %#v, %v", info, err)
+	}
+	if info, err := manager.ValidateToken(context.Background(), newToken); err != nil || info.Username != "new_bot" {
+		t.Fatalf("ValidateToken() = %#v, %v", info, err)
+	}
+	if err := manager.ActivateToken(newToken, TelegramIntegrationSourceAdmin, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := manager.Test(context.Background()); err != nil || info.Username != "new_bot" {
+		t.Fatalf("hot-swapped Test() = %#v, %v", info, err)
+	}
+	if status := manager.Status(); !status.Configured || status.Source != TelegramIntegrationSourceAdmin {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+}
+
+func TestTelegramBotProviderMapsUnauthorizedWithoutLeakingToken(t *testing.T) {
+	const token = "333333:invalid-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(response, `{"ok":false,"error_code":401,"description":"Unauthorized"}`)
+	}))
+	defer server.Close()
+
+	provider, err := NewTelegramBotProvider(TelegramBotProviderConfig{Token: token, BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.GetMe(context.Background())
+	if err != ErrTelegramProviderUnauthorized {
+		t.Fatalf("GetMe() error = %v, want %v", err, ErrTelegramProviderUnauthorized)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatal("provider error leaked bot token")
+	}
+}

@@ -55,7 +55,7 @@ func main() {
 
 	readinessChecks := make(map[string]httpapi.ReadinessCheck)
 	var authService httpapi.AuthService
-	var adminService httpapi.AdminService
+	var adminService *admin.Service
 	var contactsService httpapi.ContactsService
 	var groupsService httpapi.GroupsService
 	var callsService httpapi.CallsService
@@ -68,6 +68,7 @@ func main() {
 	var pushService httpapi.PushService
 	var dataRightsService httpapi.DataRightsService
 	var realtimeEventBus httpapi.RealtimeEventBus
+	var telegramIntegration *stickers.TelegramProviderManager
 	if config.DatabaseURL != "" {
 		startupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := database.Open(startupContext, config.DatabaseURL, metrics)
@@ -182,15 +183,31 @@ func main() {
 			logger.Error("voice transcription service initialization failed", "error", err)
 			os.Exit(2)
 		}
-		var telegramProvider stickers.TelegramProvider
-		if config.TelegramBotToken != "" {
-			telegramProvider, err = stickers.NewTelegramBotProvider(stickers.TelegramBotProviderConfig{Token: config.TelegramBotToken})
-			if err != nil {
-				logger.Error("telegram sticker relay initialization failed", "error", err)
-				os.Exit(2)
-			}
+		telegramToken := config.TelegramBotToken
+		telegramSource := stickers.TelegramIntegrationSourceNone
+		var telegramUpdatedAt *time.Time
+		if telegramToken != "" {
+			telegramSource = stickers.TelegramIntegrationSourceEnvironment
 		}
-		stickersService, err = stickers.NewService(stickers.Config{Pool: pool, Provider: telegramProvider, Media: managedMedia})
+		secretContext, cancelSecretLoad := context.WithTimeout(context.Background(), 5*time.Second)
+		storedTelegram, secretErr := adminService.LoadIntegrationSecret(secretContext, admin.IntegrationTelegramBotToken)
+		cancelSecretLoad()
+		if secretErr == nil {
+			telegramToken = storedTelegram.Value
+			telegramSource = stickers.TelegramIntegrationSourceAdmin
+			telegramUpdatedAt = &storedTelegram.UpdatedAt
+		} else if !errors.Is(secretErr, admin.ErrNotFound) {
+			logger.Error("telegram sticker admin configuration load failed", "error", secretErr)
+			os.Exit(2)
+		}
+		telegramIntegration, err = stickers.NewTelegramProviderManager(
+			stickers.TelegramBotProviderConfig{Token: telegramToken}, telegramSource, telegramUpdatedAt,
+		)
+		if err != nil {
+			logger.Error("telegram sticker relay initialization failed", "error", err)
+			os.Exit(2)
+		}
+		stickersService, err = stickers.NewService(stickers.Config{Pool: pool, Provider: telegramIntegration, Media: managedMedia})
 		if err != nil {
 			logger.Error("sticker service initialization failed", "error", err)
 			os.Exit(2)
@@ -258,7 +275,9 @@ func main() {
 			LiveKitAPISecret:   config.LiveKitAPISecret,
 			ReadinessChecks:    readinessChecks,
 			AuthService:        authService,
-			AdminService:       adminService,
+			AdminService:               adminService,
+			TelegramIntegrationService: telegramIntegration,
+			AdminWebRoot:               config.AdminWebRoot,
 			ContactsService:    contactsService,
 			GroupsService:      groupsService,
 			CallsService:       callsService,

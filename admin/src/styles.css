@@ -140,6 +140,14 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .recovery-grid code { background: rgba(255,255,255,0.55); border-radius: 8px; padding: 8px; user-select: all; }
 .recovery-form { display: grid; gap: 12px; }
 .recovery-form h2 { margin: 0; }
+.integration-heading { align-items: flex-start; }
+.integration-heading .eyebrow { margin-top: 0; }
+.integration-heading h2 { margin: 0 0 8px; }
+.integration-heading .muted { margin: 0; max-width: 760px; }
+.integration-definition { margin-top: 4px; }
+.integration-form { margin-top: 4px; }
+.status-ok { background: #dcefe4; color: #22613f; }
+.status-off { background: #edf0ee; color: #66716b; }
 
 @media (prefers-color-scheme: dark) {
   :root { color: #e7f0eb; background: #101713; }

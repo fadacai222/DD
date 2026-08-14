@@ -18,6 +18,29 @@ func TestAdminServiceRejectsMissingOrWeakSecuritySecret(t *testing.T) {
 	}
 }
 
+func TestAdminIntegrationSecretUsesSeparateCryptographicDomain(t *testing.T) {
+	master := strings.Repeat("s", 40)
+	mfaBox, err := newSecretBox(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	integrationBox, err := newPurposeSecretBox(master, "dd-admin-integration-secret-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := integrationBox.encrypt([]byte("123456:bot-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mfaBox.decrypt(ciphertext); err == nil {
+		t.Fatal("MFA cryptographic domain unexpectedly decrypted integration secret")
+	}
+	plaintext, err := integrationBox.decrypt(ciphertext)
+	if err != nil || string(plaintext) != "123456:bot-token" {
+		t.Fatalf("integration decrypt = %q, %v", plaintext, err)
+	}
+}
+
 func TestAdminSecretCryptographyIsIndependentFromOrdinaryAuthSecret(t *testing.T) {
 	adminSecret := strings.Repeat("m", 40)
 	ordinaryAuthSecretBefore := strings.Repeat("a", 40)

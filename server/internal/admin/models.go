@@ -36,6 +36,10 @@ func (role Role) CanReadAudit() bool {
 	return role == RoleSuperAdmin || role == RoleSupportReadOnly
 }
 
+func (role Role) CanManageIntegrations() bool {
+	return role == RoleSuperAdmin
+}
+
 var (
 	ErrUnavailable        = errors.New("admin service unavailable")
 	ErrInvalidCredentials = errors.New("invalid admin credentials")
@@ -169,6 +173,18 @@ type ModerationAction struct {
 	PreviousStatus string    `json:"previousStatus"`
 	NewStatus      string    `json:"newStatus"`
 	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type IntegrationSecret struct {
+	Key       string
+	Value     string
+	UpdatedAt time.Time
+}
+
+type IntegrationSecretStatus struct {
+	Key        string    `json:"key"`
+	Configured bool      `json:"configured"`
+	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
 }
 
 type AuditEvent struct {

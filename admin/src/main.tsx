@@ -13,7 +13,7 @@ if (!root) {
 createRoot(root).render(
   <StrictMode>
     <ErrorBoundary>
-      <BrowserRouter>
+      <BrowserRouter basename="/admin">
         <App />
       </BrowserRouter>
     </ErrorBoundary>

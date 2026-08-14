@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"example.com/selfhosted-im/server/internal/admin"
+	"example.com/selfhosted-im/server/internal/stickers"
 	"github.com/google/uuid"
 )
 
@@ -33,6 +34,14 @@ type AdminService interface {
 	GetUser(ctx context.Context, principal admin.Principal, userID uuid.UUID) (admin.UserSummary, error)
 	ModerateUser(ctx context.Context, principal admin.Principal, userID uuid.UUID, action, reason string, client admin.ClientContext) (admin.UserSummary, admin.ModerationAction, error)
 	ListAuditEvents(ctx context.Context, principal admin.Principal, limit int) ([]admin.AuditEvent, error)
+	SetIntegrationSecret(ctx context.Context, principal admin.Principal, key, value string, client admin.ClientContext) (admin.IntegrationSecretStatus, error)
+}
+
+type TelegramIntegrationService interface {
+	Status() stickers.TelegramRelayStatus
+	ValidateToken(ctx context.Context, rawToken string) (stickers.TelegramBotInfo, error)
+	ActivateToken(rawToken string, source stickers.TelegramIntegrationSource, updatedAt *time.Time) error
+	Test(ctx context.Context) (stickers.TelegramBotInfo, error)
 }
 
 type adminLoginRequest struct {
@@ -48,6 +57,10 @@ type adminChallengeRequest struct {
 
 type adminReasonRequest struct {
 	Reason string `json:"reason"`
+}
+
+type adminTelegramIntegrationRequest struct {
+	BotToken string `json:"botToken"`
 }
 
 func (s *server) handleAdminLogin(response http.ResponseWriter, request *http.Request) {
@@ -434,6 +447,99 @@ func (s *server) handleAdminAudit(response http.ResponseWriter, request *http.Re
 		return
 	}
 	writeSuccess(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) handleAdminTelegramIntegration(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodPut {
+		methodNotAllowed(response, http.MethodGet, http.MethodPut)
+		return
+	}
+	if s.telegramIntegration == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "TELEGRAM_INTEGRATION_UNAVAILABLE", "Telegram Sticker integration control is unavailable")
+		return
+	}
+	principal, _, _, ok := s.requireAdminPrincipal(response, request, request.Method == http.MethodPut)
+	if !ok {
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		writeSuccess(response, http.StatusOK, s.telegramIntegration.Status())
+	case http.MethodPut:
+		if !principal.Role.CanManageIntegrations() {
+			s.writeAdminError(response, request, admin.ErrForbidden)
+			return
+		}
+		if !requireJSON(response, request) {
+			return
+		}
+		var input adminTelegramIntegrationRequest
+		if err := decodeSingleJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_ADMIN_REQUEST", err.Error())
+			return
+		}
+		token := strings.TrimSpace(input.BotToken)
+		if len(token) < 20 || len(token) > 256 || strings.ContainsAny(token, " \t\r\n") {
+			writeAPIError(response, http.StatusBadRequest, "TELEGRAM_BOT_TOKEN_INVALID", "Telegram Bot Token format is invalid")
+			return
+		}
+		checkCtx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+		bot, err := s.telegramIntegration.ValidateToken(checkCtx, token)
+		cancel()
+		if err != nil {
+			s.writeTelegramIntegrationError(response, request, err)
+			return
+		}
+		stored, err := s.admin.SetIntegrationSecret(request.Context(), principal, admin.IntegrationTelegramBotToken, token, adminClientContext(request))
+		if err != nil {
+			s.writeAdminError(response, request, err)
+			return
+		}
+		if err := s.telegramIntegration.ActivateToken(token, stickers.TelegramIntegrationSourceAdmin, &stored.UpdatedAt); err != nil {
+			s.logger.Error("telegram sticker token activation failed after persistence", "requestId", response.Header().Get(requestIDHeader), "error", err)
+			writeAPIError(response, http.StatusInternalServerError, "TELEGRAM_INTEGRATION_ACTIVATION_FAILED", "Telegram Bot Token was saved but could not be activated in this process")
+			return
+		}
+		writeSuccess(response, http.StatusOK, map[string]any{"status": s.telegramIntegration.Status(), "bot": bot})
+	}
+}
+
+func (s *server) handleAdminTelegramIntegrationTest(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		methodNotAllowed(response, http.MethodPost)
+		return
+	}
+	if s.telegramIntegration == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "TELEGRAM_INTEGRATION_UNAVAILABLE", "Telegram Sticker integration control is unavailable")
+		return
+	}
+	if _, _, _, ok := s.requireAdminPrincipal(response, request, true); !ok {
+		return
+	}
+	checkCtx, cancel := context.WithTimeout(request.Context(), 12*time.Second)
+	bot, err := s.telegramIntegration.Test(checkCtx)
+	cancel()
+	if err != nil {
+		s.writeTelegramIntegrationError(response, request, err)
+		return
+	}
+	writeSuccess(response, http.StatusOK, map[string]any{"ok": true, "bot": bot, "status": s.telegramIntegration.Status()})
+}
+
+func (s *server) writeTelegramIntegrationError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, stickers.ErrTelegramRelayNotConfigured):
+		writeAPIError(response, http.StatusServiceUnavailable, "TELEGRAM_RELAY_NOT_CONFIGURED", "Telegram Bot Token is not configured")
+	case errors.Is(err, stickers.ErrTelegramProviderUnauthorized):
+		writeAPIError(response, http.StatusBadRequest, "TELEGRAM_BOT_TOKEN_INVALID", "Telegram rejected this Bot Token")
+	case errors.Is(err, stickers.ErrTelegramProviderUnavailable):
+		writeAPIError(response, http.StatusBadGateway, "TELEGRAM_PROVIDER_UNAVAILABLE", "Telegram Bot API is unavailable or did not return a valid response")
+	case errors.Is(err, stickers.ErrInvalidInput):
+		writeAPIError(response, http.StatusBadRequest, "TELEGRAM_BOT_TOKEN_INVALID", "Telegram Bot Token format is invalid")
+	default:
+		s.logger.Error("telegram integration request failed", "requestId", response.Header().Get(requestIDHeader), "path", request.URL.Path, "error", err)
+		writeAPIError(response, http.StatusInternalServerError, "TELEGRAM_INTEGRATION_FAILED", "Telegram integration request failed")
+	}
 }
 
 func (s *server) requireAdminPrincipal(response http.ResponseWriter, request *http.Request, requireCSRF bool) (admin.Principal, admin.SessionResult, string, bool) {

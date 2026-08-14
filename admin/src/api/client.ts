@@ -63,6 +63,14 @@ export interface UserItem {
   createdAt: string;
   updatedAt: string;
 }
+export type TelegramIntegrationSource = 'NONE' | 'ENVIRONMENT' | 'ADMIN_OVERRIDE';
+export interface TelegramIntegrationStatus {
+  configured: boolean;
+  source: TelegramIntegrationSource;
+  updatedAt?: string;
+}
+export interface TelegramBotInfo { id: number; username?: string; }
+
 export interface AuditItem {
   id: string;
   actorAdminId?: string;
@@ -174,6 +182,28 @@ export class ApiClient {
     return response.data.items;
   }
 
+  async getTelegramIntegration(): Promise<TelegramIntegrationStatus> {
+    const response = await this.request<SuccessEnvelope<TelegramIntegrationStatus>>('/api/v1/admin/integrations/telegram-sticker');
+    return response.data;
+  }
+
+  async configureTelegramIntegration(botToken: string): Promise<{ status: TelegramIntegrationStatus; bot: TelegramBotInfo }> {
+    const response = await this.request<SuccessEnvelope<{ status: TelegramIntegrationStatus; bot: TelegramBotInfo }>>('/api/v1/admin/integrations/telegram-sticker', {
+      method: 'PUT',
+      body: { botToken },
+      csrf: true,
+    });
+    return response.data;
+  }
+
+  async testTelegramIntegration(): Promise<{ ok: boolean; status: TelegramIntegrationStatus; bot: TelegramBotInfo }> {
+    const response = await this.request<SuccessEnvelope<{ ok: boolean; status: TelegramIntegrationStatus; bot: TelegramBotInfo }>>('/api/v1/admin/integrations/telegram-sticker/test', {
+      method: 'POST',
+      csrf: true,
+    });
+    return response.data;
+  }
+
   private async request<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; csrf?: boolean; credentials?: RequestCredentials } = {}): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -198,4 +228,5 @@ export class ApiClient {
   }
 }
 
-export const apiClient = new ApiClient(import.meta.env.VITE_API_ORIGIN?.trim() || 'http://127.0.0.1:18473');
+const defaultApiOrigin = typeof window === 'undefined' ? 'http://127.0.0.1:18473' : window.location.origin;
+export const apiClient = new ApiClient(import.meta.env.VITE_API_ORIGIN?.trim() || defaultApiOrigin);

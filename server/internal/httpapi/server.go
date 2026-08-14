@@ -55,37 +55,39 @@ type RealtimeEventBus interface {
 }
 
 type Config struct {
-	Version            string
-	PublicBaseURL      string
-	InstanceName       string
-	RegistrationMode   string
-	AllowedOrigins     []string
-	AllowedHTTPOrigins []string
-	LiveKitURL         string
-	LiveKitPublicPort  int
-	LiveKitAPIKey      string
-	LiveKitAPISecret   string
-	CallTokenTTL       time.Duration
-	CallRingTimeout    time.Duration
-	ReadinessChecks    map[string]ReadinessCheck
-	AuthService        AuthService
-	AdminService       AdminService
-	ContactsService    ContactsService
-	GroupsService      GroupsService
-	CallsService       CallsService
-	MessagingService   MessagingService
-	TranscriptionService TranscriptionService
-	MediaService       MediaService
-	StickersService    StickersService
-	MomentsService     MomentsService
-	QRService          QRService
-	PushService        PushService
-	DataRightsService  DataRightsService
-	PushAvatarSecret   string
-	RealtimeEventBus   RealtimeEventBus
-	Metrics            RuntimeMetrics
-	Logger             *slog.Logger
-	Now                func() time.Time
+	Version                    string
+	PublicBaseURL              string
+	InstanceName               string
+	RegistrationMode           string
+	AllowedOrigins             []string
+	AllowedHTTPOrigins         []string
+	LiveKitURL                 string
+	LiveKitPublicPort          int
+	LiveKitAPIKey              string
+	LiveKitAPISecret           string
+	CallTokenTTL               time.Duration
+	CallRingTimeout            time.Duration
+	ReadinessChecks            map[string]ReadinessCheck
+	AuthService                AuthService
+	AdminService               AdminService
+	TelegramIntegrationService TelegramIntegrationService
+	AdminWebRoot               string
+	ContactsService            ContactsService
+	GroupsService              GroupsService
+	CallsService               CallsService
+	MessagingService           MessagingService
+	TranscriptionService       TranscriptionService
+	MediaService               MediaService
+	StickersService            StickersService
+	MomentsService             MomentsService
+	QRService                  QRService
+	PushService                PushService
+	DataRightsService          DataRightsService
+	PushAvatarSecret           string
+	RealtimeEventBus           RealtimeEventBus
+	Metrics                    RuntimeMetrics
+	Logger                     *slog.Logger
+	Now                        func() time.Time
 }
 
 type server struct {
@@ -106,6 +108,8 @@ type server struct {
 	readinessChecks      map[string]ReadinessCheck
 	auth                 AuthService
 	admin                AdminService
+	telegramIntegration  TelegramIntegrationService
+	adminWebRoot          string
 	contacts             ContactsService
 	groups               GroupsService
 	formalCalls          CallsService
@@ -163,39 +167,41 @@ func NewHandler(config Config) http.Handler {
 	}
 
 	s := &server{
-		version:            version,
-		publicBaseURL:      strings.TrimRight(strings.TrimSpace(config.PublicBaseURL), "/"),
-		instanceName:       instanceName,
-		registrationMode:   normalizeRegistrationMode(config.RegistrationMode),
-		allowedOrigins:     append([]string(nil), config.AllowedOrigins...),
-		allowedHTTPOrigins: append([]string(nil), config.AllowedHTTPOrigins...),
-		liveKitURL:         strings.TrimSpace(config.LiveKitURL),
-		liveKitPublicPort:  liveKitPublicPort,
-		liveKitAPIKey:      strings.TrimSpace(config.LiveKitAPIKey),
-		liveKitAPISecret:   strings.TrimSpace(config.LiveKitAPISecret),
-		callTokenTTL:       callTokenTTL,
-		callRingTimeout:    callRingTimeout,
-		now:                now,
-		logger:             logger,
-		readinessChecks:    copyReadinessChecks(config.ReadinessChecks),
-		auth:               config.AuthService,
-		admin:              config.AdminService,
-		contacts:           config.ContactsService,
-		groups:             config.GroupsService,
-		formalCalls:        config.CallsService,
-		messaging:          config.MessagingService,
-		transcription:      config.TranscriptionService,
-		media:              config.MediaService,
-		stickers:           config.StickersService,
-		moments:            config.MomentsService,
-		qr:                 config.QRService,
-		push:               config.PushService,
-		dataRights:         config.DataRightsService,
-		pushAvatarSecret:   strings.TrimSpace(config.PushAvatarSecret),
-		realtimeEventBus:   config.RealtimeEventBus,
-		metrics:            config.Metrics,
-		legacyCalls:        newCallStore(),
-		hub:                newSocketHub(),
+		version:             version,
+		publicBaseURL:       strings.TrimRight(strings.TrimSpace(config.PublicBaseURL), "/"),
+		instanceName:        instanceName,
+		registrationMode:    normalizeRegistrationMode(config.RegistrationMode),
+		allowedOrigins:      append([]string(nil), config.AllowedOrigins...),
+		allowedHTTPOrigins:  append([]string(nil), config.AllowedHTTPOrigins...),
+		liveKitURL:          strings.TrimSpace(config.LiveKitURL),
+		liveKitPublicPort:   liveKitPublicPort,
+		liveKitAPIKey:       strings.TrimSpace(config.LiveKitAPIKey),
+		liveKitAPISecret:    strings.TrimSpace(config.LiveKitAPISecret),
+		callTokenTTL:        callTokenTTL,
+		callRingTimeout:     callRingTimeout,
+		now:                 now,
+		logger:              logger,
+		readinessChecks:     copyReadinessChecks(config.ReadinessChecks),
+		auth:                config.AuthService,
+		admin:               config.AdminService,
+		telegramIntegration: config.TelegramIntegrationService,
+		adminWebRoot:         strings.TrimSpace(config.AdminWebRoot),
+		contacts:            config.ContactsService,
+		groups:              config.GroupsService,
+		formalCalls:         config.CallsService,
+		messaging:           config.MessagingService,
+		transcription:       config.TranscriptionService,
+		media:               config.MediaService,
+		stickers:            config.StickersService,
+		moments:             config.MomentsService,
+		qr:                  config.QRService,
+		push:                config.PushService,
+		dataRights:          config.DataRightsService,
+		pushAvatarSecret:    strings.TrimSpace(config.PushAvatarSecret),
+		realtimeEventBus:    config.RealtimeEventBus,
+		metrics:             config.Metrics,
+		legacyCalls:         newCallStore(),
+		hub:                 newSocketHub(),
 	}
 	s.eventSequence.Store(now().UTC().UnixMicro())
 	if s.realtimeEventBus != nil {
@@ -206,6 +212,8 @@ func NewHandler(config Config) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openimx/client", s.handleWellKnownClient)
+	mux.HandleFunc("/admin", s.handleAdminWeb)
+	mux.HandleFunc("/admin/", s.handleAdminWeb)
 	mux.HandleFunc("/push-assets/avatars/", s.handlePushAvatarAsset)
 	mux.HandleFunc("/api/v1/instance", s.handleInstance)
 	mux.HandleFunc("/health", s.handleHealth)
@@ -238,6 +246,8 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/api/v1/admin/users", s.handleAdminUsers)
 	mux.HandleFunc("/api/v1/admin/users/", s.handleAdminUserByID)
 	mux.HandleFunc("/api/v1/admin/audit", s.handleAdminAudit)
+	mux.HandleFunc("/api/v1/admin/integrations/telegram-sticker", s.handleAdminTelegramIntegration)
+	mux.HandleFunc("/api/v1/admin/integrations/telegram-sticker/test", s.handleAdminTelegramIntegrationTest)
 	mux.HandleFunc("/api/v1/me", s.handleMe)
 	mux.HandleFunc("/api/v1/me/email/send-code", s.handleMeEmailChangeCode)
 	mux.HandleFunc("/api/v1/me/email", s.handleMeEmail)

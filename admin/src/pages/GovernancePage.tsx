@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { TelegramIntegrationPanel } from './TelegramIntegrationPanel';
 import {
   ApiError,
   apiClient,
@@ -15,7 +16,7 @@ interface Props {
   onSessionLost(): void;
 }
 
-type Tab = 'reports' | 'users' | 'audit' | 'sessions';
+type Tab = 'reports' | 'users' | 'audit' | 'sessions' | 'integrations';
 
 export function GovernancePage({ session, onSessionLost }: Props) {
   const [tab, setTab] = useState<Tab>('reports');
@@ -105,6 +106,7 @@ export function GovernancePage({ session, onSessionLost }: Props) {
         <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>用户治理</button>
         <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>安全审计</button>
         <button className={tab === 'sessions' ? 'active' : ''} onClick={() => setTab('sessions')}>管理员会话</button>
+        <button className={tab === 'integrations' ? 'active' : ''} onClick={() => setTab('integrations')}>集成服务</button>
       </nav>
 
       {error ? <p className="error-box" role="alert">{error}</p> : null}
@@ -175,6 +177,8 @@ export function GovernancePage({ session, onSessionLost }: Props) {
           )}
         </section>
       ) : null}
+
+      {tab === 'integrations' ? <TelegramIntegrationPanel session={session} onSessionLost={onSessionLost} /> : null}
 
       {tab === 'sessions' ? (
         <section className="panel stack">

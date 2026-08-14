@@ -58,6 +58,7 @@ type Config struct {
 	VoiceTranscriptionModel      string
 	VoiceTranscriptionCredential string
 	TelegramBotToken    string
+	AdminWebRoot        string
 	AuthTokenSecret     string
 	AdminSecuritySecret string
 	RegistrationMode    RegistrationMode
@@ -201,6 +202,7 @@ func Load() (Config, error) {
 		VoiceTranscriptionModel: strings.TrimSpace(os.Getenv("VOICE_TRANSCRIPTION_MODEL")),
 		VoiceTranscriptionCredential: voiceTranscriptionCredential,
 		TelegramBotToken:    telegramBotToken,
+		AdminWebRoot:        strings.TrimSpace(os.Getenv("ADMIN_WEB_ROOT")),
 		AuthTokenSecret:     authTokenSecret,
 		AdminSecuritySecret: adminSecuritySecret,
 		RegistrationMode:    registrationMode,

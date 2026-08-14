@@ -2290,6 +2290,13 @@
     },
     "/api/v1/admin/audit": {
       "get":{"operationId":"listAdminAuditEvents","summary":"List persistent administrator security audit events","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Administrator audit events","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/integrations/telegram-sticker": {
+      "get":{"operationId":"getAdminTelegramStickerIntegration","summary":"Get Telegram Sticker Relay configuration status without exposing the Bot Token","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Telegram Sticker Relay status","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"503":{"description":"Telegram integration control is unavailable"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}},
+      "put":{"operationId":"configureAdminTelegramStickerIntegration","summary":"Validate, encrypt and hot-activate a Telegram Bot Token","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminTelegramBotTokenRequest"}}}},"responses":{"200":{"description":"Token validated, encrypted and activated; plaintext token is never returned","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"502":{"description":"Telegram Bot API is unavailable"},"503":{"description":"Telegram integration control is unavailable"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/integrations/telegram-sticker/test": {
+      "post":{"operationId":"testAdminTelegramStickerIntegration","summary":"Test the currently active Telegram Bot Token with Telegram getMe","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"responses":{"200":{"description":"Telegram Bot API test succeeded","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"502":{"description":"Telegram Bot API is unavailable"},"503":{"description":"Telegram Bot Token is not configured or integration control is unavailable"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     }
   },
   "components": {
@@ -2381,6 +2388,10 @@
       "AdminReasonRequest": {
         "type":"object","additionalProperties":false,"required":["reason"],
         "properties":{"reason":{"type":"string","minLength":3,"maxLength":1000}}
+      },
+      "AdminTelegramBotTokenRequest": {
+        "type":"object","additionalProperties":false,"required":["botToken"],
+        "properties":{"botToken":{"type":"string","minLength":20,"maxLength":256,"writeOnly":true,"description":"Telegram Bot Token. Validated with Telegram getMe, encrypted at rest, and never returned by the Admin API."}}
       },
       "AccountDeletionRequest": {
         "type": "object",
