@@ -14,6 +14,7 @@ var (
 	ErrRateLimited                      = errors.New("sticker operation rate limited")
 	ErrTelegramRelayNotConfigured       = errors.New("telegram sticker relay is not configured")
 	ErrTelegramProviderUnavailable      = errors.New("telegram sticker provider unavailable")
+	ErrTelegramProviderUnauthorized     = errors.New("telegram sticker provider authentication failed")
 	ErrTelegramStickerFormatUnsupported = errors.New("telegram sticker format unsupported")
 	ErrTelegramStickerDownloadTooLarge  = errors.New("telegram sticker download too large")
 	ErrTelegramStickerDownloadInvalid   = errors.New("telegram sticker download invalid")

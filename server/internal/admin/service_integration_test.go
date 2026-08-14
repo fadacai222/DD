@@ -127,6 +127,26 @@ func TestAdminAuthGovernanceLifecycleWithPostgres(t *testing.T) {
 	moderatorPrincipal := enrollAdminSession(t, ctx, service, emails[1], passwordValue, &now, client)
 	supportPrincipal := enrollAdminSession(t, ctx, service, emails[2], passwordValue, &now, client)
 
+	integrationToken := "123456789:integration-test-token-not-a-real-secret"
+	if _, err := service.SetIntegrationSecret(ctx, moderatorPrincipal, IntegrationTelegramBotToken, integrationToken, client); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("moderator integration secret mutation error=%v", err)
+	}
+	storedIntegration, err := service.SetIntegrationSecret(ctx, superPrincipal, IntegrationTelegramBotToken, integrationToken, client)
+	if err != nil || !storedIntegration.Configured {
+		t.Fatalf("store integration secret status=%#v err=%v", storedIntegration, err)
+	}
+	loadedIntegration, err := service.LoadIntegrationSecret(ctx, IntegrationTelegramBotToken)
+	if err != nil || loadedIntegration.Value != integrationToken {
+		t.Fatalf("load integration secret valueMatch=%v err=%v", loadedIntegration.Value == integrationToken, err)
+	}
+	var integrationCiphertext []byte
+	if err := pool.QueryRow(ctx, `SELECT secret_ciphertext FROM admin_integration_secrets WHERE key=$1`, IntegrationTelegramBotToken).Scan(&integrationCiphertext); err != nil {
+		t.Fatalf("load integration ciphertext: %v", err)
+	}
+	if strings.Contains(string(integrationCiphertext), integrationToken) {
+		t.Fatal("integration secret was stored as plaintext")
+	}
+
 	for index := 0; index < adminLoginFailureLimit; index++ {
 		_, _ = service.Login(ctx, emails[3], "wrong-password", ClientContext{RemoteAddress: "127.0.0.2:43000", UserAgent: "rate-limit"})
 	}
@@ -188,7 +208,8 @@ func TestAdminAuthGovernanceLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("list audit: %v", err)
 	}
 	if !containsAuditAction(audit, "REPORT_STATUS_CHANGED") || !containsAuditAction(audit, "REPORT_STATUS_CHANGE_DENIED") ||
-		!containsAuditAction(audit, "USER_MODERATION_DENIED") || !containsAuditAction(audit, "USER_SUSPEND") || !containsAuditAction(audit, "USER_UNSUSPEND") {
+		!containsAuditAction(audit, "USER_MODERATION_DENIED") || !containsAuditAction(audit, "USER_SUSPEND") || !containsAuditAction(audit, "USER_UNSUSPEND") ||
+		!containsAuditAction(audit, "INTEGRATION_SECRET_UPDATED") || !containsAuditAction(audit, "INTEGRATION_SECRET_UPDATE_DENIED") {
 		t.Fatalf("audit persistence missing required actions: %#v", audit)
 	}
 	if _, err := service.ListAuditEvents(ctx, moderatorPrincipal, 10); !errors.Is(err, ErrForbidden) {
@@ -287,6 +308,7 @@ func cleanupAdminIntegration(t *testing.T, pool *pgxpool.Pool, emails []string, 
 	_, _ = pool.Exec(ctx, `DELETE FROM user_reports WHERE reporter_user_id=ANY($1::uuid[]) OR target_user_id=ANY($1::uuid[])`, userIDs)
 	_, _ = pool.Exec(ctx, `DELETE FROM user_moderation_actions WHERE target_user_id=ANY($1::uuid[])`, userIDs)
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id=ANY($1::uuid[])`, userIDs)
+	_, _ = pool.Exec(ctx, `DELETE FROM admin_integration_secrets WHERE key=$1`, IntegrationTelegramBotToken)
 	_, _ = pool.Exec(ctx, `DELETE FROM admin_login_failures WHERE email_normalized=ANY($1::text[])`, emails)
 	_, _ = pool.Exec(ctx, `DELETE FROM admin_accounts WHERE email_normalized=ANY($1::text[])`, emails)
 }

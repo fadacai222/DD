@@ -37,14 +37,15 @@ type Config struct {
 }
 
 type Service struct {
-	pool         *pgxpool.Pool
-	hasher       *password.Hasher
-	box          *secretBox
-	dummyHash    string
-	now          func() time.Time
-	sessionTTL   time.Duration
-	idleTTL      time.Duration
-	challengeTTL time.Duration
+	pool           *pgxpool.Pool
+	hasher         *password.Hasher
+	box            *secretBox
+	integrationBox *secretBox
+	dummyHash      string
+	now            func() time.Time
+	sessionTTL     time.Duration
+	idleTTL        time.Duration
+	challengeTTL   time.Duration
 }
 
 type adminRow struct {
@@ -66,6 +67,10 @@ func NewService(config Config) (*Service, error) {
 		return nil, errors.New("admin password hasher is required")
 	}
 	box, err := newSecretBox(config.Secret)
+	if err != nil {
+		return nil, err
+	}
+	integrationBox, err := newPurposeSecretBox(config.Secret, "dd-admin-integration-secret-v1")
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +98,7 @@ func NewService(config Config) (*Service, error) {
 		return nil, fmt.Errorf("prepare admin password timing defense: %w", err)
 	}
 	return &Service{
-		pool: config.Pool, hasher: config.Hasher, box: box, dummyHash: dummyHash,
+		pool: config.Pool, hasher: config.Hasher, box: box, integrationBox: integrationBox, dummyHash: dummyHash,
 		now: now, sessionTTL: sessionTTL, idleTTL: idleTTL, challengeTTL: challengeTTL,
 	}, nil
 }

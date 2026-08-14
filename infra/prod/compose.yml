@@ -215,6 +215,7 @@ services:
       REDIS_URL_FILE: /run/secrets/redis_url
       AUTH_TOKEN_SECRET_FILE: /run/secrets/auth_token_secret
       ADMIN_SECURITY_SECRET_FILE: /run/secrets/admin_security_secret
+      ADMIN_WEB_ROOT: /app/admin
       EMAIL_CODE_PEPPER_FILE: /run/secrets/email_code_pepper
       LIVEKIT_URL: wss://${DD_LIVEKIT_DOMAIN:?DD_LIVEKIT_DOMAIN is required}
       LIVEKIT_PUBLIC_PORT: "443"

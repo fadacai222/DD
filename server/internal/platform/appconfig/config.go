@@ -52,6 +52,7 @@ type Config struct {
 	MediaS3AccessKey    string
 	MediaS3SecretKey    string
 	TelegramBotToken    string
+	AdminWebRoot        string
 	AuthTokenSecret     string
 	AdminSecuritySecret string
 	RegistrationMode    RegistrationMode
@@ -186,6 +187,7 @@ func Load() (Config, error) {
 		MediaS3AccessKey:    mediaS3AccessKey,
 		MediaS3SecretKey:    mediaS3SecretKey,
 		TelegramBotToken:    telegramBotToken,
+		AdminWebRoot:        strings.TrimSpace(os.Getenv("ADMIN_WEB_ROOT")),
 		AuthTokenSecret:     authTokenSecret,
 		AdminSecuritySecret: adminSecuritySecret,
 		RegistrationMode:    registrationMode,
