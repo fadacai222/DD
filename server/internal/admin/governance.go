@@ -350,18 +350,40 @@ func (service *Service) ModerateUser(ctx context.Context, principal Principal, u
 }
 
 func (service *Service) ListAuditEvents(ctx context.Context, principal Principal, limit int) ([]AuditEvent, error) {
+	return service.ListAuditEventsFiltered(ctx, principal, AuditFilter{Limit: limit})
+}
+
+func (service *Service) ListAuditEventsFiltered(ctx context.Context, principal Principal, filter AuditFilter) ([]AuditEvent, error) {
 	if !principal.Role.CanReadAudit() {
 		return nil, ErrForbidden
 	}
+	limit := filter.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 50
+	}
+	action := strings.ToUpper(strings.TrimSpace(filter.Action))
+	targetType := strings.ToUpper(strings.TrimSpace(filter.TargetType))
+	actorAdminID := strings.TrimSpace(filter.ActorAdminID)
+	if len(action) > 80 || len(targetType) > 40 || len(actorAdminID) > 64 {
+		return nil, fmt.Errorf("%w: invalid audit filter", ErrInvalidInput)
+	}
+	if actorAdminID != "" {
+		parsed, err := uuid.Parse(actorAdminID)
+		if err != nil || parsed == uuid.Nil {
+			return nil, fmt.Errorf("%w: invalid audit actor administrator ID", ErrInvalidInput)
+		}
+		actorAdminID = parsed.String()
 	}
 	rows, err := service.pool.Query(ctx, `
 		SELECT id::text,COALESCE(actor_admin_id::text,''),COALESCE(session_id::text,''),COALESCE(actor_role,''),action,
 		       COALESCE(target_type,''),COALESCE(target_id,''),COALESCE(reason,''),detail,
 		       COALESCE(client_ip::text,''),user_agent,created_at
-		FROM admin_audit_events ORDER BY created_at DESC LIMIT $1
-	`, limit)
+		FROM admin_audit_events
+		WHERE ($1='' OR action ILIKE '%' || $1 || '%')
+		  AND ($2='' OR target_type=$2)
+		  AND ($3='' OR actor_admin_id::text=$3)
+		ORDER BY created_at DESC LIMIT $4
+	`, action, targetType, actorAdminID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list admin audit events: %w", err)
 	}

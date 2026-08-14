@@ -28,8 +28,9 @@ func TestAdminWebServesSPAUnderAdminPrefix(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "DD Admin") {
 		t.Fatalf("spa status=%d body=%s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
-		t.Fatalf("missing admin CSP: %q", response.Header().Get("Content-Security-Policy"))
+	csp := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") || !strings.Contains(csp, "script-src 'self'") || strings.Contains(csp, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("unexpected admin CSP: %q", csp)
 	}
 
 	asset := httptest.NewRequest(http.MethodGet, "/admin/assets/app.js", nil)

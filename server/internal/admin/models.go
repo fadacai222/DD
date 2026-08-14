@@ -40,6 +40,10 @@ func (role Role) CanManageIntegrations() bool {
 	return role == RoleSuperAdmin
 }
 
+func (role Role) CanManageAdmins() bool {
+	return role == RoleSuperAdmin
+}
+
 var (
 	ErrUnavailable        = errors.New("admin service unavailable")
 	ErrInvalidCredentials = errors.New("invalid admin credentials")
@@ -63,6 +67,18 @@ type Identity struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 	Role  Role   `json:"role"`
+}
+
+type AdminAccountSummary struct {
+	ID             string     `json:"id"`
+	Email          string     `json:"email"`
+	Role           Role       `json:"role"`
+	Status         string     `json:"status"`
+	MFAEnabled     bool       `json:"mfaEnabled"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	LastLoginAt    *time.Time `json:"lastLoginAt,omitempty"`
+	ActiveSessions int64      `json:"activeSessions"`
 }
 
 type Principal struct {
@@ -185,6 +201,13 @@ type IntegrationSecretStatus struct {
 	Key        string    `json:"key"`
 	Configured bool      `json:"configured"`
 	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
+}
+
+type AuditFilter struct {
+	Action       string
+	TargetType   string
+	ActorAdminID string
+	Limit        int
 }
 
 type AuditEvent struct {

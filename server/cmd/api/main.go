@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,6 +57,7 @@ func main() {
 	readinessChecks := make(map[string]httpapi.ReadinessCheck)
 	var authService httpapi.AuthService
 	var adminService *admin.Service
+	var registrationController *account.RegistrationController
 	var contactsService httpapi.ContactsService
 	var groupsService httpapi.GroupsService
 	var callsService httpapi.CallsService
@@ -90,7 +92,8 @@ func main() {
 		}
 		var codeCodec *emailcode.Codec
 		var mailer account.Mailer
-		if config.RegistrationMode == appconfig.RegistrationOpen {
+		registrationDependenciesReady := registrationDependenciesConfigured(config)
+		if registrationDependenciesReady {
 			codeCodec, err = emailcode.NewCodec([]byte(config.EmailCodePepper))
 			if err != nil {
 				logger.Error("email code initialization failed", "error", err)
@@ -106,9 +109,14 @@ func main() {
 				os.Exit(2)
 			}
 		}
+		registrationController, err = account.NewRegistrationController(string(config.RegistrationMode), registrationDependenciesReady)
+		if err != nil {
+			logger.Error("registration runtime control initialization failed", "error", err)
+			os.Exit(2)
+		}
 		accountService, accountErr := account.NewService(account.Config{
 			Pool: pool, Codec: codeCodec, Hasher: hasher, Sessions: sessionManager,
-			Mailer: mailer, RegistrationMode: string(config.RegistrationMode),
+			Mailer: mailer, RegistrationMode: string(config.RegistrationMode), RegistrationModeSource: registrationController,
 		})
 		if accountErr != nil {
 			err = accountErr
@@ -118,6 +126,17 @@ func main() {
 		adminService, err = admin.NewService(admin.Config{Pool: pool, Hasher: hasher, Secret: config.AdminSecuritySecret})
 		if err != nil {
 			logger.Error("admin service initialization failed", "error", err)
+			os.Exit(2)
+		}
+		settingContext, cancelSettingLoad := context.WithTimeout(context.Background(), 5*time.Second)
+		registrationSetting, settingErr := adminService.LoadRuntimeSetting(settingContext, admin.SettingRegistrationMode)
+		cancelSettingLoad()
+		if settingErr == nil {
+			if err := registrationController.SetMode(registrationSetting.Value); err != nil {
+				logger.Warn("persisted registration mode cannot be activated; keeping fail-closed runtime mode", "requestedMode", registrationSetting.Value, "runtimeMode", registrationController.Mode(), "error", err)
+			}
+		} else if !errors.Is(settingErr, admin.ErrNotFound) {
+			logger.Error("registration runtime setting load failed", "error", settingErr)
 			os.Exit(2)
 		}
 		contactsService, err = contacts.NewService(contacts.Config{Pool: pool})
@@ -266,14 +285,17 @@ func main() {
 			Version:            version,
 			PublicBaseURL:      config.PublicBaseURL,
 			InstanceName:       config.InstanceName,
-			RegistrationMode:   string(config.RegistrationMode),
-			AllowedOrigins:     config.AllowedOrigins,
+			RegistrationMode:    string(config.RegistrationMode),
+			RegistrationControl: registrationController,
+			AllowedOrigins:      config.AllowedOrigins,
 			AllowedHTTPOrigins: config.AllowedHTTPOrigins,
 			LiveKitURL:         config.LiveKitURL,
 			LiveKitPublicPort:  config.LiveKitPublicPort,
-			LiveKitAPIKey:      config.LiveKitAPIKey,
-			LiveKitAPISecret:   config.LiveKitAPISecret,
-			ReadinessChecks:    readinessChecks,
+			LiveKitAPIKey:                config.LiveKitAPIKey,
+			LiveKitAPISecret:             config.LiveKitAPISecret,
+			SMTPConfigured:               strings.TrimSpace(config.SMTPHost) != "" && strings.TrimSpace(config.SMTPFrom) != "",
+			VoiceTranscriptionConfigured: strings.TrimSpace(config.VoiceTranscriptionEndpoint) != "" && strings.TrimSpace(config.VoiceTranscriptionModel) != "",
+			ReadinessChecks:              readinessChecks,
 			AuthService:        authService,
 			AdminService:               adminService,
 			TelegramIntegrationService: telegramIntegration,
@@ -340,6 +362,19 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+func registrationDependenciesConfigured(config appconfig.Config) bool {
+	if len(config.EmailCodePepper) < 32 || strings.TrimSpace(config.SMTPHost) == "" || strings.TrimSpace(config.SMTPFrom) == "" {
+		return false
+	}
+	if strings.TrimSpace(config.SMTPUsername) != "" && config.SMTPPassword == "" {
+		return false
+	}
+	if config.Environment == appconfig.EnvironmentProduction && !config.SMTPRequireTLS {
+		return false
+	}
+	return true
 }
 
 func groupsConfigFromAppConfig(config appconfig.Config, pool *pgxpool.Pool) groups.Config {
