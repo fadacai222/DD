@@ -78,6 +78,72 @@ func TestLocalWebCORSAndAutoLiveKitURL(t *testing.T) {
 	}
 }
 
+func TestCORSAllowsSameOriginWithoutExplicitAllowlist(t *testing.T) {
+	handler := httpapi.NewHandler(httpapi.Config{})
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/system/live", nil)
+	if err != nil {
+		t.Fatalf("create same-origin request: %v", err)
+	}
+	request.Header.Set("Origin", server.URL)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("same-origin request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	if got := response.Header.Get("Access-Control-Allow-Origin"); got != server.URL {
+		t.Fatalf("same-origin allow origin = %q, want %q", got, server.URL)
+	}
+}
+
+func TestCORSAllowsConfiguredPublicOriginWithoutExplicitAllowlist(t *testing.T) {
+	handler := httpapi.NewHandler(httpapi.Config{PublicBaseURL: "https://api.example.test"})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/system/live", nil)
+	if err != nil {
+		t.Fatalf("create public-origin request: %v", err)
+	}
+	request.Host = "api.example.test"
+	request.Header.Set("Origin", "https://api.example.test")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("public-origin request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("public same-origin status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+}
+
+func TestCORSAllowsForwardedHTTPSOriginWithoutExplicitAllowlist(t *testing.T) {
+	handler := httpapi.NewHandler(httpapi.Config{})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/system/live", nil)
+	if err != nil {
+		t.Fatalf("create forwarded-origin request: %v", err)
+	}
+	request.Host = "api.example.test"
+	request.Header.Set("Origin", "https://api.example.test")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("forwarded-origin request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("forwarded same-origin status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+}
+
 func TestCORSRejectsUntrustedOriginBeforeHandler(t *testing.T) {
 	handler := httpapi.NewHandler(httpapi.Config{
 		AllowedHTTPOrigins: []string{"http://127.0.0.1:*", "http://localhost:*"},

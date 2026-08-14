@@ -2,16 +2,17 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 )
 
-func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins []string, publicBaseURL string, next http.Handler) http.Handler {
 	patterns := append([]string(nil), allowedOrigins...)
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		origin := strings.TrimSpace(request.Header.Get("Origin"))
 		if origin != "" {
-			if !matchesOrigin(patterns, origin) {
+			if !matchesPublicOrigin(publicBaseURL, origin) && !isSameOriginRequest(request, origin) && !matchesOrigin(patterns, origin) {
 				writeAPIError(response, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "Origin is not allowed")
 				return
 			}
@@ -28,6 +29,36 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(response, request)
 	})
+}
+
+func matchesPublicOrigin(publicBaseURL, origin string) bool {
+	publicURL, err := url.Parse(strings.TrimSpace(publicBaseURL))
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return false
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Scheme == "" || originURL.Host == "" {
+		return false
+	}
+	return strings.EqualFold(publicURL.Scheme, originURL.Scheme) && strings.EqualFold(publicURL.Host, originURL.Host)
+}
+
+func isSameOriginRequest(request *http.Request, origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	if !strings.EqualFold(parsed.Host, request.Host) {
+		return false
+	}
+
+	scheme := "http"
+	if forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
+		scheme = forwarded
+	} else if request.TLS != nil {
+		scheme = "https"
+	}
+	return strings.EqualFold(parsed.Scheme, scheme)
 }
 
 func matchesOrigin(patterns []string, origin string) bool {

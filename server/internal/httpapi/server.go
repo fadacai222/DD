@@ -318,7 +318,7 @@ func NewHandler(config Config) http.Handler {
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/v1/realtime", s.handleAuthenticatedWebSocket)
 
-	handler := securityHeaders(corsMiddleware(s.allowedHTTPOrigins, mux))
+	handler := securityHeaders(corsMiddleware(s.allowedHTTPOrigins, s.publicBaseURL, mux))
 	handler = accessLogMiddleware(s.logger, s.version, s.metrics, handler)
 	return requestIDMiddleware(handler)
 }
