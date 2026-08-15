@@ -33,17 +33,6 @@ function Format-Bytes {
     return "$Bytes B"
 }
 
-function Convert-ToExtendedPath {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $full = [System.IO.Path]::GetFullPath($Path)
-    if ($full.StartsWith('\\?\')) { return $full }
-    if ($full.StartsWith('\\')) {
-        return '\\?\UNC\' + $full.TrimStart('\')
-    }
-    return '\\?\' + $full
-}
-
 function Assert-SafeDeletePath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -59,38 +48,37 @@ function Assert-SafeDeletePath {
     }
 }
 
-function Invoke-NativeRemoveDirectory {
+function Invoke-GitCleanDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     Assert-SafeDeletePath -Path $Path
     if (-not [System.IO.Directory]::Exists($Path)) { return }
 
-    $extendedPath = Convert-ToExtendedPath -Path $Path
-    $rdCommand = 'rd /s /q "{0}"' -f $extendedPath.Replace('"', '""')
+    if ($null -eq (Get-Command git.exe -ErrorAction SilentlyContinue)) {
+        throw 'Git for Windows is required for long-path-safe cleanup.'
+    }
 
-    & $env:ComSpec /d /c $rdCommand 2>$null
-    $rdExitCode = $LASTEXITCODE
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $relative = $full.Substring($Root.Length).TrimStart('\').Replace('\', '/')
+    $gitOutput = @()
+    $gitExitCode = -1
 
-    if (-not [System.IO.Directory]::Exists($Path)) { return }
-
-    # Fallback for pathological Gradle/Java trees: mirror an empty directory
-    # into the target with robocopy, then remove the now-empty target natively.
-    $emptyDir = Join-Path ([System.IO.Path]::GetTempPath()) ('dd-clean-empty-' + [System.Guid]::NewGuid().ToString('N'))
-    [void][System.IO.Directory]::CreateDirectory($emptyDir)
-    $robocopyExitCode = -1
-
+    Push-Location $Root
     try {
-        & robocopy.exe $emptyDir $Path /MIR /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP 2>$null | Out-Null
-        $robocopyExitCode = $LASTEXITCODE
-        & $env:ComSpec /d /c $rdCommand 2>$null
-        $rdRetryExitCode = $LASTEXITCODE
+        $gitOutput = @(& git.exe -c core.longpaths=true clean -fdx -- $relative 2>&1)
+        $gitExitCode = $LASTEXITCODE
     }
     finally {
-        Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+        Pop-Location
+    }
+
+    if ($gitExitCode -ne 0) {
+        $details = ($gitOutput | ForEach-Object { [string]$_ }) -join '; '
+        throw "git clean failed (exit=$gitExitCode): $details"
     }
 
     if ([System.IO.Directory]::Exists($Path)) {
-        throw "Target still exists after native long-path cleanup (rd=$rdExitCode, robocopy=$robocopyExitCode, rd-retry=$rdRetryExitCode): $Path"
+        throw "Path remains after git clean. It may contain a tracked file or a file locked by another process: $Path"
     }
 }
 
@@ -217,7 +205,7 @@ $failed = New-Object System.Collections.Generic.List[string]
 foreach ($item in $items) {
     Write-Host ("Removing {0} ..." -f $item.Path)
     try {
-        Invoke-NativeRemoveDirectory -Path $item.FullPath
+        Invoke-GitCleanDirectory -Path $item.FullPath
     }
     catch {
         $failed.Add("$($item.Path): $($_.Exception.Message)")
