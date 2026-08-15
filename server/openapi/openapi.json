@@ -1265,7 +1265,7 @@
         "summary": "Replace automatic voice transcription preference",
         "tags": ["Messaging"],
         "security": [{"bearerAuth": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceTranscriptionPreferencesRequest"}}}},
         "responses": {
           "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
@@ -1277,7 +1277,7 @@
         "summary": "Update automatic voice transcription preference",
         "tags": ["Messaging"],
         "security": [{"bearerAuth": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoiceTranscriptionPreferencesRequest"}}}},
         "responses": {
           "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
           "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
@@ -2265,6 +2265,125 @@
     "/api/v1/admin/mfa/recovery/regenerate": {
       "post":{"operationId":"regenerateAdminRecoveryCodes","summary":"Replace administrator recovery codes after fresh TOTP verification","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminRecoveryRegenerateRequest"}}}},"responses":{"200":{"description":"New one-time recovery codes","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     },
+    "/api/v1/admin/settings": {
+      "get":{"operationId":"getAdminSettings","summary":"Get runtime-safe administrator settings and capability state","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Runtime settings","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/settings/registration": {
+      "put": {
+        "operationId": "setAdminRegistrationMode",
+        "summary": "Switch runtime registration between open and closed when mail dependencies are ready",
+        "tags": ["Admin"],
+        "security": [{"adminSession": []}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mode", "reason"],
+            "properties": {
+              "mode": {"type": "string", "enum": ["open", "closed"]},
+              "reason": {"type": "string", "minLength": 3, "maxLength": 500}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "Registration mode changed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminGenericResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"description": "Runtime registration control is unavailable"}
+        }
+      }
+    },
+    "/api/v1/admin/admins": {
+      "get":{"operationId":"listAdminAccounts","summary":"List administrator accounts","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Administrator accounts","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"}}},
+      "post": {
+        "operationId": "createAdminAccount",
+        "summary": "Create an administrator account with an initial password",
+        "tags": ["Admin"],
+        "security": [{"adminSession": []}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["email", "password", "role"],
+            "properties": {
+              "email": {"type": "string", "format": "email"},
+              "password": {"type": "string", "minLength": 14, "maxLength": 1024},
+              "role": {"type": "string", "enum": ["SUPER_ADMIN", "MODERATOR", "SUPPORT_READ_ONLY"]}
+            }
+          }}}
+        },
+        "responses": {
+          "201": {"description": "Administrator created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminGenericResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "409": {"$ref": "#/components/responses/Conflict"}
+        }
+      }
+    },
+    "/api/v1/admin/admins/{adminId}": {
+      "parameters":[{"name":"adminId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],
+      "patch": {
+        "operationId": "updateAdminAccount",
+        "summary": "Change administrator role or enabled state with an audited reason",
+        "tags": ["Admin"],
+        "security": [{"adminSession": []}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "status", "reason"],
+            "properties": {
+              "role": {"type": "string", "enum": ["SUPER_ADMIN", "MODERATOR", "SUPPORT_READ_ONLY"]},
+              "status": {"type": "string", "enum": ["ACTIVE", "DISABLED"]},
+              "reason": {"type": "string", "minLength": 3, "maxLength": 500}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "Administrator updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminGenericResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"}
+        }
+      }
+    },
+    "/api/v1/admin/admins/{adminId}/mfa-reset": {
+      "parameters":[{"name":"adminId","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],
+      "post": {
+        "operationId": "resetAdminMFA",
+        "summary": "Reset another administrator's MFA and revoke its sessions",
+        "tags": ["Admin"],
+        "security": [{"adminSession": []}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason"],
+            "properties": {"reason": {"type": "string", "minLength": 3, "maxLength": 500}}
+          }}}
+        },
+        "responses": {
+          "200": {"description": "MFA reset", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminGenericResponse"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"}
+        }
+      }
+    },
+    "/api/v1/admin/dashboard": {
+      "get":{"operationId":"getAdminDashboard","summary":"Get the DD operations dashboard using production database facts","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Operational dashboard snapshot and 14-day trend","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
     "/api/v1/admin/reports": {
       "get":{"operationId":"listAdminReports","summary":"List the administrator report queue","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"name":"status","in":"query","required":false,"schema":{"type":"string","enum":["PENDING","IN_REVIEW","RESOLVED","DISMISSED"]}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Report queue","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     },
@@ -2288,8 +2407,26 @@
       "parameters":[{"$ref":"#/components/parameters/UserId"}],
       "post":{"operationId":"unsuspendGovernedUser","summary":"Unsuspend a user without restoring revoked sessions","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"$ref":"#/components/parameters/AdminCSRF"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminReasonRequest"}}}},"responses":{"200":{"description":"User unsuspended","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/NotFound"},"409":{"$ref":"#/components/responses/Conflict"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     },
+    "/api/v1/admin/groups": {
+      "get":{"operationId":"listAdminGroups","summary":"List group metadata for administrator review without exposing chat contents","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"name":"q","in":"query","required":false,"schema":{"type":"string","maxLength":100}},{"name":"status","in":"query","required":false,"schema":{"type":"string","enum":["ACTIVE","DISSOLVED"]}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Groups","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/moments": {
+      "get":{"operationId":"listAdminMoments","summary":"List Moments metadata for governance review","tags":["Admin","Governance"],"security":[{"adminSession":[]}],"parameters":[{"name":"q","in":"query","required":false,"schema":{"type":"string","maxLength":100}},{"name":"status","in":"query","required":false,"schema":{"type":"string","enum":["ACTIVE","DELETED"]}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Moments","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/storage": {
+      "get":{"operationId":"getAdminStorageSnapshot","summary":"Get media object and upload storage statistics without exposing storage keys","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Storage statistics","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/push": {
+      "get":{"operationId":"getAdminPushSnapshot","summary":"Get Push queue and endpoint health statistics without exposing endpoint tokens","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Push statistics","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/rtc": {
+      "get":{"operationId":"getAdminRTCSnapshot","summary":"Get direct and group call statistics from authoritative DD call state","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"RTC statistics","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
+    "/api/v1/admin/services/health": {
+      "get":{"operationId":"getAdminServiceHealth","summary":"Get evidence-qualified service health and configuration state","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Service health snapshot; UNKNOWN is used when the API cannot prove runtime health","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+    },
     "/api/v1/admin/audit": {
-      "get":{"operationId":"listAdminAuditEvents","summary":"List persistent administrator security audit events","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Administrator audit events","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
+      "get":{"operationId":"listAdminAuditEvents","summary":"List persistent administrator security audit events","tags":["Admin"],"security":[{"adminSession":[]}],"parameters":[{"name":"action","in":"query","required":false,"schema":{"type":"string","maxLength":80}},{"name":"targetType","in":"query","required":false,"schema":{"type":"string","maxLength":40}},{"name":"actorAdminId","in":"query","required":false,"schema":{"type":"string","format":"uuid"}},{"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}],"responses":{"200":{"description":"Administrator audit events","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"400":{"$ref":"#/components/responses/BadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}}
     },
     "/api/v1/admin/integrations/telegram-sticker": {
       "get":{"operationId":"getAdminTelegramStickerIntegration","summary":"Get Telegram Sticker Relay configuration status without exposing the Bot Token","tags":["Admin"],"security":[{"adminSession":[]}],"responses":{"200":{"description":"Telegram Sticker Relay status","content":{"application/json":{"schema":{"$ref":"#/components/schemas/AdminGenericResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"503":{"description":"Telegram integration control is unavailable"},"405":{"$ref":"#/components/responses/MethodNotAllowed"}}},

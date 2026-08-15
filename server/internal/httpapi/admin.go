@@ -32,8 +32,22 @@ type AdminService interface {
 	UpdateReport(ctx context.Context, principal admin.Principal, reportID uuid.UUID, input admin.UpdateReportInput, client admin.ClientContext) (admin.Report, error)
 	ListUsers(ctx context.Context, principal admin.Principal, status, query string, limit int) ([]admin.UserSummary, error)
 	GetUser(ctx context.Context, principal admin.Principal, userID uuid.UUID) (admin.UserSummary, error)
+	GetUserDetail(ctx context.Context, principal admin.Principal, userID uuid.UUID) (admin.UserDetail, error)
 	ModerateUser(ctx context.Context, principal admin.Principal, userID uuid.UUID, action, reason string, client admin.ClientContext) (admin.UserSummary, admin.ModerationAction, error)
+	Dashboard(ctx context.Context, principal admin.Principal) (admin.DashboardSnapshot, error)
+	ListGroups(ctx context.Context, principal admin.Principal, status, query string, limit int) ([]admin.GroupSummary, error)
+	ListMoments(ctx context.Context, principal admin.Principal, status, query string, limit int) ([]admin.MomentSummary, error)
+	StorageSnapshot(ctx context.Context, principal admin.Principal) (admin.StorageSnapshot, error)
+	PushSnapshot(ctx context.Context, principal admin.Principal) (admin.PushSnapshot, error)
+	RTCSnapshot(ctx context.Context, principal admin.Principal) (admin.RTCSnapshot, error)
+	ListAdminAccounts(ctx context.Context, principal admin.Principal) ([]admin.AdminAccountSummary, error)
+	CreateAdminAccount(ctx context.Context, principal admin.Principal, email, password string, role admin.Role, client admin.ClientContext) (admin.AdminAccountSummary, error)
+	UpdateAdminAccount(ctx context.Context, principal admin.Principal, targetID uuid.UUID, role admin.Role, status, reason string, client admin.ClientContext) (admin.AdminAccountSummary, error)
+	ResetAdminMFA(ctx context.Context, principal admin.Principal, targetID uuid.UUID, reason string, client admin.ClientContext) error
+	LoadRuntimeSetting(ctx context.Context, key string) (admin.RuntimeSetting, error)
+	SetRegistrationMode(ctx context.Context, principal admin.Principal, mode, reason string, client admin.ClientContext) (admin.RuntimeSetting, error)
 	ListAuditEvents(ctx context.Context, principal admin.Principal, limit int) ([]admin.AuditEvent, error)
+	ListAuditEventsFiltered(ctx context.Context, principal admin.Principal, filter admin.AuditFilter) ([]admin.AuditEvent, error)
 	SetIntegrationSecret(ctx context.Context, principal admin.Principal, key, value string, client admin.ClientContext) (admin.IntegrationSecretStatus, error)
 }
 
@@ -400,7 +414,7 @@ func (s *server) handleAdminUserByID(response http.ResponseWriter, request *http
 			methodNotAllowed(response, http.MethodGet)
 			return
 		}
-		item, err := s.admin.GetUser(request.Context(), principal, userID)
+		item, err := s.admin.GetUserDetail(request.Context(), principal, userID)
 		if err != nil {
 			s.writeAdminError(response, request, err)
 			return
@@ -441,7 +455,10 @@ func (s *server) handleAdminAudit(response http.ResponseWriter, request *http.Re
 	if !ok {
 		return
 	}
-	items, err := s.admin.ListAuditEvents(request.Context(), principal, queryLimit(request, 50))
+	items, err := s.admin.ListAuditEventsFiltered(request.Context(), principal, admin.AuditFilter{
+		Action: request.URL.Query().Get("action"), TargetType: request.URL.Query().Get("targetType"),
+		ActorAdminID: request.URL.Query().Get("actorAdminId"), Limit: queryLimit(request, 50),
+	})
 	if err != nil {
 		s.writeAdminError(response, request, err)
 		return

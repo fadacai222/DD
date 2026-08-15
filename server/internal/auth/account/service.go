@@ -43,24 +43,26 @@ type Mailer interface {
 }
 
 type Config struct {
-	Pool             *pgxpool.Pool
-	Codec            *emailcode.Codec
-	Hasher           *password.Hasher
-	Sessions         *session.Manager
-	Mailer           Mailer
-	RegistrationMode string
-	Now              func() time.Time
+	Pool                   *pgxpool.Pool
+	Codec                  *emailcode.Codec
+	Hasher                 *password.Hasher
+	Sessions               *session.Manager
+	Mailer                 Mailer
+	RegistrationMode       string
+	RegistrationModeSource RegistrationModeSource
+	Now                    func() time.Time
 }
 
 type Service struct {
-	pool              *pgxpool.Pool
-	codec             *emailcode.Codec
-	hasher            *password.Hasher
-	sessions          *session.Manager
-	mailer            Mailer
-	registrationMode  string
-	now               func() time.Time
-	dummyPasswordHash string
+	pool                   *pgxpool.Pool
+	codec                  *emailcode.Codec
+	hasher                 *password.Hasher
+	sessions               *session.Manager
+	mailer                 Mailer
+	registrationMode       string
+	registrationModeSource RegistrationModeSource
+	now                    func() time.Time
+	dummyPasswordHash      string
 }
 
 type User struct {
@@ -101,7 +103,11 @@ func NewService(config Config) (*Service, error) {
 	if config.Pool == nil || config.Hasher == nil || config.Sessions == nil {
 		return nil, ErrUnavailable
 	}
-	if mode == "open" && (config.Codec == nil || config.Mailer == nil) {
+	effectiveMode := mode
+	if config.RegistrationModeSource != nil {
+		effectiveMode = strings.ToLower(strings.TrimSpace(config.RegistrationModeSource.Mode()))
+	}
+	if effectiveMode == "open" && (config.Codec == nil || config.Mailer == nil) {
 		return nil, ErrUnavailable
 	}
 	now := config.Now
@@ -113,19 +119,27 @@ func NewService(config Config) (*Service, error) {
 		return nil, fmt.Errorf("create password timing hash: %w", err)
 	}
 	return &Service{
-		pool:              config.Pool,
-		codec:             config.Codec,
-		hasher:            config.Hasher,
-		sessions:          config.Sessions,
-		mailer:            config.Mailer,
-		registrationMode:  mode,
-		now:               now,
-		dummyPasswordHash: dummyHash,
+		pool:                   config.Pool,
+		codec:                  config.Codec,
+		hasher:                 config.Hasher,
+		sessions:               config.Sessions,
+		mailer:                 config.Mailer,
+		registrationMode:       mode,
+		registrationModeSource: config.RegistrationModeSource,
+		now:                    now,
+		dummyPasswordHash:      dummyHash,
 	}, nil
 }
 
+func (service *Service) currentRegistrationMode() string {
+	if service.registrationModeSource != nil {
+		return strings.ToLower(strings.TrimSpace(service.registrationModeSource.Mode()))
+	}
+	return service.registrationMode
+}
+
 func (service *Service) SendRegistrationCode(ctx context.Context, rawEmail, remoteAddress string) error {
-	if service.registrationMode != "open" {
+	if service.currentRegistrationMode() != "open" {
 		return ErrRegistrationDisabled
 	}
 	if service.mailer == nil {
@@ -199,7 +213,7 @@ func (service *Service) SendRegistrationCode(ctx context.Context, rawEmail, remo
 }
 
 func (service *Service) Register(ctx context.Context, raw registration.RegisterInput) (AuthSession, error) {
-	if service.registrationMode != "open" {
+	if service.currentRegistrationMode() != "open" {
 		return AuthSession{}, ErrRegistrationDisabled
 	}
 	input, err := registration.ValidateRegisterInput(raw)

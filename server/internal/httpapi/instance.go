@@ -48,7 +48,7 @@ func (s *server) buildInstanceDocument(request *http.Request) instanceDocument {
 		LiveKitURL:  s.resolveLiveKitURL(request),
 		Features: instanceFeatures{
 			Calls:            strings.TrimSpace(s.liveKitURL) != "",
-			RegistrationMode: s.registrationMode,
+			RegistrationMode: s.currentRegistrationMode(),
 		},
 	}
 }
@@ -67,6 +67,13 @@ func (s *server) resolvePublicBaseURL(request *http.Request) string {
 		host = net.JoinHostPort("127.0.0.1", strconv.Itoa(18473))
 	}
 	return scheme + "://" + host
+}
+
+func (s *server) currentRegistrationMode() string {
+	if s.registrationControl != nil {
+		return normalizeRegistrationMode(s.registrationControl.Mode())
+	}
+	return s.registrationMode
 }
 
 func normalizeRegistrationMode(raw string) string {

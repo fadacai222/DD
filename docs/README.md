@@ -96,6 +96,10 @@ Wave1 已物理合流并继续形成 Wave2 集成分支 `integrate/2026-08-14-wa
 000032_admin_governance ← 举报/治理/审计
 000033_data_rights ← 数据导出/账号注销生命周期
 000034_message_mentions ← GROUP durable @ 提醒事实/当前 viewer 未读 mention 查询索引
+000035_voice_transcriptions ← VOICE STT 任务/偏好/结果
+000036_live_photo_message_media ← Live Photo 静态/motion 组件媒体事实
+000037_admin_integrations ← Admin 加密第三方集成配置（当前 Telegram Bot Token）
+000038_admin_runtime_settings ← Admin 可审计运行时业务配置（当前注册 open/closed）
 ```
 
 当前 Go 正式业务模块包括：
