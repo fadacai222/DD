@@ -54,15 +54,15 @@ func (service *Service) PushSnapshot(ctx context.Context, _ Principal) (PushSnap
 		SELECT
 			count(*) FILTER (WHERE status='PENDING'),
 			count(*) FILTER (WHERE status='PENDING' AND attempts > 0),
-			count(*) FILTER (WHERE status='SENT' AND sent_at >= $1 - interval '24 hours'),
-			count(*) FILTER (WHERE status='DROPPED' AND created_at >= $1 - interval '24 hours'),
+			count(*) FILTER (WHERE status='SENT' AND sent_at >= $1::timestamptz - interval '24 hours'),
+			count(*) FILTER (WHERE status='DROPPED' AND created_at >= $1::timestamptz - interval '24 hours'),
 			min(created_at) FILTER (WHERE status='PENDING')
 		FROM push_jobs
 	`, now).Scan(&snapshot.PendingJobs, &snapshot.RetryingJobs, &snapshot.SentJobs24h, &snapshot.DroppedJobs24h, &snapshot.OldestPendingAt); err != nil {
 		return PushSnapshot{}, fmt.Errorf("load admin push queue summary: %w", err)
 	}
 	if err := service.pool.QueryRow(ctx, `
-		SELECT count(*) FROM device_push_endpoints WHERE last_failure_at >= $1 - interval '24 hours'
+		SELECT count(*) FROM device_push_endpoints WHERE last_failure_at >= $1::timestamptz - interval '24 hours'
 	`, now).Scan(&snapshot.EndpointFailures24h); err != nil {
 		return PushSnapshot{}, fmt.Errorf("load admin push endpoint failures: %w", err)
 	}
