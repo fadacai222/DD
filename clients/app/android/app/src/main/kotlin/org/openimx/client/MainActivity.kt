@@ -18,6 +18,8 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Rational
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -35,6 +37,7 @@ class MainActivity : FlutterActivity() {
         private const val CAMERA_PERMISSION_REQUEST = 43101
         private const val CAMERA_CAPTURE_REQUEST = 43102
         private const val FILE_PICKER_REQUEST = 43103
+        private const val PHOTO_PICKER_MAX_FILES = 30
         private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     }
 
@@ -301,25 +304,47 @@ class MainActivity : FlutterActivity() {
             .coerceIn(1, 100)
         val requestedMaxBytes = call.argument<Number>("maxBytes")?.toLong()?.takeIf { it > 0L }
         val mimeTypes = call.argument<List<String>>("mimeTypes")
-            ?.map { it.trim() }
+            ?.map { it.trim().lowercase() }
             ?.filter { it.isNotEmpty() }
             ?.distinct()
             .orEmpty()
+        val source = call.argument<String>("source")?.trim()?.lowercase() ?: "files"
 
         pendingFilePickerResult = result
         pendingFilePickerMaxFiles = requestedMaxFiles
         pendingFilePickerMaxBytes = requestedMaxBytes
         try {
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = if (mimeTypes.size == 1) mimeTypes.first() else "*/*"
-                if (mimeTypes.size > 1) {
-                    putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+            if (source == "photos") {
+                val wantsImages = mimeTypes.isEmpty() || mimeTypes.any { it.startsWith("image/") }
+                val wantsVideos = mimeTypes.isEmpty() || mimeTypes.any { it.startsWith("video/") }
+                val mediaType = when {
+                    wantsImages && wantsVideos -> ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                    wantsVideos -> ActivityResultContracts.PickVisualMedia.VideoOnly
+                    else -> ActivityResultContracts.PickVisualMedia.ImageOnly
                 }
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val request = PickVisualMediaRequest.Builder()
+                    .setMediaType(mediaType)
+                    .build()
+                val intent = if (allowMultiple) {
+                    ActivityResultContracts.PickMultipleVisualMedia(PHOTO_PICKER_MAX_FILES)
+                        .createIntent(this, request)
+                } else {
+                    ActivityResultContracts.PickVisualMedia()
+                        .createIntent(this, request)
+                }
+                startActivityForResult(intent, FILE_PICKER_REQUEST)
+            } else {
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = if (mimeTypes.size == 1) mimeTypes.first() else "*/*"
+                    if (mimeTypes.size > 1) {
+                        putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+                    }
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivityForResult(intent, FILE_PICKER_REQUEST)
             }
-            startActivityForResult(intent, FILE_PICKER_REQUEST)
         } catch (error: Throwable) {
             pendingFilePickerResult = null
             pendingFilePickerMaxFiles = 1
@@ -329,15 +354,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun handleFilePickerResult(resultCode: Int, data: Intent?) {
-        val result = pendingFilePickerResult ?: return
-        val maxFiles = pendingFilePickerMaxFiles
-        val maxBytes = pendingFilePickerMaxBytes
-        pendingFilePickerResult = null
-        pendingFilePickerMaxFiles = 1
-        pendingFilePickerMaxBytes = null
-
         if (resultCode != Activity.RESULT_OK || data == null) {
-            result.success(emptyList<Map<String, Any?>>())
+            completePickedUris(emptyList())
             return
         }
 
@@ -348,6 +366,18 @@ class MainActivity : FlutterActivity() {
             }
         }
         data.data?.let(uris::add)
+        completePickedUris(uris.toList())
+    }
+
+    private fun completePickedUris(rawUris: List<Uri>) {
+        val result = pendingFilePickerResult ?: return
+        val maxFiles = pendingFilePickerMaxFiles
+        val maxBytes = pendingFilePickerMaxBytes
+        pendingFilePickerResult = null
+        pendingFilePickerMaxFiles = 1
+        pendingFilePickerMaxBytes = null
+
+        val uris = rawUris.distinct()
         if (uris.isEmpty()) {
             result.success(emptyList<Map<String, Any?>>())
             return
