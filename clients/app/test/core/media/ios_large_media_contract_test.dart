@@ -19,6 +19,9 @@ void main() {
 
     expect(picker, contains('UIDocumentPickerViewController'));
     expect(picker, contains('PHPickerViewController'));
+    expect(picker, contains('if source == "photos"'));
+    expect(picker, contains('presentPhotosPicker(from: presenter'));
+    expect(picker, contains('presentDocumentPicker(from: presenter'));
     expect(picker, contains('loadFileRepresentation'));
     expect(picker, contains('provider.canLoadObject(ofClass: PHLivePhoto.self)'));
     expect(picker, contains('PHAssetResource.assetResources(for: livePhoto)'));
