@@ -1,12 +1,15 @@
+// ignore_for_file: annotate_overrides
+
 import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 
 import '../../../core/sound/app_audio_activity.dart';
+import 'voice_playback_engine.dart';
 import 'voice_playback_source.dart';
 
-final class ChatVoicePlayer {
+final class ChatVoicePlayer implements VoicePlaybackEngine {
   ChatVoicePlayer({bool Function()? callActive})
     : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive) {
     _subscriptions.add(
@@ -56,17 +59,32 @@ final class ChatVoicePlayer {
     required String mediaId,
     String? mimeType,
     double rate = 1,
-  }) async {
-    _ensureCallAudioAvailable();
-    await _player.stop();
-    await _player.setPlaybackRate(rate);
-    final source = await createVoicePlaybackSource(
-      bytes: bytes,
+  }) => playSource(
+    BytesVoicePlaybackSource(
+      bytes,
       namespace: namespace,
       mediaId: mediaId,
       mimeType: mimeType,
-    );
-    await _player.play(source);
+    ),
+    rate: rate,
+  );
+
+  @override
+  Future<void> playSource(VoicePlaybackSource source, {double rate = 1}) async {
+    _ensureCallAudioAvailable();
+    await _player.stop();
+    await _player.setPlaybackRate(rate);
+    final Source audioSource;
+    if (source is RemoteVoicePlaybackSource) {
+      audioSource = UrlSource(source.url.toString(), mimeType: source.mimeType);
+    } else if (source is BytesVoicePlaybackSource) {
+      audioSource = BytesSource(source.bytes, mimeType: source.mimeType);
+    } else if (source is LocalVoicePlaybackSource) {
+      audioSource = DeviceFileSource(source.path, mimeType: source.mimeType);
+    } else {
+      throw StateError('Unsupported voice playback source.');
+    }
+    await _player.play(audioSource);
   }
 
   Future<void> pause() => _player.pause();

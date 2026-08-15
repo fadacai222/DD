@@ -130,7 +130,7 @@ require_storage_mode_secrets
 for secret in postgres_password database_url redis_password redis_url media_s3_access_key media_s3_secret_key backup_s3_access_key backup_s3_secret_key livekit_api_key livekit_api_secret auth_token_secret admin_security_secret email_code_pepper; do
   require_secret_nonempty "$secret"
 done
-for optional in smtp_password telegram_bot_token fcm_service_account_json apns_private_key; do
+for optional in smtp_password telegram_bot_token voice_transcription_credential fcm_service_account_json apns_private_key; do
   require_secret_file "$optional"
 done
 if ! is_bt_ingress; then
@@ -153,6 +153,13 @@ email_pepper_value="$(read_secret email_code_pepper)"
 [[ "$admin_security_value" != "$auth_token_value" ]] || fail "admin_security_secret must be independent from auth_token_secret"
 (( ${#livekit_secret_value} >= 32 )) || fail "livekit_api_secret must contain at least 32 characters"
 (( ${#email_pepper_value} >= 32 )) || fail "email_code_pepper must contain at least 32 characters"
+
+voice_endpoint="${DD_VOICE_TRANSCRIPTION_ENDPOINT:-}"
+voice_model="${DD_VOICE_TRANSCRIPTION_MODEL:-}"
+if [[ -n "$voice_endpoint" || -n "$voice_model" ]]; then
+  [[ -n "$voice_endpoint" && -n "$voice_model" ]] || fail "DD_VOICE_TRANSCRIPTION_ENDPOINT and DD_VOICE_TRANSCRIPTION_MODEL must be configured together"
+  [[ "$voice_endpoint" == http://* || "$voice_endpoint" == https://* ]] || fail "DD_VOICE_TRANSCRIPTION_ENDPOINT must use http:// or https://"
+fi
 
 if [[ "${DD_REGISTRATION_MODE:-closed}" != "closed" ]]; then
   require_value DD_SMTP_HOST

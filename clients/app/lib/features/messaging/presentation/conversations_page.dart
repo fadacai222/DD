@@ -66,6 +66,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
   late final DesktopInspectorController _inspector;
   String _query = '';
   String? _selectedConversationId;
+  String? _selectedInitialMessageId;
   bool _showArchived = false;
   int _handledNavigationSerial = 0;
 
@@ -228,7 +229,11 @@ class _ConversationsPageState extends State<ConversationsPage> {
               child: selected == null
                   ? _desktopEmptyState(context)
                   : TextChatPage(
-                      key: ValueKey('desktop-chat-${selected.id}'),
+                      key: ValueKey(
+                        _selectedInitialMessageId == null
+                            ? 'desktop-chat-${selected.id}'
+                            : 'desktop-chat-${selected.id}-${_selectedInitialMessageId!}',
+                      ),
                       coordinator: _coordinator,
                       conversation: selected,
                       currentUserId: widget.currentUserId,
@@ -240,6 +245,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
                       hostVisible: widget.hostVisible,
                       embedded: true,
                       savedMessagesMode: selected.type == 'SELF',
+                      initialMessageId: _selectedInitialMessageId,
                       inspectorController: _inspector,
                     ),
             ),
@@ -553,6 +559,19 @@ class _ConversationsPageState extends State<ConversationsPage> {
   }
 
   Widget _connectionDot() {
+    if (_coordinator.realtimeState == RealtimeConnectionState.connecting) {
+      return const Tooltip(
+        message: '实时连接中',
+        child: SizedBox.square(
+          key: Key('realtime-connecting-indicator'),
+          dimension: 12,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.8,
+            color: Color(0xFFF0A020),
+          ),
+        ),
+      );
+    }
     final (color, tooltip) = switch (_coordinator.realtimeState) {
       RealtimeConnectionState.connected => (DdColors.green, '实时已连接'),
       RealtimeConnectionState.connecting => (const Color(0xFFF0A020), '实时连接中'),
@@ -766,7 +785,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
           final peer = conversation.peer;
           final group = conversation.group;
           final last = conversation.lastMessage?.content?.text ?? '';
-          return (peer?.displayName.toLowerCase().contains(_query) ?? false) ||
+          return (peer?.effectiveDisplayName.toLowerCase().contains(_query) ?? false) ||
               (peer?.handle.toLowerCase().contains(_query) ?? false) ||
               (group?.name.toLowerCase().contains(_query) ?? false) ||
               last.toLowerCase().contains(_query);
@@ -789,7 +808,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
     final background = selected
         ? DdDesktopTokens.selectedSurface(brightness)
         : pinned
-        ? DdDesktopTokens.hoverSurface(brightness).withValues(alpha: 0.58)
+        ? DdDesktopTokens.hoverSurface(brightness)
         : desktop
         ? DdDesktopTokens.sidebarSurface(brightness)
         : Theme.of(context).colorScheme.surface;
@@ -846,6 +865,36 @@ class _ConversationsPageState extends State<ConversationsPage> {
                       const SizedBox(height: 5),
                       Row(
                         children: [
+                          if (conversation.latestUnreadMentionMessageId
+                                  ?.trim()
+                                  .isNotEmpty ==
+                              true) ...[
+                            GestureDetector(
+                              key: Key(
+                                'conversation-mention-${conversation.id}',
+                              ),
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => unawaited(
+                                _openConversation(
+                                  conversation,
+                                  desktop: desktop,
+                                  initialMessageId:
+                                      conversation.latestUnreadMentionMessageId,
+                                ),
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.only(right: 4),
+                                child: Text(
+                                  '【有人@你】',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: DdColors.danger,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                           if (draft.isNotEmpty)
                             const Text(
                               '[草稿] ',
@@ -948,7 +997,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
       return conversation.group?.name ?? '群聊';
     }
     if (conversation.type == 'SELF') return '我的收藏';
-    return conversation.peer?.displayName ?? '会话';
+    return conversation.peer?.effectiveDisplayName ?? '会话';
   }
 
   Widget _groupAvatar(ConversationItem conversation, String title) {
@@ -1166,9 +1215,13 @@ class _ConversationsPageState extends State<ConversationsPage> {
     String? initialMessageId,
   }) async {
     if (desktop) {
-      if (_selectedConversationId != conversation.id) {
+      if (_selectedConversationId != conversation.id ||
+          _selectedInitialMessageId != initialMessageId) {
         _inspector.close();
-        setState(() => _selectedConversationId = conversation.id);
+        setState(() {
+          _selectedConversationId = conversation.id;
+          _selectedInitialMessageId = initialMessageId;
+        });
       }
       return;
     }
@@ -1461,9 +1514,7 @@ class _ConversationsPageState extends State<ConversationsPage> {
     if (sender == null) return content;
     final senderName = sender.id == widget.currentUserId
         ? '我'
-        : (sender.displayName.trim().isNotEmpty
-              ? sender.displayName.trim()
-              : sender.handle.trim());
+        : sender.effectiveDisplayName;
     if (senderName.isEmpty) return content;
     return content.isEmpty ? senderName : '$senderName：$content';
   }
@@ -1522,13 +1573,18 @@ class _ConversationSwipeActions extends StatefulWidget {
       _ConversationSwipeActionsState();
 }
 
+enum _ConversationSwipeState { closed, leadingOpen, trailingOpen }
+
 class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
   static const double _actionWidth = 72;
   static const double _rightReveal = _actionWidth * 2;
   static const double _leftReveal = _actionWidth * 3;
+  static const double _settleThreshold = 38;
   double _offset = 0;
   bool _dragging = false;
   bool _busy = false;
+  _ConversationSwipeState _state = _ConversationSwipeState.closed;
+  _ConversationSwipeState _dragOriginState = _ConversationSwipeState.closed;
 
   @override
   Widget build(BuildContext context) {
@@ -1605,42 +1661,51 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
             behavior: HitTestBehavior.translucent,
             onHorizontalDragStart: (_) {
               if (_busy) return;
-              setState(() => _dragging = true);
+              setState(() {
+                _dragging = true;
+                _dragOriginState = _state;
+              });
             },
             onHorizontalDragUpdate: (details) {
               if (_busy) return;
+              var minOffset = -_leftReveal;
+              var maxOffset = _rightReveal;
+              switch (_dragOriginState) {
+                case _ConversationSwipeState.closed:
+                  break;
+                case _ConversationSwipeState.leadingOpen:
+                  minOffset = 0;
+                  break;
+                case _ConversationSwipeState.trailingOpen:
+                  maxOffset = 0;
+                  break;
+              }
               setState(() {
                 _offset = (_offset + details.delta.dx).clamp(
-                  -_leftReveal,
-                  _rightReveal,
+                  minOffset,
+                  maxOffset,
                 );
               });
             },
             onHorizontalDragEnd: (details) {
               if (_busy) return;
-              final velocity = details.primaryVelocity ?? 0;
-              var target = 0.0;
-              if (velocity > 450) {
-                target = _rightReveal;
-              } else if (velocity < -450) {
-                target = -_leftReveal;
-              } else if (_offset > 38) {
-                target = _rightReveal;
-              } else if (_offset < -38) {
-                target = -_leftReveal;
-              }
+              final targetState = _settledStateFor(
+                details.primaryVelocity ?? 0,
+              );
               setState(() {
                 _dragging = false;
-                _offset = target;
+                _state = targetState;
+                _offset = _offsetForState(targetState);
               });
             },
             onHorizontalDragCancel: () {
-              if (mounted) {
-                setState(() {
-                  _dragging = false;
-                  _offset = 0;
-                });
-              }
+              if (!mounted) return;
+              setState(() {
+                _dragging = false;
+                final targetState = _busy ? _state : _dragOriginState;
+                _state = targetState;
+                _offset = _offsetForState(targetState);
+              });
             },
             child: AnimatedContainer(
               duration: _dragging
@@ -1654,6 +1719,35 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
         ],
       ),
     );
+  }
+
+  double _offsetForState(_ConversationSwipeState state) => switch (state) {
+    _ConversationSwipeState.closed => 0,
+    _ConversationSwipeState.leadingOpen => _rightReveal,
+    _ConversationSwipeState.trailingOpen => -_leftReveal,
+  };
+
+  _ConversationSwipeState _settledStateFor(double velocity) {
+    switch (_dragOriginState) {
+      case _ConversationSwipeState.closed:
+        if (velocity > 450 || _offset > _settleThreshold) {
+          return _ConversationSwipeState.leadingOpen;
+        }
+        if (velocity < -450 || _offset < -_settleThreshold) {
+          return _ConversationSwipeState.trailingOpen;
+        }
+        return _ConversationSwipeState.closed;
+      case _ConversationSwipeState.leadingOpen:
+        if (velocity < -450 || _offset <= _rightReveal - _settleThreshold) {
+          return _ConversationSwipeState.closed;
+        }
+        return _ConversationSwipeState.leadingOpen;
+      case _ConversationSwipeState.trailingOpen:
+        if (velocity > 450 || _offset >= -_leftReveal + _settleThreshold) {
+          return _ConversationSwipeState.closed;
+        }
+        return _ConversationSwipeState.trailingOpen;
+    }
   }
 
   Widget _action({
@@ -1672,13 +1766,19 @@ class _ConversationSwipeActionsState extends State<_ConversationSwipeActions> {
           onTap: _busy
               ? null
               : () async {
-                  setState(() => _busy = true);
+                  setState(() {
+                    _busy = true;
+                    _dragging = false;
+                    _offset = _offsetForState(_state);
+                  });
                   try {
                     await onTap();
                   } finally {
                     if (mounted) {
                       setState(() {
                         _busy = false;
+                        _state = _ConversationSwipeState.closed;
+                        _dragOriginState = _ConversationSwipeState.closed;
                         _offset = 0;
                       });
                     }

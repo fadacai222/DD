@@ -11,6 +11,7 @@ import (
 	"example.com/selfhosted-im/server/internal/auth/account"
 	"example.com/selfhosted-im/server/internal/messaging"
 	"example.com/selfhosted-im/server/internal/protocol"
+	"example.com/selfhosted-im/server/internal/transcription"
 	"github.com/google/uuid"
 )
 
@@ -307,6 +308,8 @@ func (s *server) handleMessageByID(response http.ResponseWriter, request *http.R
 		s.handleMessagePin(response, request, principal, messageID)
 	case "forward":
 		s.handleMessageForward(response, request, principal, messageID)
+	case "transcription":
+		s.handleMessageTranscription(response, request, principal, messageID)
 	default:
 		writeAPIError(response, http.StatusNotFound, "NOT_FOUND", "Requested resource was not found")
 	}
@@ -564,6 +567,86 @@ func (s *server) publishEventAvailable(userIDs []uuid.UUID, reason string) {
 			remoteEnvelope.EventID = 0
 			s.enqueueRealtimeBusHint(identity, remoteEnvelope)
 		}
+	}
+}
+
+func (s *server) handleMessageTranscription(response http.ResponseWriter, request *http.Request, principal account.Principal, messageID uuid.UUID) {
+	if s.transcription == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "VOICE_TRANSCRIPTION_UNAVAILABLE", "Voice transcription is not configured")
+		return
+	}
+	var result transcription.Transcription
+	var err error
+	switch request.Method {
+	case http.MethodGet:
+		result, err = s.transcription.Get(request.Context(), principal, messageID)
+	case http.MethodPost:
+		result, err = s.transcription.Request(request.Context(), principal, messageID)
+	default:
+		methodNotAllowed(response, http.MethodGet, http.MethodPost)
+		return
+	}
+	if err != nil {
+		s.writeTranscriptionError(response, request, err)
+		return
+	}
+	status := http.StatusOK
+	if request.Method == http.MethodPost && (result.Status == transcription.StatusPending || result.Status == transcription.StatusRunning) {
+		status = http.StatusAccepted
+	}
+	writeSuccess(response, status, result)
+}
+
+func (s *server) handleVoiceTranscriptionPreferences(response http.ResponseWriter, request *http.Request) {
+	if s.transcription == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "VOICE_TRANSCRIPTION_UNAVAILABLE", "Voice transcription is not configured")
+		return
+	}
+	principal, ok := s.requirePrincipal(response, request)
+	if !ok {
+		return
+	}
+	switch request.Method {
+	case http.MethodGet:
+		result, err := s.transcription.GetPreferences(request.Context(), principal)
+		if err != nil {
+			s.writeTranscriptionError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, result)
+	case http.MethodPatch, http.MethodPut:
+		if !requireJSON(response, request) {
+			return
+		}
+		var input transcription.UpdatePreferencesInput
+		if err := decodeSingleJSON(response, request, &input); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "INVALID_VOICE_TRANSCRIPTION_REQUEST", err.Error())
+			return
+		}
+		result, err := s.transcription.UpdatePreferences(request.Context(), principal, input)
+		if err != nil {
+			s.writeTranscriptionError(response, request, err)
+			return
+		}
+		writeSuccess(response, http.StatusOK, result)
+	default:
+		methodNotAllowed(response, http.MethodGet, http.MethodPatch, http.MethodPut)
+	}
+}
+
+func (s *server) writeTranscriptionError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, transcription.ErrInvalidInput):
+		writeAPIError(response, http.StatusBadRequest, "INVALID_VOICE_TRANSCRIPTION_REQUEST", "Voice transcription request is invalid")
+	case errors.Is(err, transcription.ErrNotVoice):
+		writeAPIError(response, http.StatusUnprocessableEntity, "VOICE_TRANSCRIPTION_NOT_VOICE", "Only voice messages can be transcribed")
+	case errors.Is(err, transcription.ErrNotFound):
+		writeAPIError(response, http.StatusNotFound, "VOICE_TRANSCRIPTION_NOT_FOUND", "Voice message or transcription was not found")
+	case errors.Is(err, transcription.ErrUnavailable):
+		writeAPIError(response, http.StatusServiceUnavailable, "VOICE_TRANSCRIPTION_UNAVAILABLE", "Voice transcription provider is unavailable")
+	default:
+		s.logger.Error("voice transcription request failed", "requestId", response.Header().Get(requestIDHeader), "path", request.URL.Path, "error", err)
+		writeAPIError(response, http.StatusInternalServerError, "VOICE_TRANSCRIPTION_INTERNAL_ERROR", "Voice transcription request failed")
 	}
 }
 

@@ -6,8 +6,18 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
+import 'background_android_notification_details.dart';
 import 'notification_avatar_file.dart';
 import 'notification_avatar_url_policy.dart';
+
+enum AndroidNotificationDeliveryStatus {
+  unsupported,
+  ready,
+  appNotificationsDisabled,
+  channelDisabled,
+  channelMissing,
+  unavailable,
+}
 
 final class AppNotificationService {
   AppNotificationService({
@@ -23,8 +33,31 @@ final class AppNotificationService {
   // v1 was created by some test builds with non-heads-up settings, so keep a
   // versioned id and migrate users to a fresh high-importance channel.
   static const String androidChannelId = 'dd_messages_v2';
+  static const String androidCallChannelId = 'dd_calls_v1';
   static const _channelName = 'DD 新消息';
   static const _channelDescription = '消息与会话提醒';
+  static const _callChannelName = 'DD 来电';
+  static const _callChannelDescription = '语音、视频和群通话来电提醒';
+  static const AndroidNotificationChannel _androidChannel =
+      AndroidNotificationChannel(
+        androidChannelId,
+        _channelName,
+        description: _channelDescription,
+        importance: Importance.max,
+        playSound: false,
+        enableVibration: true,
+        showBadge: true,
+      );
+  static const AndroidNotificationChannel _androidCallChannel =
+      AndroidNotificationChannel(
+        androidCallChannelId,
+        _callChannelName,
+        description: _callChannelDescription,
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+        showBadge: true,
+      );
   static const MethodChannel _windowChannel = MethodChannel('dd/window');
 
   final FlutterLocalNotificationsPlugin _plugin;
@@ -94,17 +127,7 @@ final class AppNotificationService {
             .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin
             >();
-        await android?.createNotificationChannel(
-          const AndroidNotificationChannel(
-            androidChannelId,
-            _channelName,
-            description: _channelDescription,
-            importance: Importance.max,
-            playSound: false,
-            enableVibration: true,
-            showBadge: true,
-          ),
-        );
+        await _ensureAndroidChannel(android);
         if (requestPermission) {
           await android?.requestNotificationsPermission();
         }
@@ -115,6 +138,124 @@ final class AppNotificationService {
       _initialized = false;
     } finally {
       _initializing = false;
+    }
+  }
+
+  Future<void> _ensureAndroidChannel(
+    AndroidFlutterLocalNotificationsPlugin? android,
+  ) async {
+    if (android == null) return;
+    await android.createNotificationChannel(_androidChannel);
+    await android.createNotificationChannel(_androidCallChannel);
+  }
+
+  Future<AndroidNotificationDeliveryStatus> androidDeliveryStatus() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return AndroidNotificationDeliveryStatus.unsupported;
+    }
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android == null) return AndroidNotificationDeliveryStatus.unavailable;
+    try {
+      final enabled = await android.areNotificationsEnabled();
+      final channels = await android.getNotificationChannels();
+      AndroidNotificationChannel? channel;
+      for (final candidate in channels ?? const <AndroidNotificationChannel>[]) {
+        if (candidate.id == androidChannelId) {
+          channel = candidate;
+          break;
+        }
+      }
+      return classifyAndroidDeliveryStatus(
+        appNotificationsEnabled: enabled,
+        channelPresent: channel != null,
+        channelImportance: channel?.importance,
+      );
+    } catch (_) {
+      return AndroidNotificationDeliveryStatus.unavailable;
+    }
+  }
+
+  @visibleForTesting
+  static AndroidNotificationDeliveryStatus classifyAndroidDeliveryStatus({
+    required bool? appNotificationsEnabled,
+    required bool channelPresent,
+    required Importance? channelImportance,
+  }) {
+    if (appNotificationsEnabled == false) {
+      return AndroidNotificationDeliveryStatus.appNotificationsDisabled;
+    }
+    if (!channelPresent) {
+      return AndroidNotificationDeliveryStatus.channelMissing;
+    }
+    if (channelImportance == Importance.none) {
+      return AndroidNotificationDeliveryStatus.channelDisabled;
+    }
+    if (appNotificationsEnabled == null || channelImportance == null) {
+      return AndroidNotificationDeliveryStatus.unavailable;
+    }
+    return AndroidNotificationDeliveryStatus.ready;
+  }
+
+  /// Background-isolate-safe Android delivery path.
+  ///
+  /// It intentionally does not run [initialize], because that foreground path
+  /// reads launch details and wires tap streams. The FlutterFire reference app
+  /// creates the Android channel and posts through flutter_local_notifications
+  /// directly from the background isolate.
+  Future<bool> showAndroidBackgroundMessage({
+    required String senderName,
+    required String preview,
+    required String conversationId,
+    String? senderUserId,
+    Uri? avatarUrl,
+    Map<String, dynamic>? notificationData,
+    bool isCall = false,
+  }) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android == null) return false;
+
+    try {
+      await _ensureAndroidChannel(android);
+      final body = preview.trim().isEmpty ? '你收到了一条新消息' : preview.trim();
+      final channelId = isCall ? androidCallChannelId : androidChannelId;
+      final channelName = isCall ? _callChannelName : _channelName;
+      final channelDescription = isCall
+          ? _callChannelDescription
+          : _channelDescription;
+      Uint8List? avatarBytes;
+      if (avatarUrl != null) {
+        avatarBytes = await _loadAvatarUrl(avatarUrl);
+      }
+      await _plugin.show(
+        id: DateTime.now().microsecondsSinceEpoch & 0x7FFFFFFF,
+        title: senderName,
+        body: body,
+        payload: notificationData == null
+            ? conversationId
+            : jsonEncode(notificationData),
+        notificationDetails: NotificationDetails(
+          android: buildAndroidBackgroundNotificationDetails(
+            channelId: channelId,
+            channelName: channelName,
+            channelDescription: channelDescription,
+            smallIcon: androidSmallIcon,
+            senderName: senderName,
+            body: body,
+            avatarBytes: avatarBytes,
+            isCall: isCall,
+          ),
+        ),
+      );
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 

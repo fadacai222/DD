@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -128,6 +129,50 @@ void main() {
           'code',
           'TELEGRAM_STICKER_RELAY_NOT_CONFIGURED',
         ),
+      ),
+    );
+  });
+
+  test('transport timeout becomes stable sticker timeout error', () async {
+    final client = StickerApiClient(
+      httpClient: MockClient((_) async {
+        throw TimeoutException('simulated timeout');
+      }),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.importTelegramPack(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        setName: 'Animals_by_TestBot',
+      ),
+      throwsA(
+        isA<StickerApiException>()
+            .having((error) => error.statusCode, 'statusCode', 0)
+            .having((error) => error.code, 'code', 'STICKER_REQUEST_TIMEOUT'),
+      ),
+    );
+  });
+
+  test('transport client exception becomes stable network error', () async {
+    final client = StickerApiClient(
+      httpClient: MockClient((request) async {
+        throw http.ClientException('connection reset', request.url);
+      }),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.importTelegramPack(
+        origin: Uri.parse('http://127.0.0.1:18473'),
+        accessToken: 'token',
+        setName: 'Animals_by_TestBot',
+      ),
+      throwsA(
+        isA<StickerApiException>()
+            .having((error) => error.statusCode, 'statusCode', 0)
+            .having((error) => error.code, 'code', 'STICKER_NETWORK_ERROR'),
       ),
     );
   });

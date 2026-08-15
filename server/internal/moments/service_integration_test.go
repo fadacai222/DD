@@ -36,6 +36,12 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 	users := []uuid.UUID{alice, bob, carol, dave}
 	insertMomentTestContactPair(t, ctx, pool, alice, bob)
 	insertMomentTestContactPair(t, ctx, pool, alice, carol)
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='Moment Alice Alias' WHERE owner_user_id=$1 AND contact_user_id=$2`, bob, alice); err != nil {
+		t.Fatalf("seed bob moment remark: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='Moment Bob Alias' WHERE owner_user_id=$1 AND contact_user_id=$2`, alice, bob); err != nil {
+		t.Fatalf("seed alice moment remark: %v", err)
+	}
 	principals := map[uuid.UUID]account.Principal{
 		alice: {UserID: alice}, bob: {UserID: bob}, carol: {UserID: carol}, dave: {UserID: dave},
 	}
@@ -65,11 +71,13 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 	}
 	assertUUIDSet(t, recipients, alice, bob, carol)
 	allID := uuid.MustParse(all.ID)
-	if _, err := service.Get(ctx, principals[bob], allID); err != nil {
-		t.Fatalf("bob should see all-contact moment: %v", err)
+	bobInitialView, err := service.Get(ctx, principals[bob], allID)
+	if err != nil || bobInitialView.Author.DisplayName != "Moment Alice Alias" {
+		t.Fatalf("bob viewer-relative moment author=%q err=%v", bobInitialView.Author.DisplayName, err)
 	}
-	if _, err := service.Get(ctx, principals[carol], allID); err != nil {
-		t.Fatalf("carol should see all-contact moment: %v", err)
+	carolInitialView, err := service.Get(ctx, principals[carol], allID)
+	if err != nil || carolInitialView.Author.DisplayName != "Moment Alice" {
+		t.Fatalf("carol must not see bob private remark author=%q err=%v", carolInitialView.Author.DisplayName, err)
 	}
 	if _, err := service.Get(ctx, principals[dave], allID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("outsider get err=%v want ErrNotFound", err)
@@ -153,14 +161,17 @@ func TestMomentPrivacyLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("alice recent activity count=%d want=3 items=%+v", len(aliceActivity.Items), aliceActivity.Items)
 	}
 	foundCarolReply := false
+	foundBobAlias := false
 	for _, item := range aliceActivity.Items {
+		if item.Actor.ID == bob.String() && item.Actor.DisplayName == "Moment Bob Alias" {
+			foundBobAlias = true
+		}
 		if item.Kind == "COMMENT" && item.Actor.ID == carol.String() && item.CommentText == "Carol reply" {
 			foundCarolReply = true
-			break
 		}
 	}
-	if !foundCarolReply {
-		t.Fatalf("alice recent activity=%+v missing Carol reply", aliceActivity.Items)
+	if !foundCarolReply || !foundBobAlias {
+		t.Fatalf("alice recent activity=%+v missing viewer-relative actor labels", aliceActivity.Items)
 	}
 	bobActivity, err := service.GetActivitySummary(ctx, principals[bob])
 	if err != nil || bobActivity.UnreadCount != 1 {

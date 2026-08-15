@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:im_client/features/messaging/application/messaging_coordinator.dart';
@@ -702,6 +705,119 @@ void main() {
     expect(gateway.listConversationCalls, greaterThanOrEqualTo(2));
   });
 
+  test(
+    'app resume forces realtime revalidation while cursor sync and pending flush continue',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var connectionCount = 0;
+      var eventId = 0;
+      final sockets = <WebSocket>[];
+
+      server.listen((request) async {
+        if (request.uri.path != '/api/v1/realtime') {
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+          return;
+        }
+        connectionCount++;
+        final socket = await WebSocketTransformer.upgrade(request);
+        sockets.add(socket);
+        socket.listen((rawMessage) {
+          if (rawMessage is! String) return;
+          final message = jsonDecode(rawMessage) as Map<String, dynamic>;
+          final requestId = message['requestId'] as String? ?? '';
+          void send(Map<String, dynamic> payload) {
+            try {
+              if (socket.readyState == WebSocket.open) {
+                socket.add(jsonEncode(payload));
+              }
+            } catch (_) {
+              // Resume revalidation may close the old socket during a reply.
+            }
+          }
+
+          switch (message['type']) {
+            case 'hello':
+              send(<String, dynamic>{
+                'type': 'hello_ack',
+                'requestId': requestId,
+                'eventId': ++eventId,
+                'payload': <String, dynamic>{},
+              });
+            case 'ping':
+              send(<String, dynamic>{
+                'type': 'pong',
+                'requestId': requestId,
+                'eventId': ++eventId,
+                'payload': <String, dynamic>{},
+              });
+          }
+        });
+      });
+
+      final gateway = _FakeMessagingGateway();
+      final store = _MemoryMessagingStore();
+      final realtime = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:${server.port}'),
+        clientId: 'resume-device',
+        webSocketPath: '/api/v1/realtime',
+        heartbeatInterval: const Duration(minutes: 10),
+        heartbeatTimeout: const Duration(seconds: 1),
+      );
+      final coordinator = MessagingCoordinator(
+        origin: Uri.parse('http://127.0.0.1:${server.port}'),
+        accessToken: 'token',
+        currentUserId: 'user-a',
+        deviceId: 'resume-device',
+        gateway: gateway,
+        localStore: store,
+        realtimeClient: realtime,
+      );
+      final states = <RealtimeConnectionState>[];
+      final stateSubscription = realtime.states.listen(states.add);
+      addTearDown(() async {
+        await stateSubscription.cancel();
+        coordinator.dispose();
+        await realtime.dispose();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+      });
+
+      await coordinator.initialize();
+      expect(realtime.state, RealtimeConnectionState.connected);
+      expect(connectionCount, 1);
+      await Future<void>.delayed(Duration.zero);
+
+      gateway.failNextSend = true;
+      await coordinator.sendText('conversation-1', 'send after resume');
+      expect(coordinator.pending, hasLength(1));
+      final pendingClientId = coordinator.pending.single.clientMessageId;
+      expect(gateway.sentClientIds, [pendingClientId]);
+
+      gateway.syncPages.add(
+        SyncPage(items: const [], nextCursor: 7, hasMore: false),
+      );
+      final listCallsBeforeResume = gateway.listConversationCalls;
+      states.clear();
+
+      await Future.wait(<Future<void>>[
+        coordinator.onAppResumed(),
+        coordinator.onAppResumed(),
+        coordinator.onAppResumed(),
+      ]);
+
+      expect(connectionCount, 2);
+      expect(states, contains(RealtimeConnectionState.connecting));
+      expect(realtime.state, RealtimeConnectionState.connected);
+      expect(coordinator.syncCursor, 7);
+      expect(coordinator.pending, isEmpty);
+      expect(gateway.sentClientIds, [pendingClientId, pendingClientId]);
+      expect(gateway.listConversationCalls, greaterThan(listCallsBeforeResume));
+    },
+  );
+
   test('sync cursor only advances and is persisted', () async {
     final gateway = _FakeMessagingGateway()
       ..syncPages.addAll([
@@ -860,6 +976,8 @@ final class _FakeMessagingGateway implements MessagingGateway {
     required String mediaId,
     required int width,
     required int height,
+    bool livePhoto = false,
+    String? livePhotoMotionMediaId,
     String? replyToMessageId,
   }) async {
     if (failNextSend) {

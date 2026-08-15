@@ -155,6 +155,40 @@ func TestStickerPackDeleteForwardsStablePackID(t *testing.T) {
 	}
 }
 
+func TestTelegramStickerImportMapsProviderFailuresToStableCodes(t *testing.T) {
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "pack not found", err: stickers.ErrTelegramStickerSetNotFound, wantStatus: http.StatusNotFound, wantCode: "TELEGRAM_STICKER_PACK_NOT_FOUND"},
+		{name: "provider auth failed", err: stickers.ErrTelegramProviderUnauthorized, wantStatus: http.StatusServiceUnavailable, wantCode: "TELEGRAM_STICKER_RELAY_AUTH_FAILED"},
+		{name: "provider rate limited", err: stickers.ErrTelegramProviderRateLimited, wantStatus: http.StatusTooManyRequests, wantCode: "TELEGRAM_STICKER_RELAY_RATE_LIMITED"},
+		{name: "provider timeout", err: stickers.ErrTelegramProviderTimeout, wantStatus: http.StatusGatewayTimeout, wantCode: "TELEGRAM_STICKER_RELAY_TIMEOUT"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			service := &fakeStickersService{importErr: item.err}
+			handler := NewHandler(Config{AuthService: &stablePrincipalAuthService{principal: principal}, StickersService: service})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/stickers/packs/telegram", strings.NewReader(`{"setName":"Animals_by_TestBot"}`))
+			request.Header.Set("Authorization", "Bearer token")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != item.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, item.wantStatus, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), item.wantCode) {
+				t.Fatalf("missing stable error code %s: %s", item.wantCode, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestStickerErrorMappingDoesNotExposeProviderDetails(t *testing.T) {
 	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
 	service := &fakeStickersService{importErr: errors.Join(stickers.ErrTelegramProviderUnavailable, errors.New("upstream token=secret"))}

@@ -80,4 +80,9 @@ final class PushNotificationContent {
   final String previewMode;
   final int? badgeCount;
   final String conversationType;
+
+  bool get isCall {
+    final eventType = navigationData['eventType']?.toString().trim().toUpperCase();
+    return eventType == 'CALL_RINGING' || eventType == 'GROUP_CALL_STARTED';
+  }
 }

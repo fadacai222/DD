@@ -452,29 +452,32 @@ class _GroupDetailsPageState extends State<GroupDetailsPage> {
     required String hint,
     bool multiline = false,
   }) async {
-    final controller = TextEditingController(text: initial);
-    try {
-      return await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLength: maxLength,
-            maxLines: multiline ? 6 : 1,
-            minLines: multiline ? 3 : 1,
-            decoration: InputDecoration(hintText: hint),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('保存')),
-          ],
+    var value = initial;
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextFormField(
+          initialValue: initial,
+          autofocus: true,
+          maxLength: maxLength,
+          maxLines: multiline ? 6 : 1,
+          minLines: multiline ? 3 : 1,
+          decoration: InputDecoration(hintText: hint),
+          onChanged: (next) => value = next,
         ),
-      );
-    } finally {
-      controller.dispose();
-    }
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, value),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _editGroupAvatar(GroupInfo group) async {

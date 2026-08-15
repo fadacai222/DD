@@ -21,6 +21,7 @@ void main() {
                 'bio': 'hello',
               },
               'relationship': 'NONE',
+              'effectiveDisplayName': 'Boss',
             },
             'requestId': 'req_contact',
           }),
@@ -40,6 +41,7 @@ void main() {
     expect(captured.headers['authorization'], 'Bearer access-token');
     expect(result.user.handle, 'bob_01');
     expect(result.relationship, 'NONE');
+    expect(result.effectiveDisplayName, 'Boss');
   });
 
   test(
@@ -61,6 +63,7 @@ void main() {
                       'bio': '',
                     },
                     'relationship': 'CONTACT',
+                    'effectiveDisplayName': 'Team Alice',
                   },
                 ],
               },
@@ -90,6 +93,7 @@ void main() {
       expect(captured.headers['authorization'], 'Bearer access-token');
       expect(result.single.user.id, '018f0000-0000-7000-8000-000000000111');
       expect(result.single.relationship, 'CONTACT');
+      expect(result.single.effectiveDisplayName, 'Team Alice');
     },
   );
 

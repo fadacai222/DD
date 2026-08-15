@@ -29,6 +29,7 @@ class ContactsPage extends StatefulWidget {
     this.desktopGroupsContent,
     this.onStartAudioCall,
     this.onStartVideoCall,
+    this.onContactsChanged,
   });
 
   final Uri origin;
@@ -46,6 +47,7 @@ class ContactsPage extends StatefulWidget {
   final Widget? desktopGroupsContent;
   final Future<void> Function(String peerId, String peerName)? onStartAudioCall;
   final Future<void> Function(String peerId, String peerName)? onStartVideoCall;
+  final Future<void> Function()? onContactsChanged;
 
   @override
   State<ContactsPage> createState() => _ContactsPageState();
@@ -1168,6 +1170,7 @@ class _ContactsPageState extends State<ContactsPage>
               ? contact.user.displayName
               : contact.remark,
           contact: contact,
+          onContactUpdated: widget.onContactsChanged,
           onOpenMoments: () => Navigator.of(context).push<void>(
             MaterialPageRoute<void>(
               builder: (_) => MomentsFeedPage(
@@ -1228,6 +1231,7 @@ class _ContactsPageState extends State<ContactsPage>
       ),
     );
     if (mounted) await _loadAll();
+    await widget.onContactsChanged?.call();
   }
 
   TabBar _tabBar() {
@@ -1666,6 +1670,7 @@ class _ContactsPageState extends State<ContactsPage>
         accessToken: widget.accessToken,
       );
       if (mounted) setState(() => _contacts = contacts.items);
+      await widget.onContactsChanged?.call();
     }, success: '联系人资料已更新。');
   }
 

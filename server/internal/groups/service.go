@@ -16,13 +16,18 @@ import (
 )
 
 type Service struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool      *pgxpool.Pool
+	now       func() time.Time
+	groupCall groupCallConfig
 }
 
 type Config struct {
-	Pool *pgxpool.Pool
-	Now  func() time.Time
+	Pool                     *pgxpool.Pool
+	Now                      func() time.Time
+	LiveKitURL               string
+	LiveKitAPIKey            string
+	LiveKitAPISecret         string
+	GroupCallMaxParticipants int
 }
 
 func NewService(config Config) (*Service, error) {
@@ -33,7 +38,16 @@ func NewService(config Config) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{pool: config.Pool, now: now}, nil
+	return &Service{
+		pool: config.Pool,
+		now:  now,
+		groupCall: newGroupCallConfig(
+			config.LiveKitURL,
+			config.LiveKitAPIKey,
+			config.LiveKitAPISecret,
+			config.GroupCallMaxParticipants,
+		),
+	}, nil
 }
 
 func (service *Service) Create(ctx context.Context, principal account.Principal, raw CreateGroupInput) (Group, error) {
@@ -344,13 +358,14 @@ func (service *Service) ListMembers(ctx context.Context, principal account.Princ
 		return nil, err
 	}
 	rows, err := service.pool.Query(ctx, `
-		SELECT u.id::text,u.handle_normalized,u.display_name,cm.role,COALESCE(gmp.nickname,''),cm.joined_at
+		SELECT u.id::text,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name),cm.role,COALESCE(gmp.nickname,''),cm.joined_at
 		FROM conversation_members cm
 		JOIN users u ON u.id=cm.user_id
 		LEFT JOIN group_member_profiles gmp ON gmp.conversation_id=cm.conversation_id AND gmp.user_id=cm.user_id
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2 AND viewer_contact.contact_user_id=u.id
 		WHERE cm.conversation_id=$1 AND cm.status='ACTIVE' AND u.status='ACTIVE'
 		ORDER BY CASE cm.role WHEN 'OWNER' THEN 0 WHEN 'ADMIN' THEN 1 ELSE 2 END,cm.joined_at,u.id
-	`, groupID)
+	`, groupID, principal.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("list group members: %w", err)
 	}

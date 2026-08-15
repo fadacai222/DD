@@ -1,3 +1,5 @@
+import '../../../shared/identity/effective_display_name.dart' as identity;
+
 final class GroupUserPreview {
   const GroupUserPreview({
     required this.id,
@@ -15,6 +17,9 @@ final class GroupUserPreview {
   final String id;
   final String handle;
   final String displayName;
+
+  String get effectiveDisplayName =>
+      identity.effectiveDisplayName(displayName: displayName, handle: handle);
 }
 
 final class GroupInfo {
@@ -94,7 +99,8 @@ final class GroupMemberItem {
   final String nickname;
   final DateTime joinedAt;
 
-  String get effectiveName => nickname.trim().isEmpty ? user.displayName : nickname;
+  String get effectiveName =>
+      nickname.trim().isEmpty ? user.effectiveDisplayName : nickname.trim();
 }
 
 final class GroupJoinRequestItem {

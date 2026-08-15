@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -73,6 +74,7 @@ final class StickerApiClient implements StickerGateway {
   StickerApiClient({http.Client? httpClient})
     : _client = httpClient ?? createAuthHttpClient();
 
+  static const Duration _requestTimeout = Duration(seconds: 15);
   final http.Client _client;
 
   @override
@@ -201,26 +203,40 @@ final class StickerApiClient implements StickerGateway {
       if (body != null) 'Content-Type': 'application/json',
     };
     late http.Response response;
-    switch (method) {
-      case 'POST':
-        response = await _client.post(
-          url,
-          headers: headers,
-          body: jsonEncode(body),
-        );
-      case 'PUT':
-        response = await _client.put(
-          url,
-          headers: headers,
-          body: jsonEncode(body),
-        );
-      case 'DELETE':
-        final request = http.Request('DELETE', url)..headers.addAll(headers);
-        if (body != null) request.body = jsonEncode(body);
-        final streamed = await _client.send(request);
-        response = await http.Response.fromStream(streamed);
-      default:
-        response = await _client.get(url, headers: headers);
+    try {
+      switch (method) {
+        case 'POST':
+          response = await _client
+              .post(url, headers: headers, body: jsonEncode(body))
+              .timeout(_requestTimeout);
+        case 'PUT':
+          response = await _client
+              .put(url, headers: headers, body: jsonEncode(body))
+              .timeout(_requestTimeout);
+        case 'DELETE':
+          final request = http.Request('DELETE', url)..headers.addAll(headers);
+          if (body != null) request.body = jsonEncode(body);
+          final streamed = await _client.send(request).timeout(_requestTimeout);
+          response = await http.Response.fromStream(
+            streamed,
+          ).timeout(_requestTimeout);
+        default:
+          response = await _client
+              .get(url, headers: headers)
+              .timeout(_requestTimeout);
+      }
+    } on TimeoutException {
+      throw const StickerApiException(
+        statusCode: 0,
+        code: 'STICKER_REQUEST_TIMEOUT',
+        message: '表情服务请求超时。',
+      );
+    } on http.ClientException {
+      throw const StickerApiException(
+        statusCode: 0,
+        code: 'STICKER_NETWORK_ERROR',
+        message: '无法连接表情服务。',
+      );
     }
     return _decodeData(response, expectedStatuses);
   }

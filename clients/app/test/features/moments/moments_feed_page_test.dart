@@ -492,6 +492,117 @@ void main() {
     expect(find.textContaining('Alice 回复@铁森：我也觉得有点意思'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'comment rich text keeps non-danger colors even if body text theme is red',
+    (tester) async {
+      const socialBlue = Color(0xFF576B95);
+      final baseTheme = AppTheme.light();
+      final inheritedDangerTheme = baseTheme.copyWith(
+        textTheme: baseTheme.textTheme.apply(
+          bodyColor: DdColors.danger,
+          displayColor: DdColors.danger,
+        ),
+      );
+      final gateway = _FakeMomentsGateway(
+        initialItem: _initialMoment(
+          comments: [
+            MomentComment(
+              id: 'comment-bob',
+              author: const MomentUserPreview(
+                id: 'user-b',
+                handle: 'tisen05',
+                displayName: '铁森',
+              ),
+              text: '有点意思',
+              createdAt: DateTime.utc(2026, 8, 10, 12, 1),
+            ),
+            MomentComment(
+              id: 'comment-reply',
+              author: const MomentUserPreview(
+                id: 'user-a',
+                handle: 'alice',
+                displayName: 'Alice',
+              ),
+              text: '我也觉得',
+              replyToCommentId: 'comment-bob',
+              createdAt: DateTime.utc(2026, 8, 10, 12, 2),
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: inheritedDangerTheme,
+          home: MomentsFeedPage(
+            origin: Uri.parse('http://127.0.0.1:18473'),
+            accessToken: 'token',
+            currentUserId: 'user-a',
+            currentUserDisplayName: 'Alice',
+            onUnauthorized: () async => 'token',
+            gateway: gateway,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final commentRow = find.byKey(
+        const Key('moment-comment-item-comment-reply'),
+      );
+      final richTextFinder = find.descendant(
+        of: commentRow,
+        matching: find.byType(RichText),
+      );
+      expect(richTextFinder, findsOneWidget);
+      final richText = tester.widget<RichText>(richTextFinder);
+
+      TextSpan? findCommentSpan(TextSpan span) {
+        for (final child
+            in span.children?.whereType<TextSpan>() ?? const <TextSpan>[]) {
+          final nested = findCommentSpan(child);
+          if (nested != null) return nested;
+        }
+        if (span.toPlainText() == 'Alice 回复@铁森：我也觉得' &&
+            span.children?.isNotEmpty == true) {
+          return span;
+        }
+        return null;
+      }
+
+      final root = findCommentSpan(richText.text as TextSpan)!;
+      final spans = root.children!.cast<TextSpan>().toList(growable: false);
+
+      expect(root.style?.color, DdColors.textPrimary);
+      expect(root.style?.color, isNot(DdColors.danger));
+      expect(spans[0].text, 'Alice');
+      expect(spans[0].style?.color, socialBlue);
+      expect(spans[1].text, ' 回复@');
+      expect(spans[2].text, '铁森');
+      expect(spans[2].style?.color, socialBlue);
+      expect(spans[3].text, '：');
+      expect(spans[4].text, '我也觉得');
+      expect(
+        spans.where((span) => span.style?.color == DdColors.danger),
+        isEmpty,
+      );
+
+      final commentButtonIcon = tester.widget<Icon>(
+        find.descendant(
+          of: find.byKey(const Key('moment-comment-moment-1')),
+          matching: find.byIcon(Icons.chat_bubble_outline_rounded),
+        ),
+      );
+      expect(commentButtonIcon.color, socialBlue);
+
+      await tester.tap(find.byKey(const Key('moment-like-moment-1')));
+      await tester.pumpAndSettle();
+      final likedIcon = tester.widget<Icon>(
+        find.byIcon(Icons.favorite_rounded).first,
+      );
+      expect(likedIcon.color, DdColors.danger);
+    },
+  );
 }
 
 final class _FakeMomentsGateway

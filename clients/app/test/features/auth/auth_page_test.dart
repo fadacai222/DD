@@ -34,6 +34,84 @@ void main() {
     },
   );
 
+  testWidgets('registration code send starts a 60 second resend cooldown', (
+    tester,
+  ) async {
+    final gateway = _FakeAuthGateway();
+    await tester.pumpWidget(MaterialApp(home: AuthPage(gateway: gateway)));
+    await tester.pumpAndSettle();
+
+    final sendButton = find.byKey(const Key('auth-send-code'));
+    expect(find.text('发送验证码'), findsOneWidget);
+    expect(tester.widget<FilledButton>(sendButton).onPressed, isNotNull);
+
+    await tester.tap(sendButton);
+    await tester.pumpAndSettle();
+
+    expect(gateway.sendRegistrationCodeCount, 1);
+    expect(tester.widget<FilledButton>(sendButton).onPressed, isNull);
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('auth-email'))).enabled,
+      isTrue,
+    );
+    expect(find.text('60 秒后重试'), findsOneWidget);
+    expect(find.text('验证码发送成功，收不到就去邮箱垃圾箱看看'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('59 秒后重试'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(Tab, '登录'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(Tab, '注册'));
+    await tester.pump();
+    expect(find.text('59 秒后重试'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 59));
+    expect(find.text('发送验证码'), findsOneWidget);
+    expect(tester.widget<FilledButton>(sendButton).onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('failed registration code send does not start cooldown', (
+    tester,
+  ) async {
+    final gateway = _FakeAuthGateway()
+      ..sendRegistrationCodeError = const AuthApiException(
+        statusCode: 429,
+        code: 'RATE_LIMITED',
+        message: 'rate limited',
+      );
+    await tester.pumpWidget(MaterialApp(home: AuthPage(gateway: gateway)));
+    await tester.pumpAndSettle();
+
+    final sendButton = find.byKey(const Key('auth-send-code'));
+    await tester.tap(sendButton);
+    await tester.pumpAndSettle();
+
+    expect(gateway.sendRegistrationCodeCount, 1);
+    expect(find.text('发送验证码'), findsOneWidget);
+    expect(tester.widget<FilledButton>(sendButton).onPressed, isNotNull);
+    expect(find.textContaining('秒后重试'), findsNothing);
+    expect(find.text('验证码发送太频繁，请稍后再试。'), findsOneWidget);
+  });
+
+  testWidgets('registration code cooldown timer is cancelled on dispose', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(home: AuthPage(gateway: _FakeAuthGateway())),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('auth-send-code')));
+    await tester.pumpAndSettle();
+    expect(find.text('60 秒后重试'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(seconds: 61));
+
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'registration uses DDID wording and login history pre-fills account',
     (tester) async {
@@ -1497,12 +1575,18 @@ final class _MemorySecureStore implements SecureKeyValueStore {
 
 class _FakeAuthGateway implements AuthGateway {
   int registerCount = 0;
+  int sendRegistrationCodeCount = 0;
+  Object? sendRegistrationCodeError;
 
   @override
   Future<void> sendRegistrationCode({
     required Uri origin,
     required String email,
-  }) async {}
+  }) async {
+    sendRegistrationCodeCount++;
+    final error = sendRegistrationCodeError;
+    if (error != null) throw error;
+  }
 
   @override
   Future<AuthSession> register({

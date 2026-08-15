@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -158,7 +159,7 @@ func (provider *TelegramBotProvider) DownloadSticker(ctx context.Context, fileID
 	}
 	response, err := provider.httpClient.Do(request)
 	if err != nil {
-		return TelegramFile{}, ErrTelegramProviderUnavailable
+		return TelegramFile{}, classifyTelegramTransportError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -167,7 +168,7 @@ func (provider *TelegramBotProvider) DownloadSticker(ctx context.Context, fileID
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if err != nil {
-		return TelegramFile{}, ErrTelegramProviderUnavailable
+		return TelegramFile{}, classifyTelegramTransportError(err)
 	}
 	if int64(len(body)) > maxBytes {
 		return TelegramFile{}, ErrTelegramStickerDownloadTooLarge
@@ -197,22 +198,12 @@ func (provider *TelegramBotProvider) call(ctx context.Context, method string, va
 	}
 	response, err := provider.httpClient.Do(request)
 	if err != nil {
-		return ErrTelegramProviderUnavailable
+		return classifyTelegramTransportError(err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
 	if err != nil {
-		return ErrTelegramProviderUnavailable
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if response.StatusCode == http.StatusUnauthorized {
-			return ErrTelegramProviderUnauthorized
-		}
-		return ErrTelegramProviderUnavailable
-	}
-	var envelope json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return ErrTelegramProviderUnavailable
+		return classifyTelegramTransportError(err)
 	}
 	var base struct {
 		OK          bool            `json:"ok"`
@@ -220,19 +211,39 @@ func (provider *TelegramBotProvider) call(ctx context.Context, method string, va
 		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
 	}
-	if err := json.Unmarshal(envelope, &base); err != nil {
+	if err := json.Unmarshal(body, &base); err != nil {
 		return ErrTelegramProviderUnavailable
 	}
-	if !base.OK {
-		if base.ErrorCode == http.StatusUnauthorized {
-			return ErrTelegramProviderUnauthorized
-		}
-		return ErrTelegramProviderUnavailable
+	if response.StatusCode < 200 || response.StatusCode >= 300 || !base.OK {
+		return classifyTelegramAPIError(method, response.StatusCode, base.ErrorCode, base.Description)
 	}
 	if err := json.Unmarshal(base.Result, result); err != nil {
 		return ErrTelegramProviderUnavailable
 	}
 	return nil
+}
+
+func classifyTelegramTransportError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTelegramProviderTimeout
+	}
+	return ErrTelegramProviderUnavailable
+}
+
+func classifyTelegramAPIError(method string, statusCode int, errorCode int, description string) error {
+	description = strings.ToUpper(strings.TrimSpace(description))
+	switch {
+	case method == "getStickerSet" &&
+		(statusCode == http.StatusBadRequest || errorCode == http.StatusBadRequest) &&
+		strings.Contains(description, "STICKERSET_INVALID"):
+		return ErrTelegramStickerSetNotFound
+	case statusCode == http.StatusUnauthorized || errorCode == http.StatusUnauthorized:
+		return ErrTelegramProviderUnauthorized
+	case statusCode == http.StatusTooManyRequests || errorCode == http.StatusTooManyRequests:
+		return ErrTelegramProviderRateLimited
+	default:
+		return ErrTelegramProviderUnavailable
+	}
 }
 
 func sniffTelegramStickerMIME(data []byte) string {

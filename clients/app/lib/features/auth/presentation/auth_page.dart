@@ -61,6 +61,8 @@ class _AuthPageState extends State<AuthPage>
   bool _busy = false;
   String? _message;
   bool _messageIsError = false;
+  Timer? _registrationCodeCooldownTimer;
+  int _registrationCodeCooldownSeconds = 0;
   Timer? _refreshTimer;
   Future<AuthSession?>? _refreshInFlight;
   int? _refreshInFlightEpoch;
@@ -115,6 +117,7 @@ class _AuthPageState extends State<AuthPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _registrationCodeCooldownTimer?.cancel();
     _refreshTimer?.cancel();
     _tabs.dispose();
     _origin.dispose();
@@ -257,8 +260,14 @@ class _AuthPageState extends State<AuthPage>
             const SizedBox(width: 10),
             FilledButton.tonal(
               key: const Key('auth-send-code'),
-              onPressed: _busy ? null : _sendCode,
-              child: const Text('发送验证码'),
+              onPressed: _busy || _registrationCodeCooldownSeconds > 0
+                  ? null
+                  : _sendCode,
+              child: Text(
+                _registrationCodeCooldownSeconds > 0
+                    ? '$_registrationCodeCooldownSeconds 秒后重试'
+                    : '发送验证码',
+              ),
             ),
           ],
         ),
@@ -599,8 +608,32 @@ class _AuthPageState extends State<AuthPage>
       origin: _validatedOrigin(),
       email: _email.text.trim(),
     );
-    _setMessage('验证码请求已接受。开发环境请到 Mailpit 查看邮件。');
+    if (!mounted) return;
+    _startRegistrationCodeCooldown();
+    _setMessage('验证码发送成功，收不到就去邮箱垃圾箱看看');
   });
+
+  void _startRegistrationCodeCooldown() {
+    _registrationCodeCooldownTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _registrationCodeCooldownSeconds = 60);
+    _registrationCodeCooldownTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        if (_registrationCodeCooldownSeconds <= 1) {
+          timer.cancel();
+          _registrationCodeCooldownTimer = null;
+          setState(() => _registrationCodeCooldownSeconds = 0);
+          return;
+        }
+        setState(() => _registrationCodeCooldownSeconds--);
+      },
+    );
+  }
 
   Future<void> _register() => _run(() async {
     final session = await _gateway.register(

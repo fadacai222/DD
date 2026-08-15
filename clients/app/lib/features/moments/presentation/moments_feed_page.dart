@@ -927,9 +927,13 @@ class _MomentsFeedPageState extends State<MomentsFeedPage> {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Text.rich(
           TextSpan(
-            style: DefaultTextStyle.of(
-              context,
-            ).style.copyWith(fontSize: 13, height: 1.35),
+            style: DefaultTextStyle.of(context).style.copyWith(
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? Colors.white
+                  : DdColors.textPrimary,
+              fontSize: 13,
+              height: 1.35,
+            ),
             children: [
               TextSpan(
                 text: _momentUserName(comment.author),

@@ -18,10 +18,6 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("DD_GROUPS_TEST_DATABASE_URL is not set")
 	}
-	t.Setenv("LIVEKIT_URL", "ws://127.0.0.1:7880")
-	t.Setenv("LIVEKIT_API_KEY", "group-call-test-key")
-	t.Setenv("LIVEKIT_API_SECRET", "group-call-test-secret")
-	t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", "3")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -48,7 +44,13 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 		}
 	}
 
-	service, err := NewService(Config{Pool: pool})
+	service, err := NewService(Config{
+		Pool:                     pool,
+		LiveKitURL:               "ws://127.0.0.1:7880",
+		LiveKitAPIKey:            "group-call-test-key",
+		LiveKitAPISecret:         "group-call-test-secret",
+		GroupCallMaxParticipants: 3,
+	})
 	if err != nil {
 		t.Fatalf("new groups service: %v", err)
 	}
@@ -64,6 +66,9 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 	groupID := uuid.MustParse(group.ID)
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark='Call Alice Alias' WHERE owner_user_id=$1 AND contact_user_id=$2`, bob, alice); err != nil {
+		t.Fatalf("set bob group-call remark: %v", err)
+	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
@@ -83,8 +88,12 @@ func TestGroupCallLifecycleWithPostgres(t *testing.T) {
 		t.Fatalf("missing signed media credentials: %+v", started)
 	}
 
-	if _, _, err := service.JoinGroupCall(ctx, principals[bob], groupID, callID); err != nil {
+	bobJoined, _, err := service.JoinGroupCall(ctx, principals[bob], groupID, callID)
+	if err != nil {
 		t.Fatalf("bob join group call: %v", err)
+	}
+	if bobJoined.Call.StartedBy.DisplayName != "Call Alice Alias" || bobJoined.Call.Participants[0].User.DisplayName != "Call Alice Alias" {
+		t.Fatalf("bob viewer-relative group-call names=%+v", bobJoined.Call)
 	}
 	joined, _, err := service.JoinGroupCall(ctx, principals[carol], groupID, callID)
 	if err != nil || len(joined.Call.Participants) != 3 {

@@ -274,9 +274,29 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 		return nil, ErrInvalidInput
 	}
 	rows, err := service.pool.Query(ctx, `
-		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at
+		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at,
+		       mention.message_id,mention.sequence
 		FROM conversation_members m
 		JOIN conversations c ON c.id=m.conversation_id
+		LEFT JOIN LATERAL (
+			SELECT mm.message_id::text AS message_id,mm.sequence
+			FROM message_mentions mm
+			JOIN messages message
+			  ON message.id=mm.message_id
+			 AND message.conversation_id=mm.conversation_id
+			 AND message.sequence=mm.sequence
+			LEFT JOIN message_local_deletions local_delete
+			  ON local_delete.message_id=mm.message_id AND local_delete.user_id=m.user_id
+			WHERE c.type='GROUP'
+			  AND mm.mentioned_user_id=m.user_id
+			  AND mm.conversation_id=c.id
+			  AND mm.sequence>m.last_read_sequence
+			  AND message.recalled_at IS NULL
+			  AND message.deleted_at IS NULL
+			  AND local_delete.message_id IS NULL
+			ORDER BY mm.sequence DESC,mm.message_id DESC
+			LIMIT 1
+		) mention ON true
 		WHERE m.user_id=$1 AND m.status='ACTIVE'
 		  AND (m.hidden_through_sequence IS NULL OR c.last_sequence > m.hidden_through_sequence)
 		ORDER BY (m.archived_at IS NOT NULL) ASC,m.is_pinned DESC,c.updated_at DESC,c.id DESC
@@ -290,7 +310,7 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 	result := make([]Conversation, 0, limit)
 	for rows.Next() {
 		var item Conversation
-		if err := rows.Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt, &item.LatestUnreadMentionMessageID, &item.LatestUnreadMentionSequence); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		normalizeConversationTimesUTC(&item)
@@ -320,7 +340,7 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 			item.Peer = &peer
 			item.CanWrite = true
 		case "GROUP":
-			group, err := service.loadGroupPreview(ctx, conversationID)
+			group, err := service.loadGroupPreview(ctx, principal.UserID, conversationID)
 			if err != nil {
 				return nil, err
 			}
@@ -340,7 +360,7 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 				if parseErr != nil {
 					return nil, fmt.Errorf("parse last message sender: %w", parseErr)
 				}
-				sender, senderErr := service.loadUserPreview(ctx, senderID)
+				sender, senderErr := service.loadGroupUserPreview(ctx, principal.UserID, conversationID, senderID)
 				if senderErr != nil {
 					return nil, senderErr
 				}
@@ -358,11 +378,23 @@ func (service *Service) ListConversations(ctx context.Context, principal account
 func (service *Service) GetConversation(ctx context.Context, principal account.Principal, conversationID uuid.UUID) (Conversation, error) {
 	var item Conversation
 	err := service.pool.QueryRow(ctx, `
-		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at
+		SELECT c.id,c.type,c.last_sequence,m.last_read_sequence,m.muted_until,m.is_pinned,m.archived_at,c.created_at,c.updated_at,
+		       mention.message_id,mention.sequence
 		FROM conversation_members m
 		JOIN conversations c ON c.id=m.conversation_id
+		LEFT JOIN LATERAL (
+			SELECT mm.message_id::text AS message_id,mm.sequence
+			FROM message_mentions mm
+			JOIN messages message ON message.id=mm.message_id AND message.conversation_id=mm.conversation_id AND message.sequence=mm.sequence
+			LEFT JOIN message_local_deletions local_delete ON local_delete.message_id=mm.message_id AND local_delete.user_id=m.user_id
+			WHERE c.type='GROUP' AND mm.mentioned_user_id=m.user_id AND mm.conversation_id=c.id
+			  AND mm.sequence>m.last_read_sequence AND message.recalled_at IS NULL AND message.deleted_at IS NULL
+			  AND local_delete.message_id IS NULL
+			ORDER BY mm.sequence DESC,mm.message_id DESC
+			LIMIT 1
+		) mention ON true
 		WHERE c.id=$1 AND m.user_id=$2 AND m.status='ACTIVE'
-	`, conversationID, principal.UserID).Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt)
+	`, conversationID, principal.UserID).Scan(&item.ID, &item.Type, &item.LastSequence, &item.LastReadSequence, &item.Preferences.MutedUntil, &item.Preferences.IsPinned, &item.Preferences.ArchivedAt, &item.CreatedAt, &item.UpdatedAt, &item.LatestUnreadMentionMessageID, &item.LatestUnreadMentionSequence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Conversation{}, ErrNotFound
 	}
@@ -395,7 +427,7 @@ func (service *Service) GetConversation(ctx context.Context, principal account.P
 		item.Peer = &peer
 		item.CanWrite = true
 	case "GROUP":
-		group, err := service.loadGroupPreview(ctx, conversationID)
+		group, err := service.loadGroupPreview(ctx, principal.UserID, conversationID)
 		if err != nil {
 			return Conversation{}, err
 		}
@@ -415,7 +447,7 @@ func (service *Service) GetConversation(ctx context.Context, principal account.P
 			if parseErr != nil {
 				return Conversation{}, fmt.Errorf("parse last message sender: %w", parseErr)
 			}
-			sender, senderErr := service.loadUserPreview(ctx, senderID)
+			sender, senderErr := service.loadGroupUserPreview(ctx, principal.UserID, conversationID, senderID)
 			if senderErr != nil {
 				return Conversation{}, senderErr
 			}
@@ -590,22 +622,45 @@ func (service *Service) MarkRead(ctx context.Context, principal account.Principa
 }
 
 func (service *Service) loadSelfPreview(ctx context.Context, userID uuid.UUID) (UserPreview, error) {
-	return service.loadUserPreview(ctx, userID)
+	return service.loadUserPreview(ctx, userID, userID)
 }
 
-func (service *Service) loadUserPreview(ctx context.Context, userID uuid.UUID) (UserPreview, error) {
+func (service *Service) loadUserPreview(ctx context.Context, viewerID, userID uuid.UUID) (UserPreview, error) {
 	var user UserPreview
 	if err := service.pool.QueryRow(ctx, `
-		SELECT id,handle_normalized,display_name FROM users WHERE id=$1 AND status='ACTIVE'
-	`, userID).Scan(&user.ID, &user.Handle, &user.DisplayName); errors.Is(err, pgx.ErrNoRows) {
+		SELECT u.id,u.handle_normalized,COALESCE(NULLIF(viewer_contact.remark,''),u.display_name)
+		FROM users u
+		LEFT JOIN contacts viewer_contact
+		  ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
+		WHERE u.id=$2 AND u.status='ACTIVE'
+	`, viewerID, userID).Scan(&user.ID, &user.Handle, &user.DisplayName); errors.Is(err, pgx.ErrNoRows) {
 		return UserPreview{}, ErrNotFound
 	} else if err != nil {
-		return UserPreview{}, fmt.Errorf("load user preview: %w", err)
+		return UserPreview{}, fmt.Errorf("load viewer-relative user preview: %w", err)
 	}
 	return user, nil
 }
 
-func (service *Service) loadGroupPreview(ctx context.Context, conversationID uuid.UUID) (GroupPreview, error) {
+func (service *Service) loadGroupUserPreview(ctx context.Context, viewerID, conversationID, userID uuid.UUID) (UserPreview, error) {
+	var user UserPreview
+	if err := service.pool.QueryRow(ctx, `
+		SELECT u.id,u.handle_normalized,
+		       COALESCE(NULLIF(gmp.nickname,''),NULLIF(viewer_contact.remark,''),u.display_name)
+		FROM users u
+		LEFT JOIN group_member_profiles gmp
+		  ON gmp.conversation_id=$2 AND gmp.user_id=u.id
+		LEFT JOIN contacts viewer_contact
+		  ON viewer_contact.owner_user_id=$1 AND viewer_contact.contact_user_id=u.id
+		WHERE u.id=$3 AND u.status='ACTIVE'
+	`, viewerID, conversationID, userID).Scan(&user.ID, &user.Handle, &user.DisplayName); errors.Is(err, pgx.ErrNoRows) {
+		return UserPreview{}, ErrNotFound
+	} else if err != nil {
+		return UserPreview{}, fmt.Errorf("load viewer-relative group user preview: %w", err)
+	}
+	return user, nil
+}
+
+func (service *Service) loadGroupPreview(ctx context.Context, viewerID, conversationID uuid.UUID) (GroupPreview, error) {
 	var group GroupPreview
 	var avatarMembersJSON string
 	if err := service.pool.QueryRow(ctx, `
@@ -617,7 +672,11 @@ func (service *Service) loadGroupPreview(ctx context.Context, conversationID uui
 		           jsonb_build_object(
 		             'id', u.id::text,
 		             'handle', u.handle_normalized,
-		             'displayName', u.display_name
+		             'displayName', COALESCE(
+		               NULLIF((SELECT member_profile.nickname FROM group_member_profiles member_profile WHERE member_profile.conversation_id=g.conversation_id AND member_profile.user_id=u.id),''),
+		               NULLIF(viewer_contact.remark,''),
+		               u.display_name
+		             )
 		           ) ORDER BY sample.joined_at,sample.user_id
 		         )::text
 		         FROM (
@@ -628,10 +687,11 @@ func (service *Service) loadGroupPreview(ctx context.Context, conversationID uui
 		           LIMIT 4
 		         ) sample
 		         JOIN users u ON u.id=sample.user_id AND u.status='ACTIVE'
+		         LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2 AND viewer_contact.contact_user_id=u.id
 		       ), '[]')
 		FROM groups g
 		WHERE g.conversation_id=$1 AND g.status='ACTIVE'
-	`, conversationID).Scan(
+	`, conversationID, viewerID).Scan(
 		&group.ID,
 		&group.Name,
 		&group.MemberCount,
@@ -656,7 +716,7 @@ func (service *Service) loadDirectPeerState(ctx context.Context, conversationID,
 		SELECT
 			u.id,
 			u.handle_normalized,
-			u.display_name,
+			COALESCE(NULLIF(viewer_contact.remark,''),u.display_name),
 			CASE
 				WHEN COALESCE(p.read_receipts_enabled, true) THEN m.last_read_sequence
 				ELSE NULL
@@ -664,6 +724,7 @@ func (service *Service) loadDirectPeerState(ctx context.Context, conversationID,
 		FROM conversation_members m
 		JOIN users u ON u.id=m.user_id
 		LEFT JOIN user_privacy_settings p ON p.user_id=m.user_id
+		LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2 AND viewer_contact.contact_user_id=u.id
 		WHERE m.conversation_id=$1 AND m.user_id<>$2 AND m.status='ACTIVE'
 		ORDER BY m.joined_at ASC LIMIT 1
 	`, conversationID, currentUserID).Scan(&peer.ID, &peer.Handle, &peer.DisplayName, &peerLastReadSequence)

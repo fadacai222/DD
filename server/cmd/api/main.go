@@ -33,6 +33,8 @@ import (
 	"example.com/selfhosted-im/server/internal/qrcode"
 	"example.com/selfhosted-im/server/internal/realtimebus"
 	"example.com/selfhosted-im/server/internal/stickers"
+	"example.com/selfhosted-im/server/internal/transcription"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var version = "dev"
@@ -58,6 +60,7 @@ func main() {
 	var groupsService httpapi.GroupsService
 	var callsService httpapi.CallsService
 	var messagingService httpapi.MessagingService
+	var transcriptionService httpapi.TranscriptionService
 	var mediaService httpapi.MediaService
 	var stickersService httpapi.StickersService
 	var momentsService httpapi.MomentsService
@@ -123,7 +126,7 @@ func main() {
 			os.Exit(2)
 		}
 		authService = accountService
-		groupService, groupErr := groups.NewService(groups.Config{Pool: pool})
+		groupService, groupErr := groups.NewService(groupsConfigFromAppConfig(config, pool))
 		if groupErr != nil {
 			err = groupErr
 			logger.Error("groups service initialization failed", "error", err)
@@ -163,6 +166,24 @@ func main() {
 			}
 			mediaService = managedMedia
 		}
+		var transcriptionProvider transcription.Provider
+		if config.VoiceTranscriptionEndpoint != "" {
+			transcriptionProvider, err = transcription.NewWhisperHTTPProvider(transcription.WhisperHTTPConfig{
+				Endpoint:   config.VoiceTranscriptionEndpoint,
+				Model:      config.VoiceTranscriptionModel,
+				Credential: config.VoiceTranscriptionCredential,
+			})
+			if err != nil {
+				logger.Error("voice transcription provider initialization failed", "error", err)
+				os.Exit(2)
+			}
+		}
+		transcriptionService, err = transcription.NewService(transcription.Config{Pool: pool, Provider: transcriptionProvider, Media: managedMedia})
+		if err != nil {
+			logger.Error("voice transcription service initialization failed", "error", err)
+			os.Exit(2)
+		}
+
 		telegramToken := config.TelegramBotToken
 		telegramSource := stickers.TelegramIntegrationSourceNone
 		var telegramUpdatedAt *time.Time
@@ -262,6 +283,7 @@ func main() {
 			GroupsService:      groupsService,
 			CallsService:       callsService,
 			MessagingService:   messagingService,
+			TranscriptionService: transcriptionService,
 			MediaService:       mediaService,
 			StickersService:    stickersService,
 			MomentsService:     momentsService,
@@ -319,6 +341,16 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+func groupsConfigFromAppConfig(config appconfig.Config, pool *pgxpool.Pool) groups.Config {
+	return groups.Config{
+		Pool:                     pool,
+		LiveKitURL:               config.LiveKitURL,
+		LiveKitAPIKey:            config.LiveKitAPIKey,
+		LiveKitAPISecret:         config.LiveKitAPISecret,
+		GroupCallMaxParticipants: config.GroupCallLimit,
+	}
 }
 
 func mapReadinessChecks(checks map[string]httpapi.ReadinessCheck) map[string]observability.ReadinessCheck {

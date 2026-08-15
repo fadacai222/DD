@@ -59,10 +59,67 @@ void main() {
         'mimeTypes': <String>['image/jpeg', 'video/quicktime'],
         'maxFiles': 30,
         'maxBytes': 2 * 1024 * 1024 * 1024,
+        'preserveLivePhoto': false,
       });
       expect(files, hasLength(1));
       expect(files.single.path, endsWith('photo.mov'));
       expect(files.single.mimeType, 'video/quicktime');
+    });
+
+    testWidgets('Live Photo picker preserves still and motion pair metadata', (
+      tester,
+    ) async {
+      const channel = MethodChannel('dd/file_picker');
+      MethodCall? captured;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        captured = call;
+        return <Map<String, Object?>>[
+          <String, Object?>{
+            'kind': 'livePhoto',
+            'assetIdentifier': 'PH-LIVE-1',
+            'still': <String, Object?>{
+              'path': '/private/dd_picker/live.heic',
+              'name': 'IMG_0001.HEIC',
+              'mimeType': 'image/heic',
+              'size': 4096,
+            },
+            'motion': <String, Object?>{
+              'path': '/private/dd_picker/live.mov',
+              'name': 'IMG_0001.MOV',
+              'mimeType': 'video/quicktime',
+              'size': 8192,
+            },
+          },
+        ];
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final picked = await ddOpenMediaFiles(
+        source: DdFilePickerSource.photos,
+        maxFiles: 5,
+        maxBytes: 64 * 1024 * 1024,
+      );
+      debugDefaultTargetPlatformOverride = null;
+
+      expect(
+        (captured?.arguments as Map<Object?, Object?>?)?['preserveLivePhoto'],
+        isTrue,
+      );
+      expect(picked, hasLength(1));
+      expect(picked.single.kind, DdPickedMediaKind.livePhoto);
+      expect(picked.single.assetIdentifier, 'PH-LIVE-1');
+      expect(picked.single.primary.path, endsWith('live.heic'));
+      expect(picked.single.motion?.path, endsWith('live.mov'));
+      expect(picked.single.primarySizeBytes, 4096);
+      expect(picked.single.motionSizeBytes, 8192);
     });
 
     testWidgets('Files picker routes through native path contract', (

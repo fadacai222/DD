@@ -1,11 +1,16 @@
 package groups
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"example.com/selfhosted-im/server/internal/auth/account"
+	"github.com/google/uuid"
 )
 
 func TestIssueLiveKitRoomTokenScopesParticipantToSingleRoom(t *testing.T) {
@@ -40,25 +45,41 @@ func TestIssueLiveKitRoomTokenScopesParticipantToSingleRoom(t *testing.T) {
 	if !ok {
 		t.Fatalf("video claims=%T %#v", claims["video"], claims["video"])
 	}
-	if video["roomJoin"] != true || video["room"] != "dd-group-room" || video["canPublish"] != true || video["canSubscribe"] != true {
+	if video["roomJoin"] != true || video["room"] != "dd-group-room" || video["canPublish"] != true || video["canSubscribe"] != true || video["canPublishData"] != true {
 		t.Fatalf("video claims=%v", video)
+	}
+	for _, forbidden := range []string{"roomAdmin", "roomCreate", "roomList", "roomRecord"} {
+		if _, exists := video[forbidden]; exists {
+			t.Fatalf("unexpected broad permission %q in video claims=%v", forbidden, video)
+		}
 	}
 }
 
-func TestGroupCallParticipantLimitUsesSafeDefaultAndConfiguredBounds(t *testing.T) {
-	t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", "")
-	if got := groupCallParticipantLimit(); got != 32 {
+func TestGroupCallParticipantLimitUsesSafeDefaultAndConfiguredBoundsFromConfig(t *testing.T) {
+	if got := normalizeGroupCallParticipantLimit(0); got != 32 {
 		t.Fatalf("default participant limit=%d want 32", got)
 	}
-	t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", "12")
-	if got := groupCallParticipantLimit(); got != 12 {
+	if got := normalizeGroupCallParticipantLimit(12); got != 12 {
 		t.Fatalf("configured participant limit=%d want 12", got)
 	}
-	for _, invalid := range []string{"1", "501", "oops"} {
-		t.Setenv("DD_GROUP_CALL_MAX_PARTICIPANTS", invalid)
-		if got := groupCallParticipantLimit(); got != 32 {
-			t.Fatalf("invalid %q limit=%d want safe default 32", invalid, got)
+	for _, invalid := range []int{1, MaximumGroupMembers + 1} {
+		if got := normalizeGroupCallParticipantLimit(invalid); got != 32 {
+			t.Fatalf("invalid %d limit=%d want safe default 32", invalid, got)
 		}
+	}
+}
+
+func TestGroupCallServiceFailsClosedWhenMediaConfigIsMissing(t *testing.T) {
+	service := &Service{groupCall: newGroupCallConfig("", "", "", 0)}
+	principal := account.Principal{UserID: uuid.New(), DeviceID: uuid.New()}
+	groupID := uuid.New()
+	callID := uuid.New()
+
+	if _, _, err := service.StartGroupCall(context.Background(), principal, groupID, "AUDIO"); !errors.Is(err, ErrGroupCallUnavailable) {
+		t.Fatalf("StartGroupCall() error = %v, want ErrGroupCallUnavailable", err)
+	}
+	if _, _, err := service.JoinGroupCall(context.Background(), principal, groupID, callID); !errors.Is(err, ErrGroupCallUnavailable) {
+		t.Fatalf("JoinGroupCall() error = %v, want ErrGroupCallUnavailable", err)
 	}
 }
 

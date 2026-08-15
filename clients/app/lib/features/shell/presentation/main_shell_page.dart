@@ -196,6 +196,7 @@ class _MainShellPageState extends State<MainShellPage>
     _lifecycleState = state;
     if (state == AppLifecycleState.resumed) {
       unawaited(_momentActivityController.refresh());
+      unawaited(_messagingCoordinator.onAppResumed());
       unawaited(_pushRegistrationService.onAppResumed());
       unawaited(_recoverCallFromExternalSignal(clearWhenMissing: true));
       _syncNotificationBadge();
@@ -471,6 +472,7 @@ class _MainShellPageState extends State<MainShellPage>
             _startCall(peerId, peerName, CallKind.audio),
         onStartVideoCall: (peerId, peerName) =>
             _startCall(peerId, peerName, CallKind.video),
+        onContactsChanged: _messagingCoordinator.refreshConversations,
       ),
       _DiscoveryPage(
         activityController: _momentActivityController,
@@ -859,6 +861,7 @@ class _MainShellPageState extends State<MainShellPage>
             userId: result.user.id,
             handle: result.user.handle,
             displayName: result.user.displayName,
+            onContactUpdated: _messagingCoordinator.refreshConversations,
             onOpenMoments: result.relationship == 'CONTACT'
                 ? () =>
                       _openPeerMoments(result.user.id, result.user.displayName)

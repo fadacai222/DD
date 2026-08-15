@@ -31,6 +31,30 @@ compose exec -T api wget -q -O /dev/null http://127.0.0.1:18473/api/v1/system/li
 compose exec -T api wget -q -O /dev/null http://127.0.0.1:18473/api/v1/system/ready
 log "API live/readiness endpoints PASS"
 
+api_version="$(compose exec -T api wget -q -O - http://127.0.0.1:18473/api/v1/system/version)"
+log "API version: $api_version"
+
+compose exec -T api /bin/sh -ec '
+  test -n "${LIVEKIT_URL:-}" || { echo "LIVEKIT_URL is empty" >&2; exit 1; }
+  test -s /run/secrets/livekit_api_key || { echo "livekit_api_key is empty" >&2; exit 1; }
+  test -s /run/secrets/livekit_api_secret || { echo "livekit_api_secret is empty" >&2; exit 1; }
+'
+log "group-call media runtime config PASS"
+
+compose exec -T worker /bin/sh -ec '
+  test -s /run/secrets/fcm_service_account_json || { echo "fcm_service_account_json is empty; Android background Push cannot work" >&2; exit 1; }
+  grep -q '"project_id"' /run/secrets/fcm_service_account_json || { echo "FCM service account has no project_id" >&2; exit 1; }
+  grep -q '"private_key"' /run/secrets/fcm_service_account_json || { echo "FCM service account has no private_key" >&2; exit 1; }
+'
+log "Android FCM worker credential PASS"
+
+voice_endpoint="$(compose exec -T api /bin/sh -ec 'printf %s "${VOICE_TRANSCRIPTION_ENDPOINT:-}"')"
+if [[ -n "$voice_endpoint" ]]; then
+  log "voice transcription runtime config ENABLED"
+else
+  log "FEATURE-DISABLED: VOICE_TRANSCRIPTION_ENDPOINT is empty; manual/automatic STT will be unavailable"
+fi
+
 livekit_id="$(service_container_id livekit)"
 node_ip_line="$(docker logs "$livekit_id" 2>&1 | grep -E 'nodeIP|node_ip' | tail -1 || true)"
 if [[ -n "$node_ip_line" ]]; then

@@ -123,6 +123,18 @@ func TestRelationshipLifecycleWithPostgres(t *testing.T) {
 	if err != nil || updated.Remark != remark || !updated.IsStarred || len(updated.Tags) != 2 {
 		t.Fatalf("update contact=%#v err=%v", updated, err)
 	}
+	aliceSearch, err := service.GetUserByID(ctx, alicePrincipal, bob)
+	if err != nil || aliceSearch.EffectiveDisplayName != remark {
+		t.Fatalf("alice viewer display name=%q err=%v", aliceSearch.EffectiveDisplayName, err)
+	}
+	bobSearch, err := service.GetUserByID(ctx, bobPrincipal, alice)
+	if err != nil || bobSearch.EffectiveDisplayName != "Alice" {
+		t.Fatalf("bob must not see alice private remark display=%q err=%v", bobSearch.EffectiveDisplayName, err)
+	}
+	carolSearch, err := service.GetUserByID(ctx, carolPrincipal, bob)
+	if err != nil || carolSearch.EffectiveDisplayName != "Bob" {
+		t.Fatalf("carol without remark display=%q err=%v", carolSearch.EffectiveDisplayName, err)
+	}
 	bobContacts, err := service.ListContacts(ctx, bobPrincipal, 1, 50)
 	if err != nil || len(bobContacts.Items) != 1 || bobContacts.Items[0].Remark != "" || bobContacts.Items[0].IsStarred {
 		t.Fatalf("owner-specific metadata leaked: %#v err=%v", bobContacts, err)

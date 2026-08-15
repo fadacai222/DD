@@ -15,6 +15,7 @@ import '../../../core/media/dd_file_picker.dart';
 import '../../../core/media/image_viewer_page.dart';
 import '../../../core/media/media_cache_manager.dart';
 import '../../../core/media/remote_media_action_service.dart';
+import '../../../core/media/windows_clipboard_image_service.dart';
 import '../../../core/platform/external_url_opener.dart';
 import '../../../core/widgets/dd_action_sheet.dart';
 import '../../../theme/app_theme.dart';
@@ -33,6 +34,7 @@ import '../../moments/presentation/moment_contact_privacy_page.dart';
 import '../../moments/presentation/moments_feed_page.dart';
 import '../application/media_transfer_controller.dart';
 import '../application/messaging_coordinator.dart';
+import '../application/voice_playback_controller.dart';
 import '../data/chat_appearance_store.dart';
 import '../data/chat_voice_player.dart';
 import '../data/custom_sticker_processor.dart';
@@ -46,10 +48,13 @@ import '../data/messaging_api_client.dart' show MessagingApiException;
 import '../data/sticker_api_client.dart';
 import '../data/video_file_cache.dart';
 import '../data/video_media_probe.dart';
+import '../data/voice_playback_source_resolver.dart';
+import '../data/voice_transcription_api_client.dart';
 import '../domain/emoji_catalog.dart';
 import '../domain/media_transfer_state.dart';
 import '../domain/messaging_models.dart';
 import '../domain/sticker_models.dart';
+import '../domain/voice_message_selector.dart';
 import 'chat_background_settings_page.dart';
 import 'chat_details_page.dart';
 import 'chat_wallpaper_surface.dart';
@@ -61,6 +66,7 @@ import 'mention_composer_controller.dart';
 import 'mention_rich_text.dart';
 import 'mention_suggestion_overlay.dart';
 import 'sticker_library_sheet.dart';
+import 'sticker_operation_error_text.dart';
 import 'video_viewer_page.dart';
 import 'widgets/inline_video_preview.dart';
 import 'widgets/looping_video_sticker.dart';
@@ -89,6 +95,9 @@ class TextChatPage extends StatefulWidget {
     this.cameraCapture,
     this.inspectorController,
     this.groupCallGateway,
+    this.windowsClipboardPasteDecider,
+    this.windowsClipboardTextReader,
+    this.mediaCache,
   });
 
   final MessagingCoordinator coordinator;
@@ -111,6 +120,9 @@ class TextChatPage extends StatefulWidget {
   final CameraCaptureGateway? cameraCapture;
   final DesktopInspectorController? inspectorController;
   final GroupCallGateway? groupCallGateway;
+  final WindowsClipboardPasteDecider? windowsClipboardPasteDecider;
+  final Future<String?> Function()? windowsClipboardTextReader;
+  final MediaLocalCache? mediaCache;
 
   @override
   State<TextChatPage> createState() => _TextChatPageState();
@@ -127,6 +139,7 @@ class _TextChatPageState extends State<TextChatPage>
   late final CameraCaptureGateway _cameraCapture;
   late final GroupCallGateway _groupCallGateway;
   late final bool _ownsGroupCallGateway;
+  late final WindowsClipboardPasteDecider _windowsClipboardPasteDecider;
   GroupCallInfo? _activeGroupCall;
   bool _groupCallBusy = false;
   Timer? _groupCallRefreshTimer;
@@ -148,6 +161,10 @@ class _TextChatPageState extends State<TextChatPage>
   OverlayEntry? _mentionOverlayEntry;
   late final ChatVoiceRecorder _voiceRecorder;
   late final ChatVoicePlayer _voicePlayer;
+  late final VoicePlaybackController _voicePlaybackController;
+  late final VoiceTranscriptionApiClient _voiceTranscriptionApi;
+  StreamSubscription<VoicePlaybackSnapshot>? _voicePlaybackStateSubscription;
+  StreamSubscription<VoicePlaybackFailure>? _voicePlaybackErrorSubscription;
   final MediaDownloadGrantCache _mediaDownloadGrants =
       MediaDownloadGrantCache();
   final Map<String, Future<Uri>> _stickerVideoSourceInflight =
@@ -165,13 +182,19 @@ class _TextChatPageState extends State<TextChatPage>
   bool _voiceCancelGesture = false;
   bool _voiceSending = false;
   bool _dropHover = false;
+  bool _clipboardPasteBusy = false;
   int _voiceElapsedSeconds = 0;
   double _voiceAmplitude = 0;
   int? _voicePointerId;
   Timer? _voiceTimer;
   StreamSubscription<double>? _voiceAmplitudeSubscription;
   Future<void>? _voiceStartFuture;
-  String? _playingVoiceMessageId;
+  VoicePlaybackSnapshot _voicePlaybackState =
+      const VoicePlaybackSnapshot.idle();
+  final Map<String, VoiceTranscriptionResult> _voiceTranscriptions =
+      <String, VoiceTranscriptionResult>{};
+  VoiceTranscriptionPreferences? _voiceTranscriptionPreferences;
+  final Set<String> _voiceTranscriptionBusy = <String>{};
   Duration _voicePosition = Duration.zero;
   Duration _voiceDuration = Duration.zero;
   double _voicePlaybackRate = 1;
@@ -180,6 +203,7 @@ class _TextChatPageState extends State<TextChatPage>
   String? _draftBeforeEdit;
   final Map<String, GlobalKey> _messageAnchorKeys = {};
   String? _highlightedMessageId;
+  String? _unreadMentionMessageId;
   Timer? _highlightTimer;
   List<PinnedMessageItem> _pinnedMessages = const [];
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
@@ -206,6 +230,7 @@ class _TextChatPageState extends State<TextChatPage>
     _composer.addListener(_scheduleDraftSave);
     _composerFocusNode = FocusNode(debugLabel: 'chat-composer');
     _scrollController = ScrollController();
+    _unreadMentionMessageId = widget.conversation.latestUnreadMentionMessageId;
     _appearanceStore = ChatAppearanceStore.shared(widget.currentUserId);
     unawaited(_appearanceStore.load());
     _mediaApi = MediaApiClient();
@@ -214,6 +239,11 @@ class _TextChatPageState extends State<TextChatPage>
     _cameraCapture = widget.cameraCapture ?? CameraCaptureService();
     _ownsGroupCallGateway = widget.groupCallGateway == null;
     _groupCallGateway = widget.groupCallGateway ?? GroupCallApiClient();
+    _windowsClipboardPasteDecider =
+        widget.windowsClipboardPasteDecider ??
+        WindowsClipboardPasteDecider(
+          adapter: WindowsClipboardImageAdapter(),
+        );
     if (widget.conversation.type == 'GROUP') {
       unawaited(_refreshActiveGroupCall());
       _groupCallRefreshTimer = Timer.periodic(
@@ -247,7 +277,8 @@ class _TextChatPageState extends State<TextChatPage>
     _mentionController.addListener(_syncMentionOverlay);
     _composer.addListener(_updateMentionTrigger);
     _mentionController.update(_composer.value);
-    _mediaCache = MediaLocalCache(namespace: widget.currentUserId);
+    _mediaCache =
+        widget.mediaCache ?? MediaLocalCache(namespace: widget.currentUserId);
     _videoFileCache = VideoFileCache(
       namespace: '${widget.coordinator.origin.origin}|${widget.currentUserId}',
     );
@@ -258,16 +289,39 @@ class _TextChatPageState extends State<TextChatPage>
       }
     });
     _voicePlayer = ChatVoicePlayer();
-    _voicePlayer.completed.listen((_) {
-      if (!mounted) return;
-      setState(() {
-        _playingVoiceMessageId = null;
-        _voicePosition = Duration.zero;
-      });
-    });
-    _voicePlayer.playing.listen((_) {
-      if (mounted) setState(() {});
-    });
+    _voicePlaybackController = VoicePlaybackController(
+      player: _voicePlayer,
+      resolver: AuthorizedVoicePlaybackSourceResolver(
+        cache: _mediaCache,
+        grants: _mediaDownloadGrants,
+        grantLoader: _downloadGrantFor,
+        downloader: (url) => _mediaApi.downloadMedia(url: url),
+      ),
+      selector: VoiceMessageSelector(
+        currentUserId: widget.currentUserId,
+        isHeard: widget.coordinator.isVoiceHeard,
+      ),
+      markHeard: widget.coordinator.markVoiceHeard,
+    );
+    _voicePlaybackStateSubscription = _voicePlaybackController.states.listen(
+      (state) {
+        if (!mounted) return;
+        setState(() {
+          _voicePlaybackState = state;
+          if (state.phase == VoicePlaybackPhase.idle) {
+            _voicePosition = Duration.zero;
+            _voiceDuration = Duration.zero;
+          }
+        });
+      },
+    );
+    _voicePlaybackErrorSubscription = _voicePlaybackController.errors.listen(
+      (failure) {
+        if (mounted) _showImageError('语音播放失败，请稍后重试。');
+      },
+    );
+    _voiceTranscriptionApi = VoiceTranscriptionApiClient();
+    unawaited(_loadVoiceTranscriptionPreferences());
     _voicePlayer.position.listen((position) {
       if (mounted) setState(() => _voicePosition = position);
     });
@@ -284,10 +338,23 @@ class _TextChatPageState extends State<TextChatPage>
   @override
   void didUpdateWidget(covariant TextChatPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.conversation.latestUnreadMentionMessageId !=
+            widget.conversation.latestUnreadMentionMessageId &&
+        widget.conversation.latestUnreadMentionMessageId?.trim().isNotEmpty ==
+            true) {
+      _unreadMentionMessageId =
+          widget.conversation.latestUnreadMentionMessageId;
+    }
     if (oldWidget.hostVisible != widget.hostVisible ||
         oldWidget.conversation.id != widget.conversation.id) {
       if (oldWidget.conversation.id != widget.conversation.id) {
+        unawaited(
+          _voicePlaybackController.interrupt(
+            VoicePlaybackInterruptReason.leftConversation,
+          ),
+        );
         widget.coordinator.deactivateConversation(oldWidget.conversation.id);
+        _unreadMentionMessageId = widget.conversation.latestUnreadMentionMessageId;
         _mentionController.close();
         _editingMessage = null;
         _draftBeforeEdit = null;
@@ -300,6 +367,13 @@ class _TextChatPageState extends State<TextChatPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
+    if (state != AppLifecycleState.resumed) {
+      unawaited(
+        _voicePlaybackController.interrupt(
+          VoicePlaybackInterruptReason.leftConversation,
+        ),
+      );
+    }
     _updateReadVisibility();
   }
 
@@ -324,8 +398,12 @@ class _TextChatPageState extends State<TextChatPage>
     _voiceTimer?.cancel();
     _highlightTimer?.cancel();
     unawaited(_voiceAmplitudeSubscription?.cancel());
+    unawaited(_voicePlaybackStateSubscription?.cancel());
+    unawaited(_voicePlaybackErrorSubscription?.cancel());
+    unawaited(_voicePlaybackController.dispose());
     unawaited(_voiceRecorder.dispose());
     unawaited(_voicePlayer.dispose());
+    _voiceTranscriptionApi.close();
     unawaited(
       widget.coordinator.setDraft(
         widget.conversation.id,
@@ -402,6 +480,8 @@ class _TextChatPageState extends State<TextChatPage>
                   if (widget.coordinator.errorMessage != null)
                     _errorBar(widget.coordinator.errorMessage!),
                   if (_pinnedMessages.isNotEmpty) _pinnedMessageBar(),
+                  if (_unreadMentionMessageId?.trim().isNotEmpty == true)
+                    _unreadMentionBanner(),
                   Expanded(
                     child: GestureDetector(
                       key: const Key('chat-message-surface'),
@@ -778,7 +858,7 @@ class _TextChatPageState extends State<TextChatPage>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          peer?.displayName ?? '聊天',
+          peer?.effectiveDisplayName ?? '聊天',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
@@ -838,7 +918,7 @@ class _TextChatPageState extends State<TextChatPage>
     final isGroup = conversation.type == 'GROUP';
     final name = isGroup
         ? conversation.group?.name ?? '群聊'
-        : conversation.peer?.displayName ?? '对方';
+        : conversation.peer?.effectiveDisplayName ?? '对方';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(28),
@@ -963,6 +1043,51 @@ class _TextChatPageState extends State<TextChatPage>
         ),
       ),
     );
+  }
+
+  Widget _unreadMentionBanner() {
+    final messageId = _unreadMentionMessageId?.trim() ?? '';
+    if (messageId.isEmpty) return const SizedBox.shrink();
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: InkWell(
+        key: const Key('chat-unread-mention-banner'),
+        onTap: () => unawaited(_openUnreadMention(messageId)),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 36),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: DdColors.divider, width: 0.5),
+            ),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.alternate_email_rounded, size: 16, color: DdColors.danger),
+              SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  '【有人@你】',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: DdColors.danger,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, size: 17, color: DdColors.textTertiary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openUnreadMention(String messageId) async {
+    if (_unreadMentionMessageId == messageId && mounted) {
+      setState(() => _unreadMentionMessageId = null);
+    }
+    await _jumpToMessage(messageId);
   }
 
   String _pinnedMessageSummary(ChatMessage message) {
@@ -1944,9 +2069,9 @@ class _TextChatPageState extends State<TextChatPage>
       ).showSnackBar(SnackBar(content: Text('已添加表情包「${pack.title}」')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('表情包添加失败：$error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('表情包添加失败：${stickerOperationErrorText(error)}')),
+      );
     } finally {
       if (ownsGateway) gateway.close();
     }
@@ -2303,11 +2428,13 @@ class _TextChatPageState extends State<TextChatPage>
     final durationMs = content.durationMs!.clamp(250, maxChatVoiceDurationMs);
     final durationSeconds = (durationMs / 1000).ceil();
     final width = (112.0 + durationSeconds * 2.4).clamp(126.0, 248.0);
+    final active = _voicePlaybackState.messageId == message.id;
+    final starting =
+        active && _voicePlaybackState.phase == VoicePlaybackPhase.starting;
     final playing =
-        _playingVoiceMessageId == message.id && _voicePlayer.isPlaying;
+        active && _voicePlaybackState.phase == VoicePlaybackPhase.playing;
     final progress =
-        _playingVoiceMessageId == message.id &&
-            _voiceDuration.inMilliseconds > 0
+        active && _voiceDuration.inMilliseconds > 0
         ? (_voicePosition.inMilliseconds / _voiceDuration.inMilliseconds).clamp(
             0.0,
             1.0,
@@ -2316,18 +2443,35 @@ class _TextChatPageState extends State<TextChatPage>
     final heard = widget.coordinator.isVoiceHeard(message.id);
     return SizedBox(
       width: width,
-      child: InkWell(
+      child: Column(
+        crossAxisAlignment: mine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
         borderRadius: BorderRadius.circular(DdRadii.control),
         onTap: () => unawaited(_toggleVoicePlayback(message)),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 1),
           child: Row(
             children: [
-              Icon(
-                playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                size: 24,
-                color: mine ? const Color(0xFF355F2B) : DdColors.textPrimary,
-              ),
+              if (starting)
+                SizedBox(
+                  key: Key('voice-starting-${message.id}'),
+                  width: 24,
+                  height: 24,
+                  child: const Padding(
+                    padding: EdgeInsets.all(3),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else
+                Icon(
+                  playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  size: 24,
+                  color: mine ? const Color(0xFF355F2B) : DdColors.textPrimary,
+                ),
               const SizedBox(width: 5),
               Expanded(
                 child: Row(
@@ -2358,12 +2502,16 @@ class _TextChatPageState extends State<TextChatPage>
               ),
               const SizedBox(width: 7),
               Text('$durationSeconds″', style: const TextStyle(fontSize: 12)),
-              if (heard) ...[
-                const SizedBox(width: 4),
-                const Icon(
-                  Icons.check_rounded,
-                  size: 13,
-                  color: DdColors.textSecondary,
+              if (!mine && !heard) ...[
+                const SizedBox(width: 5),
+                Container(
+                  key: Key('voice-unheard-dot-${message.id}'),
+                  width: 7,
+                  height: 7,
+                  decoration: const BoxDecoration(
+                    color: DdColors.danger,
+                    shape: BoxShape.circle,
+                  ),
                 ),
               ],
               const SizedBox(width: 4),
@@ -2387,49 +2535,43 @@ class _TextChatPageState extends State<TextChatPage>
             ],
           ),
         ),
+          ),
+          _voiceTranscriptionSection(message, mine),
+        ],
       ),
     );
   }
 
   Future<void> _toggleVoicePlayback(ChatMessage message) async {
-    final mediaId = message.content?.mediaId;
-    if (mediaId == null || mediaId.isEmpty) return;
-    try {
-      if (_playingVoiceMessageId == message.id) {
-        if (_voicePlayer.isPlaying) {
-          await _voicePlayer.pause();
-        } else {
-          await _voicePlayer.resume();
-        }
-        return;
+    final mediaId = message.content?.mediaId?.trim() ?? '';
+    if (mediaId.isEmpty) return;
+    final active = _voicePlaybackState.messageId == message.id;
+    if (active) {
+      switch (_voicePlaybackState.phase) {
+        case VoicePlaybackPhase.playing:
+          await _voicePlaybackController.pause();
+          return;
+        case VoicePlaybackPhase.paused:
+          await _voicePlaybackController.resume(rate: _voicePlaybackRate);
+          return;
+        case VoicePlaybackPhase.starting:
+          await _voicePlaybackController.interrupt(
+            VoicePlaybackInterruptReason.manual,
+          );
+          return;
+        case VoicePlaybackPhase.idle:
+          break;
       }
-      final bytes = await _mediaBytesFor(mediaId, kind: MediaCacheKind.voice);
-      await _voicePlayer.stop();
-      if (mounted) {
-        setState(() {
-          _playingVoiceMessageId = message.id;
-          _voicePosition = Duration.zero;
-          _voiceDuration = Duration.zero;
-        });
-      }
-      await widget.coordinator.markVoiceHeard(message.id);
-      await _voicePlayer.play(
-        bytes: bytes,
-        namespace: widget.currentUserId,
-        mediaId: mediaId,
-        mimeType: message.content?.mimeType,
-        rate: _voicePlaybackRate,
-      );
-    } catch (error, stackTrace) {
-      unawaited(
-        ClientLog.error(
-          'Voice playback failed: message=${message.id} media=$mediaId mime=${message.content?.mimeType ?? ''}',
-          error: error,
-          stackTrace: stackTrace,
-        ),
-      );
-      if (mounted) _showImageError('语音播放失败，请稍后重试。');
     }
+    _voicePosition = Duration.zero;
+    _voiceDuration = Duration.zero;
+    await _voicePlaybackController.play(
+      message,
+      conversationMessages: widget.coordinator.messagesFor(
+        widget.conversation.id,
+      ),
+      rate: _voicePlaybackRate,
+    );
   }
 
   Future<void> _cycleVoicePlaybackRate(ChatMessage message) async {
@@ -2439,8 +2581,194 @@ class _TextChatPageState extends State<TextChatPage>
         ? 2.0
         : 1.0;
     setState(() => _voicePlaybackRate = next);
-    if (_playingVoiceMessageId == message.id) {
+    if (_voicePlaybackState.messageId == message.id) {
       await _voicePlayer.setRate(next);
+    }
+  }
+
+  Widget _voiceTranscriptionSection(ChatMessage message, bool mine) {
+    final result = _voiceTranscriptions[message.id];
+    final busy = _voiceTranscriptionBusy.contains(message.id);
+    if (result?.status == VoiceTranscriptionStatus.completed &&
+        result!.transcript.trim().isNotEmpty) {
+      return Container(
+        key: Key('voice-transcript-${message.id}'),
+        margin: const EdgeInsets.only(top: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFF292929)
+              : const Color(0xFFF3F3F3),
+          borderRadius: BorderRadius.circular(DdRadii.control),
+        ),
+        child: SelectableText(
+          result.transcript.trim(),
+          style: const TextStyle(fontSize: 12, height: 1.35),
+        ),
+      );
+    }
+
+    final pending =
+        busy ||
+        result?.status == VoiceTranscriptionStatus.pending ||
+        result?.status == VoiceTranscriptionStatus.running;
+    if (pending) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          '转写中…',
+          key: Key('voice-transcribing-${message.id}'),
+          style: const TextStyle(fontSize: 11, color: DdColors.textSecondary),
+        ),
+      );
+    }
+
+    if (result?.status == VoiceTranscriptionStatus.failed) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          result?.retryable == true ? '转写失败，长按语音可重试' : '转写失败',
+          key: Key('voice-transcription-failed-${message.id}'),
+          style: const TextStyle(fontSize: 11, color: DdColors.textSecondary),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
+
+  bool _canRequestVoiceTranscription(ChatMessage message) {
+    if (message.isRecalled ||
+        message.type != 'VOICE' ||
+        message.content?.hasMedia != true ||
+        _voiceTranscriptionPreferences?.providerAvailable == false ||
+        _voiceTranscriptionBusy.contains(message.id)) {
+      return false;
+    }
+    final result = _voiceTranscriptions[message.id];
+    return result?.status != VoiceTranscriptionStatus.pending &&
+        result?.status != VoiceTranscriptionStatus.running &&
+        result?.status != VoiceTranscriptionStatus.completed;
+  }
+
+  String _voiceTranscriptionActionLabel(ChatMessage message) {
+    final result = _voiceTranscriptions[message.id];
+    return result?.status == VoiceTranscriptionStatus.failed &&
+            result?.retryable == true
+        ? '重试转文字'
+        : '转文字';
+  }
+
+  Future<void> _loadVoiceTranscriptionPreferences() async {
+    try {
+      final preferences = await widget.coordinator.withAuthorizedToken(
+        (token) => _voiceTranscriptionApi.getPreferences(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+        ),
+      );
+      if (mounted) {
+        setState(() => _voiceTranscriptionPreferences = preferences);
+      }
+    } on MessagingApiException catch (error) {
+      if (!mounted ||
+          (error.code != 'VOICE_TRANSCRIPTION_UNAVAILABLE' &&
+              error.code != 'NOT_FOUND')) {
+        return;
+      }
+      setState(
+        () => _voiceTranscriptionPreferences =
+            const VoiceTranscriptionPreferences(
+              autoTranscribeEnabled: false,
+              providerAvailable: false,
+            ),
+      );
+    } catch (_) {
+      // A transient preference failure must not block manual voice playback.
+    }
+  }
+
+  Future<void> _requestVoiceTranscription(ChatMessage message) async {
+    if (!_voiceTranscriptionBusy.add(message.id)) return;
+    if (mounted) setState(() {});
+    try {
+      final result = await widget.coordinator.withAuthorizedToken(
+        (token) => _voiceTranscriptionApi.request(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          messageId: message.id,
+        ),
+      );
+      if (!mounted) return;
+      setState(() => _voiceTranscriptions[message.id] = result);
+      if (!result.isTerminal) unawaited(_pollVoiceTranscription(message.id));
+    } on MessagingApiException catch (error) {
+      if (!mounted) return;
+      if (error.code == 'VOICE_TRANSCRIPTION_UNAVAILABLE' ||
+          error.code == 'NOT_FOUND') {
+        setState(
+          () => _voiceTranscriptionPreferences =
+              const VoiceTranscriptionPreferences(
+                autoTranscribeEnabled: false,
+                providerAvailable: false,
+              ),
+        );
+        _showImageError(
+          error.code == 'NOT_FOUND'
+              ? '当前服务端版本不支持语音转文字，请先更新服务端。'
+              : '语音转文字服务尚未配置。',
+        );
+      } else {
+        _showImageError(error.message);
+      }
+    } catch (_) {
+      if (mounted) _showImageError('语音转文字请求失败，请稍后重试。');
+    } finally {
+      _voiceTranscriptionBusy.remove(message.id);
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _pollVoiceTranscription(String messageId) async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (!mounted) return;
+      try {
+        final result = await widget.coordinator.withAuthorizedToken(
+          (token) => _voiceTranscriptionApi.get(
+            origin: widget.coordinator.origin,
+            accessToken: token,
+            messageId: messageId,
+          ),
+        );
+        if (!mounted) return;
+        setState(() => _voiceTranscriptions[messageId] = result);
+        if (result.isTerminal) return;
+      } catch (_) {
+        return;
+      }
+    }
+  }
+
+  Future<void> _toggleAutoVoiceTranscription() async {
+    final current = _voiceTranscriptionPreferences;
+    if (current == null || !current.providerAvailable) return;
+    try {
+      final updated = await widget.coordinator.withAuthorizedToken(
+        (token) => _voiceTranscriptionApi.updatePreferences(
+          origin: widget.coordinator.origin,
+          accessToken: token,
+          autoTranscribeEnabled: !current.autoTranscribeEnabled,
+        ),
+      );
+      if (!mounted) return;
+      setState(() => _voiceTranscriptionPreferences = updated);
+      _showImageError(
+        updated.autoTranscribeEnabled ? '已开启自动语音转文字。' : '已关闭自动语音转文字。',
+      );
+    } on MessagingApiException catch (error) {
+      if (mounted) _showImageError(error.message);
+    } catch (_) {
+      if (mounted) _showImageError('自动语音转文字设置失败。');
     }
   }
 
@@ -2486,12 +2814,60 @@ class _TextChatPageState extends State<TextChatPage>
                       key: Key('chat-image-${message.id}'),
                       behavior: HitTestBehavior.opaque,
                       onTap: () => _openImageViewer(message, bytes),
-                      child: Image.memory(
-                        bytes,
-                        fit: sticker ? BoxFit.contain : BoxFit.cover,
-                        gaplessPlayback: true,
-                        filterQuality: FilterQuality.medium,
-                        errorBuilder: (_, _, _) => _imageLoadFailure(mediaId),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.memory(
+                            bytes,
+                            fit: sticker ? BoxFit.contain : BoxFit.cover,
+                            gaplessPlayback: true,
+                            filterQuality: FilterQuality.medium,
+                            errorBuilder: (_, _, _) => _imageLoadFailure(mediaId),
+                          ),
+                          if (content.isLivePhoto)
+                            Positioned(
+                              left: 7,
+                              top: 7,
+                              child: GestureDetector(
+                                key: Key('live-photo-motion-${message.id}'),
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => unawaited(
+                                  _openLivePhotoMotion(message),
+                                ),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 7,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xB3000000),
+                                    borderRadius: BorderRadius.circular(
+                                      DdRadii.pill,
+                                    ),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.motion_photos_on_rounded,
+                                        size: 13,
+                                        color: Colors.white,
+                                      ),
+                                      SizedBox(width: 3),
+                                      Text(
+                                        '实况',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     );
                   }
@@ -2591,6 +2967,37 @@ class _TextChatPageState extends State<TextChatPage>
     );
   }
 
+  Future<void> _openLivePhotoMotion(ChatMessage message) async {
+    final motionMediaId = message.content?.livePhotoMotionMediaId?.trim() ?? '';
+    if (motionMediaId.isEmpty) return;
+    await _voicePlaybackController.interrupt(
+      VoicePlaybackInterruptReason.otherMediaStarted,
+    );
+    try {
+      final grant = await _downloadGrantFor(motionMediaId);
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => VideoViewerPage(
+            url: grant.url,
+            fileName: 'DD-live-${message.id}.mov',
+            mimeType: 'video/quicktime',
+            remoteUrlResolver: () => _downloadGrantFor(
+              motionMediaId,
+            ).then((value) => value.url),
+            retryUrlResolver: () async {
+              _mediaDownloadGrants.clear(motionMediaId);
+              return (await _downloadGrantFor(motionMediaId)).url;
+            },
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) _showImageError('Live Photo 实况部分加载失败，请稍后重试。');
+    }
+  }
+
   Future<Uri> _resolveVideoPlaybackSource(ChatMessage message) async {
     final content = message.content;
     final mediaId = content?.mediaId?.trim() ?? '';
@@ -2610,6 +3017,9 @@ class _TextChatPageState extends State<TextChatPage>
     Duration initialPosition = Duration.zero,
     bool autoPlay = true,
   }) async {
+    await _voicePlaybackController.interrupt(
+      VoicePlaybackInterruptReason.otherMediaStarted,
+    );
     final content = message.content;
     final mediaId = content?.mediaId;
     if (content == null || mediaId == null || mediaId.isEmpty) return;
@@ -3177,11 +3587,37 @@ class _TextChatPageState extends State<TextChatPage>
     return Tooltip(
       message: '查看 $name 的资料',
       child: GestureDetector(
+        key: Key('group-sender-avatar-${message.id}'),
         behavior: HitTestBehavior.opaque,
         onTap: () => unawaited(_openGroupMemberProfile(member)),
+        onLongPress: () => _insertGroupMemberMention(member),
         child: avatar,
       ),
     );
+  }
+
+  void _insertGroupMemberMention(GroupMemberItem member) {
+    final handle = member.user.handle.trim();
+    if (handle.isEmpty || member.user.id == widget.currentUserId) return;
+    final value = _composer.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final prefix = start > 0 &&
+            value.text.codeUnitAt(start - 1) != 0x20 &&
+            value.text.codeUnitAt(start - 1) != 0x0A
+        ? ' '
+        : '';
+    final mention = '$prefix@$handle ';
+    final text = value.text.replaceRange(start, end, mention);
+    final cursor = start + mention.length;
+    _composer.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: cursor),
+      composing: TextRange.empty,
+    );
+    _mentionController.close();
+    _composerFocusNode.requestFocus();
   }
 
   Future<void> _openGroupMemberProfile(GroupMemberItem member) async {
@@ -3192,11 +3628,12 @@ class _TextChatPageState extends State<TextChatPage>
           accessToken: widget.coordinator.accessToken,
           userId: member.user.id,
           handle: member.user.handle,
-          displayName: member.user.displayName,
+          displayName: member.effectiveName,
+          onContactUpdated: widget.coordinator.refreshConversations,
           onOpenMoments: () =>
-              _openPeerMoments(member.user.id, member.user.displayName),
+              _openPeerMoments(member.user.id, member.effectiveName),
           onOpenMomentPrivacy: () =>
-              _openPeerMomentPrivacy(member.user.id, member.user.displayName),
+              _openPeerMomentPrivacy(member.user.id, member.effectiveName),
           onMessage: widget.onOpenDirectChat == null
               ? null
               : () => widget.onOpenDirectChat!(member.user.id),
@@ -3204,14 +3641,14 @@ class _TextChatPageState extends State<TextChatPage>
               ? null
               : () => widget.onStartCall!(
                   member.user.id,
-                  member.user.displayName,
+                  member.effectiveName,
                   CallKind.audio,
                 ),
           onVideoCall: widget.onStartCall == null
               ? null
               : () => widget.onStartCall!(
                   member.user.id,
-                  member.user.displayName,
+                  member.effectiveName,
                   CallKind.video,
                 ),
         ),
@@ -3242,7 +3679,7 @@ class _TextChatPageState extends State<TextChatPage>
       );
     }
     final peer = conversation.peer;
-    final name = peer?.displayName ?? '对方';
+    final name = peer?.effectiveDisplayName ?? '对方';
     final avatar = _avatar(peer?.id ?? '', name, size: size);
     if (widget.savedMessagesMode ||
         peer == null ||
@@ -3251,7 +3688,7 @@ class _TextChatPageState extends State<TextChatPage>
       return avatar;
     }
     return Tooltip(
-      message: '查看 ${peer.displayName} 的资料',
+      message: '查看 ${peer.effectiveDisplayName} 的资料',
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => _openPeerProfile(conversation),
@@ -3450,18 +3887,30 @@ class _TextChatPageState extends State<TextChatPage>
     if (_mentionController.visible) _mentionController.close();
   }
 
+  Widget _composerActionSurface({required Key key, required Widget child}) {
+    final theme = Theme.of(context);
+    final opacity = theme.brightness == Brightness.dark ? 0.88 : 0.90;
+    return DecoratedBox(
+      key: key,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: opacity),
+        shape: BoxShape.circle,
+      ),
+      child: child,
+    );
+  }
+
   Widget _composerBar(ConversationItem conversation) {
     if (!conversation.canWrite) {
       return _restrictedComposer(conversation);
     }
     final replyingTo = _replyingTo;
     final editingMessage = _editingMessage;
-    final surface = Theme.of(context).colorScheme.surface;
     return CompositedTransformTarget(
       key: _mentionAnchorKey,
       link: _mentionLayerLink,
       child: Material(
-        color: surface,
+        type: MaterialType.transparency,
         child: Container(
           key: const Key('chat-composer-footer'),
           decoration: const BoxDecoration(
@@ -3492,20 +3941,26 @@ class _TextChatPageState extends State<TextChatPage>
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  _voiceControlButton(),
+                  _composerActionSurface(
+                    key: const Key('chat-voice-surface'),
+                    child: _voiceControlButton(),
+                  ),
                   Expanded(
                     child: _mobileHoldToTalk && _voiceMode
                         ? _holdToTalkField()
                         : _composerField(),
                   ),
                   if (!_androidVoiceInputActive)
-                    IconButton(
-                      key: const Key('chat-emoji'),
-                      tooltip: '表情',
-                      onPressed: _showEmojiPicker,
-                      icon: const Icon(
-                        Icons.sentiment_satisfied_alt_rounded,
-                        size: 25,
+                    _composerActionSurface(
+                      key: const Key('chat-emoji-surface'),
+                      child: IconButton(
+                        key: const Key('chat-emoji'),
+                        tooltip: '表情',
+                        onPressed: _showEmojiPicker,
+                        icon: const Icon(
+                          Icons.sentiment_satisfied_alt_rounded,
+                          size: 25,
+                        ),
                       ),
                     ),
                   ValueListenableBuilder<TextEditingValue>(
@@ -3535,13 +3990,16 @@ class _TextChatPageState extends State<TextChatPage>
                           ),
                         );
                       }
-                      return IconButton(
-                        key: const Key('chat-more'),
-                        tooltip: '更多',
-                        onPressed: _showMoreMenu,
-                        icon: const Icon(
-                          Icons.add_circle_outline_rounded,
-                          size: 26,
+                      return _composerActionSurface(
+                        key: const Key('chat-more-surface'),
+                        child: IconButton(
+                          key: const Key('chat-more'),
+                          tooltip: '更多',
+                          onPressed: _showMoreMenu,
+                          icon: const Icon(
+                            Icons.add_circle_outline_rounded,
+                            size: 26,
+                          ),
                         ),
                       );
                     },
@@ -4091,6 +4549,11 @@ class _TextChatPageState extends State<TextChatPage>
       builder: (context, child) => CallbackShortcuts(
         bindings: <ShortcutActivator, VoidCallback>{
           const SingleActivator(LogicalKeyboardKey.enter): _sendFromKeyboard,
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows)
+            const SingleActivator(
+              LogicalKeyboardKey.keyV,
+              control: true,
+            ): () => unawaited(_handleWindowsClipboardPaste()),
           if (_mentionController.visible) ...{
             const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
                 _moveMentionSelection(-1),
@@ -4103,6 +4566,64 @@ class _TextChatPageState extends State<TextChatPage>
         child: child!,
       ),
     );
+  }
+
+  Future<void> _handleWindowsClipboardPaste() async {
+    if (_clipboardPasteBusy) return;
+    _clipboardPasteBusy = true;
+    try {
+      final decision = await _windowsClipboardPasteDecider.decide();
+      if (!mounted) return;
+      switch (decision.kind) {
+        case ClipboardPasteDecisionKind.consumeImage:
+          final image = decision.image;
+          if (image != null) await _sendImageFiles(<XFile>[image.toXFile()]);
+          return;
+        case ClipboardPasteDecisionKind.consumeDuplicateImage:
+          return;
+        case ClipboardPasteDecisionKind.showImageError:
+          _showImageError(decision.error?.message ?? '读取剪贴板图片失败。');
+          return;
+        case ClipboardPasteDecisionKind.passThrough:
+          await _pasteClipboardText();
+          return;
+      }
+    } finally {
+      _clipboardPasteBusy = false;
+    }
+  }
+
+  Future<void> _pasteClipboardText() async {
+    String? incoming;
+    try {
+      final injected = widget.windowsClipboardTextReader;
+      if (injected != null) {
+        incoming = await injected();
+      } else {
+        incoming = (await Clipboard.getData(
+          Clipboard.kTextPlain,
+        ).timeout(const Duration(seconds: 2)))?.text;
+      }
+    } catch (_) {
+      return;
+    }
+    if (!mounted || incoming == null || incoming.isEmpty) return;
+    final value = _composer.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final available = 4000 - (value.text.length - (end - start));
+    if (available <= 0) return;
+    final inserted = incoming.length <= available
+        ? incoming
+        : incoming.substring(0, available);
+    final text = value.text.replaceRange(start, end, inserted);
+    _composer.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + inserted.length),
+      composing: TextRange.empty,
+    );
+    _composerFocusNode.requestFocus();
   }
 
   Widget _editPreview(ChatMessage message) {
@@ -4373,6 +4894,7 @@ class _TextChatPageState extends State<TextChatPage>
         userId: normalized,
         handle: handle,
         displayName: displayName,
+        onContactUpdated: widget.coordinator.refreshConversations,
         onOpenMoments: () => _openPeerMoments(normalized, displayName),
         onOpenMomentPrivacy: () =>
             _openPeerMomentPrivacy(normalized, displayName),
@@ -4399,6 +4921,7 @@ class _TextChatPageState extends State<TextChatPage>
           userId: normalized,
           handle: handle,
           displayName: displayName,
+          onContactUpdated: widget.coordinator.refreshConversations,
           onOpenMoments: () => _openPeerMoments(normalized, displayName),
           onOpenMomentPrivacy: () =>
               _openPeerMomentPrivacy(normalized, displayName),
@@ -4416,10 +4939,8 @@ class _TextChatPageState extends State<TextChatPage>
 
   String _mentionDisplayName(String userId) {
     final peer = widget.conversation.peer;
-    if (peer != null &&
-        peer.id == userId &&
-        peer.displayName.trim().isNotEmpty) {
-      return peer.displayName.trim();
+    if (peer != null && peer.id == userId) {
+      return peer.effectiveDisplayName;
     }
     final member = _groupMembers[userId];
     if (member != null && member.effectiveName.trim().isNotEmpty) {
@@ -4452,11 +4973,13 @@ class _TextChatPageState extends State<TextChatPage>
             accessToken: widget.coordinator.accessToken,
             userId: peer.id,
             handle: peer.handle,
-            displayName: peer.displayName,
+            displayName: peer.effectiveDisplayName,
+            onContactUpdated: widget.coordinator.refreshConversations,
             embedded: true,
-            onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+            onOpenMoments: () =>
+                _openPeerMoments(peer.id, peer.effectiveDisplayName),
             onOpenMomentPrivacy: () =>
-                _openPeerMomentPrivacy(peer.id, peer.displayName),
+                _openPeerMomentPrivacy(peer.id, peer.effectiveDisplayName),
             onMessage: () async => inspector.close(),
             onAudioCall: widget.onStartCall == null
                 ? null
@@ -4483,10 +5006,12 @@ class _TextChatPageState extends State<TextChatPage>
           accessToken: widget.coordinator.accessToken,
           userId: peer.id,
           handle: peer.handle,
-          displayName: peer.displayName,
-          onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+          displayName: peer.effectiveDisplayName,
+          onContactUpdated: widget.coordinator.refreshConversations,
+          onOpenMoments: () =>
+              _openPeerMoments(peer.id, peer.effectiveDisplayName),
           onOpenMomentPrivacy: () =>
-              _openPeerMomentPrivacy(peer.id, peer.displayName),
+              _openPeerMomentPrivacy(peer.id, peer.effectiveDisplayName),
           onMessage: () async {
             if (mounted) Navigator.of(context).pop();
           },
@@ -4587,7 +5112,7 @@ class _TextChatPageState extends State<TextChatPage>
                   ? null
                   : () => _openPeerMomentPrivacy(
                       conversation.peer!.id,
-                      conversation.peer!.displayName,
+                      conversation.peer!.effectiveDisplayName,
                     ),
               onChangeBackground: () async {
                 inspector.push(
@@ -4679,7 +5204,7 @@ class _TextChatPageState extends State<TextChatPage>
               ? null
               : () => _openPeerMomentPrivacy(
                   conversation.peer!.id,
-                  conversation.peer!.displayName,
+                  conversation.peer!.effectiveDisplayName,
                 ),
           onChangeBackground: () => Navigator.of(context).push<void>(
             MaterialPageRoute<void>(
@@ -4717,11 +5242,13 @@ class _TextChatPageState extends State<TextChatPage>
           accessToken: widget.coordinator.accessToken,
           userId: peer.id,
           handle: peer.handle,
-          displayName: peer.displayName,
+          displayName: peer.effectiveDisplayName,
+          onContactUpdated: widget.coordinator.refreshConversations,
           embedded: true,
-          onOpenMoments: () => _openPeerMoments(peer.id, peer.displayName),
+          onOpenMoments: () =>
+              _openPeerMoments(peer.id, peer.effectiveDisplayName),
           onOpenMomentPrivacy: () =>
-              _openPeerMomentPrivacy(peer.id, peer.displayName),
+              _openPeerMomentPrivacy(peer.id, peer.effectiveDisplayName),
           onMessage: () async => inspector.close(),
           onAudioCall: widget.onStartCall == null
               ? null
@@ -4865,9 +5392,17 @@ class _TextChatPageState extends State<TextChatPage>
         false;
   }
 
+  String _groupCallErrorMessage(GroupCallApiException error) =>
+      error.code == 'GROUP_CALL_UNAVAILABLE'
+      ? '群通话媒体服务未启用或服务端版本未同步，请先更新服务端。'
+      : error.message;
+
   Future<void> _startGroupCall(String kind) async {
     if (_groupCallBusy || !mounted) return;
     if (!await _confirmStartGroupCall(kind) || !mounted) return;
+    await _voicePlaybackController.interrupt(
+      VoicePlaybackInterruptReason.callStarted,
+    );
     setState(() => _groupCallBusy = true);
     try {
       final joined = await widget.coordinator.withAuthorizedToken(
@@ -4882,7 +5417,7 @@ class _TextChatPageState extends State<TextChatPage>
       setState(() => _activeGroupCall = joined.call);
       await _openGroupCall(joined);
     } on GroupCallApiException catch (error) {
-      if (mounted) _showImageError(error.message);
+      if (mounted) _showImageError(_groupCallErrorMessage(error));
     } catch (_) {
       if (mounted) _showImageError('群通话发起失败，请稍后重试。');
     } finally {
@@ -4894,6 +5429,9 @@ class _TextChatPageState extends State<TextChatPage>
   Future<void> _joinActiveGroupCall() async {
     final active = _activeGroupCall;
     if (active == null || _groupCallBusy || !mounted) return;
+    await _voicePlaybackController.interrupt(
+      VoicePlaybackInterruptReason.callStarted,
+    );
     setState(() => _groupCallBusy = true);
     try {
       final joined = await widget.coordinator.withAuthorizedToken(
@@ -4907,7 +5445,7 @@ class _TextChatPageState extends State<TextChatPage>
       if (!mounted) return;
       await _openGroupCall(joined);
     } on GroupCallApiException catch (error) {
-      if (mounted) _showImageError(error.message);
+      if (mounted) _showImageError(_groupCallErrorMessage(error));
     } catch (_) {
       if (mounted) _showImageError('加入群通话失败，请稍后重试。');
     } finally {
@@ -4945,7 +5483,10 @@ class _TextChatPageState extends State<TextChatPage>
       }
       return;
     }
-    await handler(peer.id, peer.displayName, kind);
+    await _voicePlaybackController.interrupt(
+      VoicePlaybackInterruptReason.callStarted,
+    );
+    await handler(peer.id, peer.effectiveDisplayName, kind);
   }
 
   void _sendFromKeyboard() {
@@ -5138,6 +5679,19 @@ class _TextChatPageState extends State<TextChatPage>
                   unawaited(_pickAndSendFile());
                 },
               ),
+              _ComposerAction(
+                icon: Icons.translate_rounded,
+                label:
+                    _voiceTranscriptionPreferences?.autoTranscribeEnabled == true
+                    ? '关闭自动转写'
+                    : '自动转文字',
+                enabled:
+                    _voiceTranscriptionPreferences?.providerAvailable == true,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  unawaited(_toggleAutoVoiceTranscription());
+                },
+              ),
               if (widget.conversation.type == 'GROUP' &&
                   _activeGroupCall == null) ...[
                 KeyedSubtree(
@@ -5229,9 +5783,9 @@ class _TextChatPageState extends State<TextChatPage>
         'video/x-matroska',
       ],
     );
-    late final List<XFile> files;
+    late final List<DdPickedMedia> media;
     try {
-      files = await ddOpenFiles(
+      media = await ddOpenMediaFiles(
         acceptedTypeGroups: const [typeGroup],
         source: DdFilePickerSource.photos,
         maxFiles: 30,
@@ -5256,13 +5810,18 @@ class _TextChatPageState extends State<TextChatPage>
       }
       return;
     }
-    if (files.isEmpty || !mounted) return;
-    if (files.length > 30) {
+    if (media.isEmpty || !mounted) return;
+    if (media.length > 30) {
       _showImageError('一次最多从相册发送 30 个媒体文件。');
       return;
     }
-    for (final file in files) {
+    for (final picked in media) {
       if (!mounted) return;
+      if (picked.isLivePhoto) {
+        await _sendLivePhoto(picked);
+        continue;
+      }
+      final file = picked.primary;
       final lower = file.name.toLowerCase();
       if (lower.endsWith('.gif')) {
         await _sendGif(file);
@@ -5276,6 +5835,126 @@ class _TextChatPageState extends State<TextChatPage>
         );
       }
     }
+  }
+
+  Future<void> _sendLivePhoto(DdPickedMedia picked) async {
+    final motion = picked.motion;
+    if (motion == null) {
+      _showImageError('Live Photo 缺少 motion 组件，无法发送。');
+      return;
+    }
+    final replyToMessageId = _replyingTo?.id;
+    if (_replyingTo != null) setState(() => _replyingTo = null);
+    final taskId = _newUploadTaskId('live-photo');
+    _uploadTransfers.enqueue(
+      id: taskId,
+      kind: MediaTransferKind.image,
+      label: picked.primary.name.isEmpty ? 'Live Photo' : picked.primary.name,
+      conversationId: widget.conversation.id,
+      operation: (task) => _runLivePhotoUpload(
+        picked,
+        task,
+        replyToMessageId: replyToMessageId,
+      ),
+    );
+    _scrollToBottom();
+  }
+
+  Future<void> _runLivePhotoUpload(
+    DdPickedMedia picked,
+    MediaTransferExecution task, {
+    String? replyToMessageId,
+  }) async {
+    final still = picked.primary;
+    final motion = picked.motion;
+    if (motion == null) throw const FormatException('Live Photo 缺少 motion 组件。');
+    final stillLength = picked.primarySizeBytes ?? await still.length();
+    final motionLength = picked.motionSizeBytes ?? await motion.length();
+    if (stillLength <= 0 || motionLength <= 0) {
+      throw const FormatException('Live Photo 组件为空。');
+    }
+    if (stillLength > maxChatImageSourceBytes) {
+      throw const FormatException('Live Photo 静态图超过 96 MiB。');
+    }
+    if (motionLength > 2 * 1024 * 1024 * 1024) {
+      throw const FormatException('Live Photo motion 超过 2 GiB。');
+    }
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.preparing,
+        totalBytes: stillLength + motionLength,
+      ),
+    );
+    task.throwIfCancelled();
+    final stillBytes = await still.readAsBytes();
+    final processed = await processChatImage(stillBytes);
+    task.throwIfCancelled();
+    task.setVisualPreview(
+      MediaTransferVisualPreview(
+        posterBytes: processed.bytes,
+        width: processed.width,
+        height: processed.height,
+      ),
+    );
+    final uploadTotal = processed.bytes.length + motionLength;
+    final stillGrant = await widget.coordinator.withAuthorizedToken(
+      (token) => widget.coordinator.transferMediaApi.uploadChatImage(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        bytes: processed.bytes,
+        fileName: '${DateTime.now().microsecondsSinceEpoch}.jpg',
+        cancellation: task.cancellation,
+        onProgress: (sent, _) => task.update(
+          MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            transferredBytes: sent,
+            totalBytes: uploadTotal,
+          ),
+        ),
+      ),
+    );
+    task.throwIfCancelled();
+    final motionGrant = await widget.coordinator.withAuthorizedToken(
+      (token) => widget.coordinator.transferMediaApi.uploadStream(
+        origin: widget.coordinator.origin,
+        accessToken: token,
+        streamFactory: motion.openRead,
+        size: motionLength,
+        fileName: motion.name.isEmpty
+            ? 'DD-live-${DateTime.now().microsecondsSinceEpoch}.mov'
+            : motion.name,
+        mimeType: (motion.mimeType ?? '').trim().isEmpty
+            ? 'video/quicktime'
+            : motion.mimeType!.trim(),
+        purpose: 'CHAT_VIDEO',
+        cancellation: task.cancellation,
+        onProgress: (sent, _) => task.update(
+          MediaTransferState(
+            phase: MediaTransferPhase.uploading,
+            transferredBytes: processed.bytes.length + sent,
+            totalBytes: uploadTotal,
+          ),
+        ),
+      ),
+    );
+    task.throwIfCancelled();
+    task.update(
+      MediaTransferState(
+        phase: MediaTransferPhase.committing,
+        transferredBytes: uploadTotal,
+        totalBytes: uploadTotal,
+      ),
+    );
+    await widget.coordinator.sendImage(
+      widget.conversation.id,
+      mediaId: stillGrant.mediaId,
+      width: processed.width,
+      height: processed.height,
+      livePhoto: true,
+      livePhotoMotionMediaId: motionGrant.mediaId,
+      replyToMessageId: replyToMessageId,
+    );
+    if (mounted) _scrollToBottom();
   }
 
   Future<void> _sendImageFiles(List<XFile> files) async {
@@ -5982,6 +6661,12 @@ class _TextChatPageState extends State<TextChatPage>
             icon: Icons.forward_rounded,
             label: '转发',
           ),
+          if (_canRequestVoiceTranscription(message))
+            DdActionSheetItem(
+              value: 'transcribe',
+              icon: Icons.text_snippet_outlined,
+              label: _voiceTranscriptionActionLabel(message),
+            ),
           if (!mine && _canAddStickerToLibrary(message))
             const DdActionSheetItem(
               value: 'add-sticker',
@@ -6050,6 +6735,12 @@ class _TextChatPageState extends State<TextChatPage>
           icon: Icons.forward_rounded,
           label: '转发',
         ),
+        if (_canRequestVoiceTranscription(message))
+          _contextMenuItem(
+            value: 'transcribe',
+            icon: Icons.text_snippet_outlined,
+            label: _voiceTranscriptionActionLabel(message),
+          ),
         if (!mine && _canAddStickerToLibrary(message))
           _contextMenuItem(
             value: 'add-sticker',
@@ -6119,6 +6810,8 @@ class _TextChatPageState extends State<TextChatPage>
       }
     } else if (action == 'forward') {
       await _forwardMessage(message);
+    } else if (action == 'transcribe') {
+      await _requestVoiceTranscription(message);
     } else if (action == 'add-sticker') {
       await _addMessageStickerToLibrary(message);
     } else if (action == 'save') {
@@ -6283,7 +6976,9 @@ class _TextChatPageState extends State<TextChatPage>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已转发给 ${conversation.peer?.displayName ?? '目标会话'}'),
+          content: Text(
+            '已转发给 ${conversation.peer?.effectiveDisplayName ?? '目标会话'}',
+          ),
         ),
       );
     } catch (error) {

@@ -856,6 +856,9 @@ func (service *Service) executeDeletionDatabase(ctx context.Context, requestID, 
 	if _, err := tx.Exec(ctx, `DELETE FROM outbox_events WHERE target_user_id=$1`, userID); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM message_mentions WHERE mentioned_user_id=$1`, userID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM message_local_deletions WHERE user_id=$1`, userID); err != nil {
 		return err
 	}

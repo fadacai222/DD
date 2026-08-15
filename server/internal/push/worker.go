@@ -279,7 +279,7 @@ func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJo
 		var mutedUntil *time.Time
 		if err := tx.QueryRow(ctx, `
 			SELECT m.sender_user_id,
-			       COALESCE(NULLIF(gmp.nickname,''),u.display_name),
+			       COALESCE(NULLIF(gmp.nickname,''),NULLIF(viewer_contact.remark,''),u.display_name),
 			       m.type,m.content_json,cm.muted_until,c.type,COALESCE(g.name,'')
 			FROM messages m
 			JOIN users u ON u.id=m.sender_user_id
@@ -287,6 +287,7 @@ func (service *Service) buildDelivery(ctx context.Context, tx pgx.Tx, job pushJo
 			JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$2 AND cm.status='ACTIVE'
 			LEFT JOIN groups g ON g.conversation_id=m.conversation_id AND g.status='ACTIVE'
 			LEFT JOIN group_member_profiles gmp ON gmp.conversation_id=m.conversation_id AND gmp.user_id=m.sender_user_id
+			LEFT JOIN contacts viewer_contact ON viewer_contact.owner_user_id=$2 AND viewer_contact.contact_user_id=m.sender_user_id
 			WHERE m.id=$1 AND m.deleted_at IS NULL
 		`, *job.ResourceID, job.RecipientUserID).Scan(&senderID, &senderName, &messageType, &content, &mutedUntil, &conversationType, &groupName); errors.Is(err, pgx.ErrNoRows) {
 			return delivery, true, nil

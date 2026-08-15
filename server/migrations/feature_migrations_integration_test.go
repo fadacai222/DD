@@ -32,6 +32,7 @@ func TestFeatureMigrationRoundTripsWithPostgres(t *testing.T) {
 	}{
 		{name: "QR000021", version: 21, tables: []string{"qr_login_sessions", "group_qr_invites"}},
 		{name: "MomentActivity000028", version: 28, tables: []string{"moment_activity_notifications"}},
+		{name: "MessageMentions000034", version: 34, tables: []string{"message_mentions"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

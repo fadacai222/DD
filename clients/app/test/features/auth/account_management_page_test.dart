@@ -1,5 +1,4 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:im_client/features/auth/data/auth_api_client.dart';
@@ -28,6 +27,33 @@ void main() {
     expect(find.text('媒体与缓存'), findsNothing);
     expect(find.text('性能'), findsNothing);
     expect(find.text('传输中心'), findsNothing);
+  });
+
+  testWidgets('Android mobile settings expose notification diagnostics', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    tester.view.physicalSize = const Size(390, 780);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AccountManagementPage(
+          gateway: _AccountGateway(),
+          origin: Uri.parse('http://127.0.0.1:18473'),
+          session: _session(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('通知'), findsOneWidget);
+    expect(find.text('Android 系统通知权限'), findsOneWidget);
+    expect(find.text('DD 新消息通知频道'), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('mobile privacy page no longer duplicates outer Me settings', (

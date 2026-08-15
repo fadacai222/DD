@@ -1248,6 +1248,43 @@
         }
       }
     },
+    "/api/v1/voice-transcription/preferences": {
+      "get": {
+        "operationId": "getVoiceTranscriptionPreferences",
+        "summary": "Get automatic voice transcription preference and provider availability",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Voice transcription preferences", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Voice transcription service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "put": {
+        "operationId": "replaceVoiceTranscriptionPreferences",
+        "summary": "Replace automatic voice transcription preference",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Provider is unavailable and automatic transcription cannot be enabled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "patch": {
+        "operationId": "updateVoiceTranscriptionPreferences",
+        "summary": "Update automatic voice transcription preference",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["autoTranscribeEnabled"], "properties": {"autoTranscribeEnabled": {"type": "boolean"}}, "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Updated preference", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "Provider is unavailable and automatic transcription cannot be enabled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/v1/push/preferences": {
       "get": {
         "operationId": "getPushPreferences",
@@ -1846,6 +1883,38 @@
           "403": {"description": "Source or target conversation policy forbids forwarding", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "404": {"description": "Source message or target conversation is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
           "409": {"description": "Forwarding state conflicts with the source message or target", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/v1/messages/{messageId}/transcription": {
+      "get": {
+        "operationId": "getVoiceTranscription",
+        "summary": "Get transcription status or result for an authorized voice message",
+        "description": "The current user must still be an active member with visibility of the non-recalled VOICE message. Recalled or locally hidden messages do not expose stored transcript text.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Voice transcription status or result", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Voice message or transcription is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "422": {"description": "Message is not VOICE", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
+        }
+      },
+      "post": {
+        "operationId": "requestVoiceTranscription",
+        "summary": "Idempotently queue transcription for an authorized voice message",
+        "description": "Queues durable work and returns immediately. Provider endpoint, model and credential remain server-only; HTTP request handling does not wait for STT completion.",
+        "tags": ["Messaging"],
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref": "#/components/parameters/MessageId"}],
+        "responses": {
+          "200": {"description": "Existing completed or failed transcription", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "202": {"description": "Transcription queued or running", "content": {"application/json": {"schema": {"type": "object"}}}},
+          "401": {"description": "Access token is missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "404": {"description": "Voice message is not visible", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "422": {"description": "Message is not VOICE", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}},
+          "503": {"description": "VOICE_TRANSCRIPTION_UNAVAILABLE", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}}
         }
       }
     },
@@ -2759,10 +2828,11 @@
       "SearchUserResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["user", "relationship"],
+        "required": ["user", "relationship", "effectiveDisplayName"],
         "properties": {
           "user": {"$ref": "#/components/schemas/PublicContactUser"},
-          "relationship": {"type": "string", "enum": ["SELF", "NONE", "CONTACT", "PENDING_OUTGOING", "PENDING_INCOMING"]}
+          "relationship": {"type": "string", "enum": ["SELF", "NONE", "CONTACT", "PENDING_OUTGOING", "PENDING_INCOMING"]},
+          "effectiveDisplayName": {"type": "string", "minLength": 1, "maxLength": 80}
         }
       },
       "SearchUserResponse": {
@@ -2772,10 +2842,11 @@
       "MentionSuggestion": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["user", "relationship"],
+        "required": ["user", "relationship", "effectiveDisplayName"],
         "properties": {
           "user": {"$ref": "#/components/schemas/PublicContactUser"},
-          "relationship": {"type": "string", "enum": ["CONVERSATION_PEER", "CONTACT", "NONE"]}
+          "effectiveDisplayName": {"type": "string", "minLength": 1, "maxLength": 80},
+          "relationship": {"type": "string", "enum": ["GROUP_MEMBER", "CONVERSATION_PEER", "CONTACT", "NONE"]}
         }
       },
       "MentionSuggestionListData": {
@@ -2907,7 +2978,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative moment display name: private contact remark when available, otherwise public displayName."}
         }
       },
       "MomentComment": {
@@ -3181,7 +3252,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,31}$"},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative group preview fallback. Group-member nickname remains a separate higher-priority field when present."}
         }
       },
       "GroupCallUser": {
@@ -3356,7 +3427,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "handle": {"type": "string", "minLength": 3, "maxLength": 32},
-          "displayName": {"type": "string", "minLength": 1, "maxLength": 80}
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Viewer-relative name for messaging previews. Direct peers prefer the authenticated viewer's private contact remark; group-context previews prefer group nickname, then viewer remark, then public displayName."}
         }
       },
       "MessageEntity": {
@@ -3378,6 +3449,8 @@
           "entities": {"type": "array", "maxItems": 64, "readOnly": true, "items": {"$ref": "#/components/schemas/MessageEntity"}, "description": "Server-generated structured entities. Client-supplied entity bindings are ignored and mentions are rebound from text."},
           "mediaId": {"type": "string", "format": "uuid"},
           "posterMediaId": {"type": "string", "format": "uuid", "description": "Poster/thumbnail media for VIDEO messages."},
+          "livePhoto": {"type": "boolean", "description": "True only for IMAGE messages that preserve an iOS Live Photo motion component."},
+          "livePhotoMotionMediaId": {"type": "string", "format": "uuid", "description": "Paired CHAT_VIDEO media for a Live Photo IMAGE; requires livePhoto=true and a distinct still mediaId."},
           "width": {"type": "integer", "minimum": 1, "maximum": 20000},
           "height": {"type": "integer", "minimum": 1, "maximum": 20000},
           "fileName": {"type": "string", "maxLength": 255, "readOnly": true},
@@ -3417,7 +3490,7 @@
       },
       "Conversation": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "type", "lastSequence", "lastReadSequence", "unreadCount", "canWrite", "preferences", "createdAt", "updatedAt"],
+        "required": ["id", "type", "lastSequence", "lastReadSequence", "latestUnreadMentionMessageId", "latestUnreadMentionSequence", "unreadCount", "canWrite", "preferences", "createdAt", "updatedAt"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "type": {"type": "string", "enum": ["DIRECT", "GROUP", "SELF"]},
@@ -3426,6 +3499,8 @@
           "lastSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "lastReadSequence": {"type": "integer", "format": "int64", "minimum": 0},
           "peerLastReadSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 0, "description": "Direct-chat peer read cursor when the peer allows read receipts; null when hidden or not applicable."},
+          "latestUnreadMentionMessageId": {"type": ["string", "null"], "format": "uuid", "description": "Viewer-specific latest unread GROUP message that mentions the current principal; null when no unread mention exists."},
+          "latestUnreadMentionSequence": {"type": ["integer", "null"], "format": "int64", "minimum": 1, "description": "Sequence of latestUnreadMentionMessageId. It disappears naturally once lastReadSequence reaches it."},
           "unreadCount": {"type": "integer", "format": "int64", "minimum": 0},
           "canWrite": {"type": "boolean"},
           "lastMessage": {"oneOf": [{"$ref": "#/components/schemas/Message"}, {"type": "null"}]},
@@ -3469,6 +3544,10 @@
       "MessageResponse": {
         "type": "object", "additionalProperties": false, "required": ["data", "requestId"],
         "properties": {"data": {"$ref": "#/components/schemas/Message"}, "requestId": {"$ref": "#/components/schemas/RequestIdValue"}}
+      },
+      "VoiceTranscriptionPreferencesRequest": {
+        "type": "object", "additionalProperties": false, "required": ["autoTranscribeEnabled"],
+        "properties": {"autoTranscribeEnabled": {"type": "boolean"}}
       },
       "MessagePage": {
         "type": "object", "additionalProperties": false, "required": ["items", "hasMore"],

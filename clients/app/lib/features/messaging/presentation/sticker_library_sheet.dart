@@ -9,6 +9,7 @@ import '../data/sticker_api_client.dart';
 import '../domain/emoji_catalog.dart';
 import '../domain/sticker_models.dart';
 import '../domain/telegram_sticker_link.dart';
+import 'sticker_operation_error_text.dart';
 import 'widgets/looping_video_sticker.dart';
 import 'widgets/telegram_tgs_sticker.dart';
 
@@ -62,6 +63,8 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
   final Set<String> _partialRefreshAttempted = <String>{};
   final Set<String> _partialRefreshInFlight = <String>{};
   Object? _error;
+  String? _operationFeedback;
+  bool _operationFeedbackIsError = false;
 
   @override
   void initState() {
@@ -210,11 +213,61 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
                   key: Key('sticker-library-progress'),
                   minHeight: 2,
                 ),
+              if (_operationFeedback != null) _operationFeedbackBanner(),
               const Divider(height: 1),
               Expanded(child: _body()),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _operationFeedbackBanner() {
+    final colors = Theme.of(context).colorScheme;
+    final isError = _operationFeedbackIsError;
+    return Container(
+      key: const Key('sticker-operation-feedback'),
+      width: double.infinity,
+      color: isError ? colors.errorContainer : colors.secondaryContainer,
+      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            isError ? Icons.error_outline_rounded : Icons.info_outline_rounded,
+            size: 18,
+            color: isError
+                ? colors.onErrorContainer
+                : colors.onSecondaryContainer,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _operationFeedback!,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: isError
+                    ? colors.onErrorContainer
+                    : colors.onSecondaryContainer,
+              ),
+            ),
+          ),
+          IconButton(
+            key: const Key('sticker-operation-feedback-dismiss'),
+            tooltip: '关闭提示',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => setState(() => _operationFeedback = null),
+            icon: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: isError
+                  ? colors.onErrorContainer
+                  : colors.onSecondaryContainer,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -716,11 +769,12 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
       builder: (_) => const _TelegramStickerImportDialog(),
     );
     if (raw == null || !mounted) return;
+    setState(() => _operationFeedback = null);
     late String setName;
     try {
       setName = parseTelegramStickerSetName(raw);
     } on FormatException catch (error) {
-      _showError(error.message);
+      _showImportError(error);
       return;
     }
     setState(() => _busy = true);
@@ -740,15 +794,18 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
       setState(() {
         _packs = next;
         _selectedTab = selectedIndex;
+        if (pack.unsupportedStickerCount == 0) {
+          _operationFeedback = null;
+        }
       });
       widget.onTabChanged?.call('pack:${pack.id}');
       if (pack.unsupportedStickerCount > 0) {
-        _showError(
+        _showImportNotice(
           '已添加 ${pack.supportedStickerCount} 个表情；${pack.unsupportedStickerCount} 个文件导入失败。',
         );
       }
     } catch (error) {
-      if (mounted) _showError(error);
+      if (mounted) _showImportError(error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -816,24 +873,31 @@ class _StickerLibrarySheetState extends State<StickerLibrarySheet> {
     return '表情库暂时加载失败。请检查网络与服务端日志后重试。';
   }
 
-  String _operationErrorText(Object error) {
-    if (error is StickerApiException) {
-      return switch (error.code) {
-        'TELEGRAM_STICKER_RELAY_NOT_CONFIGURED' =>
-          '当前 DD 服务端未配置 Telegram Bot Token。请在 infra/dev/.env 设置 TELEGRAM_BOT_TOKEN 后重启服务端。',
-        'TELEGRAM_STICKER_RELAY_UNAVAILABLE' => 'Telegram 贴纸中继暂时不可用，请稍后重试。',
-        'TELEGRAM_STICKER_FORMAT_UNSUPPORTED' => '这个贴纸包目前没有可导入的静态 WebP 贴纸。',
-        'TELEGRAM_STICKER_TOO_LARGE' => '贴纸包中有文件超过当前实例允许的大小。',
-        _ => error.message,
-      };
-    }
-    if (error is String) return error;
-    return error.toString();
+  void _showImportError(Object error) {
+    final message = stickerOperationErrorText(error);
+    setState(() {
+      _operationFeedback = message;
+      _operationFeedbackIsError = true;
+    });
+    _showSnackBar(message);
+  }
+
+  void _showImportNotice(String message) {
+    setState(() {
+      _operationFeedback = message;
+      _operationFeedbackIsError = false;
+    });
+    _showSnackBar(message);
   }
 
   void _showError(Object error) {
-    final message = _operationErrorText(error);
-    ScaffoldMessenger.of(context)
+    _showSnackBar(stickerOperationErrorText(error));
+  }
+
+  void _showSnackBar(String message) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }

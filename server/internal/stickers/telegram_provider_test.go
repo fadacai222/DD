@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeSetNameRejectsURLsAndInvalidCharacters(t *testing.T) {
@@ -69,6 +70,85 @@ func TestTelegramBotProviderFetchesStaticStickerWithoutLeakingToken(t *testing.T
 	}
 	if err := validateStaticTelegramSticker(file); err != nil {
 		t.Fatalf("validateStaticTelegramSticker() error = %v", err)
+	}
+}
+
+func TestTelegramBotProviderClassifiesStickerSetFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       error
+	}{
+		{
+			name:       "pack not found",
+			statusCode: http.StatusBadRequest,
+			body:       `{"ok":false,"error_code":400,"description":"Bad Request: STICKERSET_INVALID"}`,
+			want:       ErrTelegramStickerSetNotFound,
+		},
+		{
+			name:       "bot token unauthorized",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"ok":false,"error_code":401,"description":"Unauthorized"}`,
+			want:       ErrTelegramProviderUnauthorized,
+		},
+		{
+			name:       "telegram rate limited",
+			statusCode: http.StatusTooManyRequests,
+			body:       `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 30"}`,
+			want:       ErrTelegramProviderRateLimited,
+		},
+		{
+			name:       "telegram server error",
+			statusCode: http.StatusBadGateway,
+			body:       `{"ok":false,"error_code":502,"description":"Bad Gateway"}`,
+			want:       ErrTelegramProviderUnavailable,
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(item.statusCode)
+				_, _ = response.Write([]byte(item.body))
+			}))
+			defer server.Close()
+
+			provider, err := NewTelegramBotProvider(TelegramBotProviderConfig{
+				Token: "123456:test-token",
+				BaseURL: server.URL,
+				HTTPClient: server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.GetStickerSet(context.Background(), "Animals_by_TestBot")
+			if err != item.want {
+				t.Fatalf("GetStickerSet() error = %v, want %v", err, item.want)
+			}
+		})
+	}
+}
+
+func TestTelegramBotProviderClassifiesTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	client.Timeout = 10 * time.Millisecond
+	provider, err := NewTelegramBotProvider(TelegramBotProviderConfig{
+		Token:      "123456:test-token",
+		BaseURL:    server.URL,
+		HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.GetStickerSet(context.Background(), "Animals_by_TestBot")
+	if err != ErrTelegramProviderTimeout {
+		t.Fatalf("GetStickerSet() error = %v, want %v", err, ErrTelegramProviderTimeout)
 	}
 }
 

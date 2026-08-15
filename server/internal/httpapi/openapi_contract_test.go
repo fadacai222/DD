@@ -82,6 +82,11 @@ func TestOpenAPIIncludesMessageEditingAndVideoContracts(t *testing.T) {
 	if _, ok := contentProperties["posterMediaId"]; !ok {
 		t.Fatal("OpenAPI MessageContent must include posterMediaId for VIDEO")
 	}
+	for _, property := range []string{"livePhoto", "livePhotoMotionMediaId"} {
+		if _, ok := contentProperties[property]; !ok {
+			t.Fatalf("OpenAPI MessageContent must include %s for Live Photo IMAGE", property)
+		}
+	}
 	entities := mustMap(t, contentProperties["entities"], "MessageContent.entities")
 	if entities["readOnly"] != true {
 		t.Fatal("OpenAPI MessageContent.entities must be server-authoritative/readOnly")
@@ -242,6 +247,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/qr-login/scan":                                      {"post"},
 		"/api/v1/qr-login/confirm":                                   {"post"},
 		"/api/v1/qr-login/consume":                                   {"post"},
+		"/api/v1/voice-transcription/preferences":                    {"get", "put", "patch"},
 		"/api/v1/push/preferences":                                   {"get", "put", "patch"},
 		"/api/v1/push/endpoints":                                     {"get", "post", "put"},
 		"/api/v1/push/endpoints/{provider}":                          {"delete"},
@@ -273,6 +279,7 @@ func TestOpenAPIFormalRuntimeSurface(t *testing.T) {
 		"/api/v1/messages/{messageId}/save":                          {"put", "delete"},
 		"/api/v1/messages/{messageId}/pin":                           {"put", "delete"},
 		"/api/v1/messages/{messageId}/forward":                       {"post"},
+		"/api/v1/messages/{messageId}/transcription":                 {"get", "post"},
 		"/api/v1/sync":                                               {"get"},
 		"/api/v1/media/uploads":                                      {"post"},
 		"/api/v1/media/uploads/{uploadId}/cancel":                    {"delete"},

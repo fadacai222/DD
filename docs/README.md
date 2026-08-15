@@ -59,11 +59,11 @@ Wave1 已物理合流并继续形成 Wave2 集成分支 `integrate/2026-08-14-wa
 - **P7 Calls** 已从实验内存 CallStore 正式化为 `server/internal/calls` + PostgreSQL 状态机 + `/api/v1/calls` + Bearer Principal + 多设备接听仲裁；
 - **P8 Moments** 已有朋友圈 Feed、最多 9 图/单视频、点赞评论/回复、单条可见范围、长期隐私偏好和私有媒体授权；2026-08-12 新增服务端持久互动未读与发现页 `1..99 / 99+` 红色数字角标，Push 不再是未读事实源；同日 `GET /api/v1/moment-activity` 扩展最近 30 条互动明细，自己的朋友圈封面下方新增“互动焦点”，点开可查看最近谁点赞/评论、评论正文与时间，已读后历史仍保留；
 - **P9 QR** 服务端与 Flutter 主链已完成主体收口；2026-08-11 的 QR 定向证据为 4 个测试文件 10/10、Windows/Web/Android 构建成功。本轮 Shell/Sticker 类型可见性 analyzer 回归已修复；真人扫码与多端设备验收仍未完成；
-- **P10 Push** 主体代码已形成正式闭环：`internal/push`、HTTP API、durable job、Worker、FCM/APNs/UnifiedPush provider、Flutter token 注册/偏好/UI 均已实现并自动验证；U08 生产运维层也已补齐 provider 指标/认证失败分类、backlog/invalid ratio、INVALID endpoint 30 天后分批清理、credential rotation/排障 runbook 与正式告警；Android Firebase 项目已正式接入，真实 FCM 服务账号可被 Worker 成功加载；2026-08-12 又修复后台系统托盘绕过 DD 自定义通知链导致“只有首字母头像/小标错误”的问题：Android FCM 改为 data-only，后台 handler 统一用 MessagingStyle 渲染，服务端下发 24h HMAC 签名 sender-avatar capability（HIDDEN 预览不下发），本地通知点击可恢复会话；当前仍需最新 APK 真机复测前台/后台/杀进程三态，iPhone APNs delivery 也仍是 `HUMAN-PENDING`；
+- **P10 Push** 主体代码已形成正式闭环：`internal/push`、HTTP API、durable job、Worker、FCM/APNs/UnifiedPush provider、Flutter token 注册/偏好/UI 均已实现并自动验证；U08 生产运维层也已补齐 provider 指标/认证失败分类、backlog/invalid ratio、INVALID endpoint 30 天后分批清理、credential rotation/排障 runbook 与正式告警；Android Firebase 项目已正式接入，真实 FCM 服务账号可被 Worker 成功加载；2026-08-12 修复后台系统托盘绕过 DD 自定义通知链导致“只有首字母头像/小标错误”的问题：Android FCM 改为 data-only，后台 handler 统一用 MessagingStyle 渲染，服务端下发 24h HMAC 签名 sender-avatar capability（HIDDEN 预览不下发），本地通知点击可恢复会话；2026-08-14 进一步加固 Android 杀进程链：Firebase 初始化先于 background handler 注册，killed isolate 改走独立最小通知初始化/显示路径，失败写固定分类诊断且不记录 token/正文/账号或会话 ID，Android 前台设置页可直接区分应用通知权限与 `dd_messages_v2` 频道是否被关闭。当前状态 `FIXED-PENDING-RETEST`，仍需最新 APK 真机复测前台/后台/最近任务划掉/系统回收；Android Force Stop 属于系统 stopped-package 语义的对照组，不能由 App 绕过；iPhone APNs delivery 也仍是 `HUMAN-PENDING`；
 - **P5 Sticker/Media 本轮收口**：自定义 Sticker 支持 PNG/WebP/GIF/MP4/WebM（单项 ≤64 MiB），从 Telegram Pack/已收到消息加入个人库时同时允许 TGS；Telegram Pack Relay 现完整覆盖静态 WebP/PNG、动态 TGS 与视频 WebM，TGS 由 Flutter Lottie gzip decoder 循环渲染，WebM 复用静音循环视频 Sticker 播放链；失败/取消/重试上传会立即释放 reservation；2026-08-12 TG 表情包整包分享进一步改为正式 `STICKER_PACK` 消息：服务端强制取该包排序第一项作为 PRIMARY 预览媒体并生成 `dd://stickers/telegram/...` 导入元数据，接收方即使尚未添加该包也能看到真实首个表情缩略图，转发后仍保留缩略图与导入能力；同时保留面板 4 秒静默账号同步和真实 16 MiB GIF 流式回归，并修复“视频自定义表情刚上传可播、关闭再打开候选格永久转圈”的 BottomSheet 入场可见性回归。视频 Sticker 现不再只依赖临时签名 URL：首次加载会进入 DD 的 `VideoFileCache` 持久缓存，聊天气泡、候选格和分享预览跨面板复用本地文件；缓存受统一容量预算/LRU 和 30 天年龄约束。地址解析/播放器打开超过 15 秒则进入可重试失败态并记录客户端日志，不再无限转圈。
 - **需求0812 性能/稳定性收口**：性能页提供节能模式、减少动画、视频自动预览与硬件加速视频解码；本轮已把 `外观 / 聊天背景 / 媒体与缓存 / 性能 / 传输中心` 从内层设置迁移到“我的”外层，并把原“账号、隐私与设备”收敛为“隐私与设备”。2026-08-12 Android 真机再次复现大视频闪退后，ADB Logcat 已把根因定位到文件选择返回阶段 Java 堆 OOM：约 128 MiB / 503 MiB 样本分别触发同量级整块内存申请，而进程堆增长上限约 256 MiB。聊天相册、文件和自定义表情 Android 选择入口现改为 DD 原生 `ACTION_OPEN_DOCUMENT`，在后台以 64 KiB 缓冲流式复制到 App cache，仅向 Dart 返回路径/元数据；后续继续使用原生缩放 poster + `uploadStream`，不再在选择阶段把整文件 materialize 成 `byte[]`。新增大文件选择合同测试通过、相关 Dart analyzer 0 issue，仓库标准 Android Debug APK 已重新构建成功；状态为 `FIXED-PENDING-RETEST`，仍需真人用同一 100 MiB/500 MiB 级样本复测。Telegram 表情包分享计时器用例已改为有界 pump，`text_chat_page_test.dart` 当前 39/39 全绿。
 - **需求0812 账号/表情/链接新增**：删除独立“刷新登录会话 / 切换账号”入口，新增“账号管理”；Native 客户端按 `origin + userId` 在安全存储中保存最多 8 个独立 Refresh Token 槽位，已有有效会话可直接切换，失效槽位回落密码登录，“添加账号”进入登录页但不撤销原账号。发现页“更多能力”替换为“表情”，复用现有自定义 Sticker + Telegram Pack 管理链。文本消息中的 HTTP/HTTPS URL 现为蓝色可点击实体，每条消息首链接可加载服务端 `/api/v1/link-preview` 元数据卡，点击文字或卡片交给系统外部浏览器/处理器；服务端预览强制鉴权并拦截私网/回环/链路本地/危险端口/不安全重定向，限制 5 秒、512 KiB HTML。Windows 窗口层新增全局 `Esc` 返回上一层：局部 Escape 处理优先，未被消费时根 Navigator `maybePop`，主导航根层不退出/不缩托盘。Native 多账号、链接 UI/客户端和服务器均有自动回归；Web 不持久化多份 Refresh Token，因此直接切换会话仍按 Web 安全模型回落重新认证。
-- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 与 P13 U20-U25 Production Self-host/Release 主链已完成代码闭环。P13 剩余的是 `SECRET/HUMAN-PENDING`：真实原生签名证书与 GitHub production approval policy、公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等；P14 iOS U30 已完成本地总集成与自动门禁，含 iOS 15.0 Runner、Push/Auth lease、Media/QR、Calls/CallKit 和 native service 公共接线；2026-08-13 首次连接 `api.85746.pro` 真云端后暴露的 iOS 连接中断/错误恢复、头像 Photos picker、通话非联系人误报、旧 AppIcon 已完成针对性代码修复，状态统一为 `FIXED-PENDING-RETEST`，需新 iOS 包真人复测。macOS U31 仍为 `PLANNED`。
+- P11 E2EE 已于 2026-08-11 明确移出 V1 范围；P12 Admin/Governance/Data Rights 与 P13 U20-U25 Production Self-host/Release 主链已完成代码闭环。P13 剩余的是 `SECRET/HUMAN-PENDING`：真实原生签名证书与 GitHub production approval policy、公网 TURN/跨运营商、真实规模 RPO/RTO、真实告警接收方等；P14 iOS U30 已完成本地总集成与自动门禁，含 iOS 15.0 Runner、Push/Auth lease、Media/QR、Calls/CallKit 和 native service 公共接线；2026-08-13 首次连接 `api.85746.pro` 真云端后暴露的 iOS 连接中断/错误恢复、头像 Photos picker、通话非联系人误报、旧 AppIcon 已完成针对性代码修复；2026-08-14 又补齐 AppIcon 0.86 白边根因与聊天 wallpaper/footer 色块回归，iOS AppIcon 改由品牌母版 full-bleed 生成且 composer 外层改为透出聊天背景。上述真人失败项状态统一为 `FIXED-PENDING-RETEST`，需新 iOS 包真人复测。macOS U31 仍为 `PLANNED`。
 - **客户端下载落地页**：根目录新增 `download-site/` 纯静态页面；Windows/普通桌面显示 Windows、Android 两个真实下载入口以及 iOS/macOS“敬请期待”，Android 浏览器仅显示 Android APK 下载入口，iOS/macOS 浏览器仅显示对应“敬请期待”；页面自带 `assets/banner.svg` 品牌 Banner，不依赖外部前端库。
 - **本地双端一键打包**：根目录 `一键打包Windows和安卓.bat` 调用正式 `scripts/build-client.ps1 -Target windows-android`，一次构建 Windows Release + Android Debug，并在根目录生成 `DD-Windows.zip`、`DD-Windows.lnk` 与 `DD-Android.apk`；`build_win_fresh` 等构建目录和根目录交付产物继续由 `.gitignore` 排除，不进入 Git 历史。
 - **客户端构建垃圾一键清理**：根目录 `一键清理客户端构建垃圾.bat` 调用 `scripts/clean-client-build-junk.ps1`，只删除可重建的 `clients/app/build`、历史 `build_win_*` / `build_windows_*`、Flutter build cache、Windows ephemeral 与 Android Gradle/CMake 临时目录；不删除源码、Git、配置、签名材料、依赖定义或全局 Pub/Gradle 缓存。
@@ -95,6 +95,7 @@ Wave1 已物理合流并继续形成 Wave2 集成分支 `integrate/2026-08-14-wa
 000031_admin_auth ← 独立 Admin identity/session/MFA
 000032_admin_governance ← 举报/治理/审计
 000033_data_rights ← 数据导出/账号注销生命周期
+000034_message_mentions ← GROUP durable @ 提醒事实/当前 viewer 未读 mention 查询索引
 ```
 
 当前 Go 正式业务模块包括：
@@ -177,11 +178,13 @@ POST   /api/v1/qr-login/consume
 
 2026-08-12 修复“更换/移除群头像时请求只带 `avatarMediaId` 被误判为无更新”的服务端校验遗漏；新增 `TestUpdateGroupInputHasChanges`，Flutter `groups_api_client_test.dart` 的 avatar-only 请求回归也继续通过。真人更换/移除群头像仍为 `FIXED-PENDING-RETEST`。
 
+2026-08-14 Wave2 AI07 新增 `000034_message_mentions`。GROUP 的 server-authoritative `MENTION` / 合法 `MENTION_ALL` 与消息写入同事务落 durable viewer 索引；编辑重建索引、撤回删除索引，conversation summary 对当前 principal 返回 `latestUnreadMentionMessageId` / `latestUnreadMentionSequence`，并继续用 `conversation_members.last_read_sequence` 自然清除。真实 PostgreSQL 18.4 durable mention lifecycle 与 000034 up/down roundtrip 已通过；最终 UI 接线仍待后续单写者完成，状态 `FIXED-PENDING-RETEST`。
+
 ### P7 Calls
 
 `IMPLEMENTED + AUTO-VERIFIED + HUMAN-PASS（基础公网 1:1） / HUMAN-PENDING（长时/弱网/后台/更多网络组合）`。
 
-自动证据包含正式 Bearer API、多设备仲裁、Block/非联系人拒绝、错误设备不能取 LiveKit token/控制 Call、终态通话记录服务端事务化等。2026-08-14 生产环境已真人复测通过基础公网来电、接听、语音与视频媒体主链；30 分钟长时通话、弱网/多网络切换、后台/锁屏与更多跨运营商组合仍需真人环境。
+自动证据包含正式 Bearer API、多设备仲裁、Block/非联系人拒绝、错误设备不能取 LiveKit token/控制 Call、终态通话记录服务端事务化等。2026-08-14 生产环境已真人复测通过基础公网 1:1 来电、接听、语音与视频媒体主链；同日修复群通话生产配置路径：`groups.Service` 不再直接读取明文 LiveKit 环境变量，而是接收 `appconfig.Load()` 已解析的 LiveKit URL/key/secret（含 production `*_FILE` secret）及人数上限，缺失配置继续 fail closed。群通话生产状态为 `FIXED-PENDING-RETEST`；30 分钟长时通话、弱网/多网络切换、后台/锁屏与更多跨运营商组合仍需真人环境。
 
 ### P8 Moments
 
@@ -231,7 +234,7 @@ OVERALL: AUTO-GATE-PASS / HUMAN-PENDING
 - 普通消息、好友申请、1:1 来电、群通话、朋友圈互动 Push 生产；
 - Worker retry/backoff/dedupe、失效 token 自动 INVALID；
 - FCM HTTP v1、APNs、UnifiedPush provider；Android FCM user-visible 消息现使用 data-only + HIGH priority，由客户端自行渲染，iOS FCM 路径保留 APNS-specific alert；
-- Flutter token 注册、token refresh、Push 点击打开会话、通知偏好与测试入口；Android 后台 handler 统一进入 `AppNotificationService`，支持 sender avatar large icon、DD monochrome small icon 与冷启动/运行中本地通知点击导航；
+- Flutter token 注册、token refresh、Push 点击打开会话、通知偏好与测试入口；Android 后台 handler 为顶层 `@pragma('vm:entry-point')`，Firebase 初始化完成后注册，killed isolate 使用 `AppNotificationService` 的后台安全最小路径创建消息频道并渲染 sender avatar large icon、DD monochrome small icon；冷启动/运行中本地通知点击仍恢复导航；失败仅记录固定结果分类，不写 FCM token 或消息私密内容；
 - sender avatar Push 采用短期 HMAC capability URL，不把 Access/Refresh Token 放入 FCM；`HIDDEN` 预览不携带 avatar URL；开发 runner 使用设备可达私网 origin，生产仍要求 HTTPS；
 - Android `google-services.json` + Google Services Gradle 插件正式接入；
 - 真 Firebase Admin service-account 可被本地 Worker 成功加载并启动；

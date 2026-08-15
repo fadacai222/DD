@@ -149,15 +149,15 @@ deviceId
 | POST | `/api/v1/groups/{groupId}/join-requests/{requestId}/approve` | 通过申请 |
 | POST | `/api/v1/groups/{groupId}/join-requests/{requestId}/reject` | 拒绝申请 |
 
-`groupId == conversationId`。群聊消息不另建平行协议，继续复用 Messaging/Outbox/Sync/read/unread/media/sticker/mention；成员 `status != ACTIVE` 后服务端消息读写授权立即失效。
+`groupId == conversationId`。群聊消息不另建平行协议，继续复用 Messaging/Outbox/Sync/read/unread/media/sticker/mention；成员 `status != ACTIVE` 后服务端消息读写授权立即失效。`Conversation` 的 `latestUnreadMentionMessageId` / `latestUnreadMentionSequence` 只描述当前 principal，二者无目标时为 `null`；判定继续依赖 `last_read_sequence`，不新增第二套 mention-read boolean。
 
 ## 3.5 Conversation / Messaging
 
 | Method | Path | 说明 |
 |---|---|---|
-| GET | `/api/v1/conversations` | 会话列表 |
+| GET | `/api/v1/conversations` | 会话列表；GROUP summary 对当前 principal 返回 durable 未读 @ 目标 |
 | POST | `/api/v1/conversations/direct` | 确保 DIRECT 会话 |
-| GET | `/api/v1/conversations/{conversationId}` | 会话详情 |
+| GET | `/api/v1/conversations/{conversationId}` | 会话详情；GROUP 同样返回当前 principal 的 durable 未读 @ 目标 |
 | DELETE | `/api/v1/conversations/{conversationId}` | 当前用户本地隐藏会话 |
 | GET | `/api/v1/conversations/{conversationId}/messages` | 历史消息 |
 | POST | `/api/v1/conversations/{conversationId}/messages` | 发送消息 |
@@ -646,6 +646,18 @@ message_id
 ```
 
 只影响单用户可见性。
+
+## 8.4 `message_mentions`（migration `000034_message_mentions`）
+
+```text
+message_id
+conversation_id
+sequence
+mentioned_user_id
+mention_all
+```
+
+该表只承载 GROUP durable mention viewer 事实，不信任客户端传入 entities。TEXT 发送时基于服务端解析后的 `MENTION` / 已授权 `MENTION_ALL` 与 message 同事务写入；edit 先按最新 authoritative entities 重建，recall 删除对应 rows。查询使用 `(mentioned_user_id, conversation_id, sequence DESC, message_id)` 索引，并同时要求当前 principal 仍是 ACTIVE member、`sequence > last_read_sequence`、message 未 recalled/deleted，且该 viewer 未执行 local delete。sender 不会成为自己的 `MENTION_ALL` recipient；账号匿名化会删除该用户的 viewer rows。
 
 ---
 

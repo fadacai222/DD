@@ -18,8 +18,8 @@ void main() {
     expect(activity, contains('Thread {'));
     expect(activity, isNot(contains('ByteArray(fileSize')));
     expect(picker, contains("MethodChannel('dd/file_picker')"));
-    expect(picker, contains('ddOpenFiles'));
-    expect(chatPage, contains('files = await ddOpenFiles('));
+    expect(picker, contains('ddOpenMediaFiles'));
+    expect(chatPage, contains('media = await ddOpenMediaFiles('));
     expect(chatPage, contains('maxBytes: 2 * 1024 * 1024 * 1024'));
   });
 }

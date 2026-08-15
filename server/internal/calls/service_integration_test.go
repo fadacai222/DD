@@ -64,6 +64,9 @@ func TestCallLifecycleWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new calls service: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE contacts SET remark=CASE WHEN owner_user_id=$1 THEN 'Call Boss' ELSE 'Lead Alice' END WHERE (owner_user_id=$1 AND contact_user_id=$2) OR (owner_user_id=$2 AND contact_user_id=$1)`, alice, bob); err != nil {
+		t.Fatalf("set call viewer remarks: %v", err)
+	}
 
 	created, err := service.Create(ctx, principals["alice1"], CreateInput{
 		CalleeUserID: bob.String(),
@@ -75,16 +78,23 @@ func TestCallLifecycleWithPostgres(t *testing.T) {
 	if created.Status != StatusRinging || created.Kind != KindVideo || created.CallerIdentity != alice.String() || created.CalleeIdentity != bob.String() {
 		t.Fatalf("unexpected created call: %+v", created)
 	}
+	if created.CallerName != "Call Alice" || created.CalleeName != "Call Boss" {
+		t.Fatalf("caller-facing call names=%q/%q", created.CallerName, created.CalleeName)
+	}
 	callID := uuid.MustParse(created.ID)
+	var ringingCallerName string
+	if err := pool.QueryRow(ctx, `SELECT payload_json->>'callerName' FROM outbox_events WHERE aggregate_id=$1 AND event_type='CALL_RINGING' ORDER BY created_at DESC LIMIT 1`, callID).Scan(&ringingCallerName); err != nil || ringingCallerName != "Lead Alice" {
+		t.Fatalf("callee-targeted ringing name=%q err=%v", ringingCallerName, err)
+	}
 
-	if active, err := service.GetActive(ctx, principals["alice1"]); err != nil || active == nil || active.ID != created.ID {
+	if active, err := service.GetActive(ctx, principals["alice1"]); err != nil || active == nil || active.ID != created.ID || active.CalleeName != "Call Boss" {
 		t.Fatalf("caller origin active=%+v err=%v", active, err)
 	}
 	if active, err := service.GetActive(ctx, principals["alice2"]); err != nil || active != nil {
 		t.Fatalf("caller other device active=%+v err=%v want nil", active, err)
 	}
 	for _, key := range []string{"bob1", "bob2"} {
-		if active, err := service.GetActive(ctx, principals[key]); err != nil || active == nil || active.ID != created.ID {
+		if active, err := service.GetActive(ctx, principals[key]); err != nil || active == nil || active.ID != created.ID || active.CallerName != "Lead Alice" {
 			t.Fatalf("ringing callee device %s active=%+v err=%v", key, active, err)
 		}
 	}
@@ -100,8 +110,8 @@ func TestCallLifecycleWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept call: %v", err)
 	}
-	if accepted.Status != StatusAccepted || accepted.AcceptedAt == nil {
-		t.Fatalf("unexpected accepted call: %+v", accepted)
+	if accepted.Status != StatusAccepted || accepted.AcceptedAt == nil || accepted.CallerName != "Lead Alice" || accepted.CalleeName != "Call Bob" {
+		t.Fatalf("unexpected accepted viewer-relative call: %+v", accepted)
 	}
 	if active, err := service.GetActive(ctx, principals["bob2"]); err != nil || active != nil {
 		t.Fatalf("losing callee device active=%+v err=%v want nil", active, err)

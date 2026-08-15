@@ -61,6 +61,18 @@ Future<void> writeMediaCacheFile(String cacheKey, Uint8List bytes) async {
   await pruneManagedMediaCache();
 }
 
+Future<String?> mediaCacheFilePathIfPresent(String cacheKey) async {
+  final file = await _cacheFile(cacheKey);
+  if (!await file.exists()) return null;
+  try {
+    if (await file.length() <= 0) return null;
+    await file.setLastModified(DateTime.now());
+    return file.path;
+  } on FileSystemException {
+    return null;
+  }
+}
+
 Future<void> deleteMediaCacheFile(String cacheKey) async {
   final file = await _cacheFile(cacheKey);
   if (!await file.exists()) return;

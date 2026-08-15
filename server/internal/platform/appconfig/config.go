@@ -11,9 +11,11 @@ import (
 )
 
 const (
-	defaultPort              = 18473
-	defaultLiveKitPublicPort = 7880
-	minimumProductionSecret  = 32
+	defaultPort                     = 18473
+	defaultLiveKitPublicPort        = 7880
+	defaultGroupCallMaxParticipants = 32
+	maximumGroupCallParticipants    = 500
+	minimumProductionSecret         = 32
 )
 
 type Environment string
@@ -42,6 +44,7 @@ type Config struct {
 	AllowedHTTPOrigins  []string
 	LiveKitURL          string
 	LiveKitPublicPort   int
+	GroupCallLimit      int
 	LiveKitAPIKey       string
 	LiveKitAPISecret    string
 	DatabaseURL         string
@@ -51,6 +54,9 @@ type Config struct {
 	MediaS3Region       string
 	MediaS3AccessKey    string
 	MediaS3SecretKey    string
+	VoiceTranscriptionEndpoint   string
+	VoiceTranscriptionModel      string
+	VoiceTranscriptionCredential string
 	TelegramBotToken    string
 	AdminWebRoot        string
 	AuthTokenSecret     string
@@ -79,6 +85,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	groupCallMaxParticipants := parseGroupCallMaxParticipants(os.Getenv("DD_GROUP_CALL_MAX_PARTICIPANTS"))
 
 	allowedOrigins := splitNonEmpty(os.Getenv("IM_ALLOWED_ORIGINS"))
 	allowedHTTPOrigins := splitNonEmpty(os.Getenv("IM_ALLOWED_HTTP_ORIGINS"))
@@ -112,6 +119,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	mediaS3SecretKey, err := ReadSecret("MEDIA_S3_SECRET_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	voiceTranscriptionCredential, err := ReadSecret("VOICE_TRANSCRIPTION_CREDENTIAL")
 	if err != nil {
 		return Config{}, err
 	}
@@ -177,6 +188,7 @@ func Load() (Config, error) {
 		AllowedHTTPOrigins:  allowedHTTPOrigins,
 		LiveKitURL:          strings.TrimSpace(os.Getenv("LIVEKIT_URL")),
 		LiveKitPublicPort:   liveKitPublicPort,
+		GroupCallLimit:      groupCallMaxParticipants,
 		LiveKitAPIKey:       liveKitAPIKey,
 		LiveKitAPISecret:    liveKitAPISecret,
 		DatabaseURL:         databaseURL,
@@ -186,6 +198,9 @@ func Load() (Config, error) {
 		MediaS3Region:       strings.TrimSpace(os.Getenv("MEDIA_S3_REGION")),
 		MediaS3AccessKey:    mediaS3AccessKey,
 		MediaS3SecretKey:    mediaS3SecretKey,
+		VoiceTranscriptionEndpoint: strings.TrimSpace(os.Getenv("VOICE_TRANSCRIPTION_ENDPOINT")),
+		VoiceTranscriptionModel: strings.TrimSpace(os.Getenv("VOICE_TRANSCRIPTION_MODEL")),
+		VoiceTranscriptionCredential: voiceTranscriptionCredential,
 		TelegramBotToken:    telegramBotToken,
 		AdminWebRoot:        strings.TrimSpace(os.Getenv("ADMIN_WEB_ROOT")),
 		AuthTokenSecret:     authTokenSecret,
@@ -208,6 +223,12 @@ func Load() (Config, error) {
 func (config Config) Validate() error {
 	if utf8.RuneCountInString(strings.TrimSpace(config.InstanceName)) > 80 {
 		return errors.New("IM_INSTANCE_NAME must contain at most 80 characters")
+	}
+	if strings.TrimSpace(config.VoiceTranscriptionEndpoint) != "" && strings.TrimSpace(config.VoiceTranscriptionModel) == "" {
+		return errors.New("VOICE_TRANSCRIPTION_MODEL is required when VOICE_TRANSCRIPTION_ENDPOINT is configured")
+	}
+	if strings.TrimSpace(config.VoiceTranscriptionEndpoint) == "" && strings.TrimSpace(config.VoiceTranscriptionModel) != "" {
+		return errors.New("VOICE_TRANSCRIPTION_ENDPOINT is required when VOICE_TRANSCRIPTION_MODEL is configured")
 	}
 	if strings.TrimSpace(config.MediaS3Endpoint) != "" {
 		if strings.TrimSpace(config.MediaS3Bucket) == "" {
@@ -334,6 +355,18 @@ func parseEnvironment(raw string) (Environment, error) {
 	default:
 		return "", fmt.Errorf("IM_ENV must be development, test, or production")
 	}
+}
+
+func parseGroupCallMaxParticipants(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultGroupCallMaxParticipants
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 2 || value > maximumGroupCallParticipants {
+		return defaultGroupCallMaxParticipants
+	}
+	return value
 }
 
 func parsePort(name, raw string, defaultValue int, requireFiveDigits bool) (int, error) {

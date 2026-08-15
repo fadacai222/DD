@@ -1,3 +1,5 @@
+import '../../../shared/identity/effective_display_name.dart' as identity;
+
 final class ContactUser {
   const ContactUser({
     required this.id,
@@ -17,35 +19,61 @@ final class ContactUser {
   final String handle;
   final String displayName;
   final String bio;
+
+  String get effectiveDisplayName =>
+      identity.effectiveDisplayName(displayName: displayName, handle: handle);
 }
 
 final class ContactMentionSuggestion {
   const ContactMentionSuggestion({
     required this.user,
     required this.relationship,
+    this.viewerDisplayName = '',
   });
 
   factory ContactMentionSuggestion.fromJson(Map<String, dynamic> json) =>
       ContactMentionSuggestion(
         user: ContactUser.fromJson(json['user'] as Map<String, dynamic>),
         relationship: (json['relationship'] as String?) ?? 'NONE',
+        viewerDisplayName: json['effectiveDisplayName']?.toString() ?? '',
       );
 
   final ContactUser user;
   final String relationship;
+  final String viewerDisplayName;
+
+  String get effectiveDisplayName => identity.effectiveDisplayName(
+    displayName: viewerDisplayName.trim().isEmpty
+        ? user.displayName
+        : viewerDisplayName,
+    handle: user.handle,
+  );
 }
 
 final class ContactSearchResult {
-  const ContactSearchResult({required this.user, required this.relationship});
+  const ContactSearchResult({
+    required this.user,
+    required this.relationship,
+    this.viewerDisplayName = '',
+  });
 
   factory ContactSearchResult.fromJson(Map<String, dynamic> json) =>
       ContactSearchResult(
         user: ContactUser.fromJson(json['user'] as Map<String, dynamic>),
         relationship: json['relationship'] as String,
+        viewerDisplayName: json['effectiveDisplayName']?.toString() ?? '',
       );
 
   final ContactUser user;
   final String relationship;
+  final String viewerDisplayName;
+
+  String get effectiveDisplayName => identity.effectiveDisplayName(
+    displayName: viewerDisplayName.trim().isEmpty
+        ? user.displayName
+        : viewerDisplayName,
+    handle: user.handle,
+  );
 }
 
 final class ContactRequestItem {
@@ -116,6 +144,12 @@ final class ContactItem {
   final List<String> tags;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  String get effectiveDisplayName => identity.effectiveDisplayName(
+    displayName: user.displayName,
+    handle: user.handle,
+    remark: remark,
+  );
 }
 
 final class BlockedUserItem {

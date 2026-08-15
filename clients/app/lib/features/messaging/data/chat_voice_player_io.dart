@@ -1,3 +1,5 @@
+// ignore_for_file: annotate_overrides
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -6,9 +8,11 @@ import 'package:audioplayers/audioplayers.dart' as ap;
 import 'package:media_kit/media_kit.dart' as mk;
 
 import '../../../core/sound/app_audio_activity.dart';
+import 'voice_playback_engine.dart';
 import 'voice_playback_source.dart';
+import 'voice_playback_source_io.dart' as legacy_source;
 
-final class ChatVoicePlayer {
+final class ChatVoicePlayer implements VoicePlaybackEngine {
   ChatVoicePlayer({bool Function()? callActive})
     : _callActive = callActive ?? (() => AppAudioActivity.shared.callActive);
 
@@ -98,23 +102,42 @@ final class ChatVoicePlayer {
     required String mediaId,
     String? mimeType,
     double rate = 1,
-  }) async {
+  }) => playSource(
+    BytesVoicePlaybackSource(
+      bytes,
+      namespace: namespace,
+      mediaId: mediaId,
+      mimeType: mimeType,
+    ),
+    rate: rate,
+  );
+
+  @override
+  Future<void> playSource(VoicePlaybackSource source, {double rate = 1}) async {
     _ensureCallAudioAvailable();
     if (Platform.isWindows) {
       final mediaKit = _ensureMediaKitPlayer();
-      final source = await createVoicePlaybackSource(
-        bytes: bytes,
-        namespace: namespace,
-        mediaId: mediaId,
-        mimeType: mimeType,
-      );
-      if (source is! ap.DeviceFileSource) {
-        throw StateError(
-          'Windows voice playback requires a local file source.',
+      String location;
+      if (source is LocalVoicePlaybackSource) {
+        location = source.path;
+      } else if (source is RemoteVoicePlaybackSource) {
+        location = source.url.toString();
+      } else if (source is BytesVoicePlaybackSource) {
+        final materialized = await legacy_source.createVoicePlaybackSource(
+          bytes: source.bytes,
+          namespace: source.namespace,
+          mediaId: source.mediaId,
+          mimeType: source.mimeType,
         );
+        if (materialized is! ap.DeviceFileSource) {
+          throw StateError('Windows voice playback requires a local file source.');
+        }
+        location = materialized.path;
+      } else {
+        throw StateError('Unsupported voice playback source.');
       }
       await mediaKit.stop();
-      await mediaKit.open(mk.Media(source.path), play: false);
+      await mediaKit.open(mk.Media(location), play: false);
       await mediaKit.setRate(rate);
       await mediaKit.play();
       return;
@@ -123,13 +146,17 @@ final class ChatVoicePlayer {
     final audio = _ensureAudioPlayer();
     await audio.stop();
     await audio.setPlaybackRate(rate);
-    final source = await createVoicePlaybackSource(
-      bytes: bytes,
-      namespace: namespace,
-      mediaId: mediaId,
-      mimeType: mimeType,
-    );
-    await audio.play(source);
+    final ap.Source audioSource;
+    if (source is LocalVoicePlaybackSource) {
+      audioSource = ap.DeviceFileSource(source.path, mimeType: source.mimeType);
+    } else if (source is RemoteVoicePlaybackSource) {
+      audioSource = ap.UrlSource(source.url.toString(), mimeType: source.mimeType);
+    } else if (source is BytesVoicePlaybackSource) {
+      audioSource = ap.BytesSource(source.bytes, mimeType: source.mimeType);
+    } else {
+      throw StateError('Unsupported voice playback source.');
+    }
+    await audio.play(audioSource);
   }
 
   Future<void> pause() async {

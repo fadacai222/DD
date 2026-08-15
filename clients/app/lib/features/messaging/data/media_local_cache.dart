@@ -56,6 +56,40 @@ final class MediaLocalCache {
     return request;
   }
 
+  Future<Uint8List?> readIfPresent(
+    String mediaId, {
+    MediaCacheKind kind = MediaCacheKind.image,
+  }) async {
+    final id = mediaId.trim();
+    if (id.isEmpty) return null;
+    final memory = _memory[id];
+    if (memory != null && memory.isNotEmpty) return memory;
+    final cached = await _store.read(_cacheKey(id, kind));
+    if (cached == null || cached.isEmpty) return null;
+    _remember(id, cached);
+    return cached;
+  }
+
+  Future<String?> localPathIfPresent(
+    String mediaId, {
+    MediaCacheKind kind = MediaCacheKind.image,
+  }) async {
+    final id = mediaId.trim();
+    if (id.isEmpty || _store is! PlatformMediaCacheStore) return null;
+    return mediaCacheFilePathIfPresent(_cacheKey(id, kind));
+  }
+
+  Future<void> store(
+    String mediaId,
+    Uint8List bytes, {
+    MediaCacheKind kind = MediaCacheKind.image,
+  }) async {
+    final id = mediaId.trim();
+    if (id.isEmpty || bytes.isEmpty) return;
+    _remember(id, bytes);
+    await _store.write(_cacheKey(id, kind), bytes);
+  }
+
   Future<void> evict(String mediaId) async {
     final id = mediaId.trim();
     if (id.isEmpty) return;

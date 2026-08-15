@@ -109,4 +109,123 @@ void main() {
     expect(connectionCount, greaterThanOrEqualTo(2));
     expect(client.state, RealtimeConnectionState.connected);
   });
+
+  test(
+    'immediate reconnect coalesces concurrent resume revalidation and replaces the stale channel',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var connectionCount = 0;
+      var eventID = 0;
+      final sockets = <WebSocket>[];
+
+      server.listen((request) async {
+        if (request.uri.path != '/ws') {
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+          return;
+        }
+        connectionCount++;
+        final socket = await WebSocketTransformer.upgrade(request);
+        sockets.add(socket);
+        socket.listen((rawMessage) {
+          if (rawMessage is! String) return;
+          final message = jsonDecode(rawMessage) as Map<String, dynamic>;
+          final requestID = message['requestId'] as String? ?? '';
+          switch (message['type']) {
+            case 'hello':
+              socket.add(
+                jsonEncode(<String, dynamic>{
+                  'type': 'hello_ack',
+                  'requestId': requestID,
+                  'eventId': ++eventID,
+                  'payload': <String, dynamic>{},
+                }),
+              );
+            case 'ping':
+              socket.add(
+                jsonEncode(<String, dynamic>{
+                  'type': 'pong',
+                  'requestId': requestID,
+                  'eventId': ++eventID,
+                  'payload': <String, dynamic>{},
+                }),
+              );
+          }
+        });
+      });
+
+      final client = RealtimeClient(
+        baseUri: Uri.parse('http://127.0.0.1:${server.port}'),
+        clientId: 'resume-revalidation-test',
+        heartbeatInterval: const Duration(minutes: 10),
+        heartbeatTimeout: const Duration(seconds: 1),
+      );
+      final states = <RealtimeConnectionState>[];
+      final stateSubscription = client.states.listen(states.add);
+      addTearDown(() async {
+        await stateSubscription.cancel();
+        await client.dispose();
+        for (final socket in sockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+      });
+
+      await client.connect();
+      expect(connectionCount, 1);
+      expect(client.state, RealtimeConnectionState.connected);
+      states.clear();
+
+      await Future.wait(<Future<void>>[
+        client.reconnectNow(),
+        client.reconnectNow(),
+        client.reconnectNow(),
+      ]);
+
+      expect(connectionCount, 2);
+      expect(client.state, RealtimeConnectionState.connected);
+      await Future<void>.delayed(Duration.zero);
+      expect(states, contains(RealtimeConnectionState.connecting));
+      expect(states.last, RealtimeConnectionState.connected);
+
+      if (sockets.isNotEmpty) {
+        await sockets.first.close();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(client.state, RealtimeConnectionState.connected);
+    },
+  );
+
+  test('dispose cancels reconnect scheduled by a closed websocket', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var connectionCount = 0;
+
+    server.listen((request) async {
+      connectionCount++;
+      final socket = await WebSocketTransformer.upgrade(request);
+      socket.listen((_) {});
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await socket.close();
+    });
+
+    final client = RealtimeClient(
+      baseUri: Uri.parse('http://127.0.0.1:${server.port}'),
+      clientId: 'dispose-reconnect-test',
+      heartbeatInterval: Duration.zero,
+      heartbeatTimeout: Duration.zero,
+    );
+    addTearDown(() async {
+      await client.dispose();
+      await server.close(force: true);
+    });
+
+    await client.connect();
+    await client.states
+        .firstWhere((state) => state == RealtimeConnectionState.disconnected)
+        .timeout(const Duration(seconds: 1));
+    await client.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+    expect(connectionCount, 1);
+  });
 }

@@ -18,6 +18,10 @@ func TestNormalizeSendInput(t *testing.T) {
 		{name: "blank text", input: SendMessageInput{ClientMessageID: "client-0002", Type: "TEXT", Content: &TextContent{Text: "   "}}, wantErr: ErrInvalidInput},
 		{name: "too long", input: SendMessageInput{ClientMessageID: "client-0003", Type: "TEXT", Content: &TextContent{Text: strings.Repeat("界", MaximumTextRunes+1)}}, wantErr: ErrInvalidInput},
 		{name: "valid image", input: SendMessageInput{ClientMessageID: "client-0004", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", Width: 1080, Height: 1440}}},
+		{name: "valid live photo", input: SendMessageInput{ClientMessageID: "client-live-0001", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", LivePhoto: true, LivePhotoMotionMediaID: "00000000-0000-0000-0000-000000000130", Width: 1080, Height: 1440}}},
+		{name: "live photo missing motion", input: SendMessageInput{ClientMessageID: "client-live-0002", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", LivePhoto: true, Width: 1080, Height: 1440}}, wantErr: ErrInvalidInput},
+		{name: "motion without live photo flag", input: SendMessageInput{ClientMessageID: "client-live-0003", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", LivePhotoMotionMediaID: "00000000-0000-0000-0000-000000000130", Width: 1080, Height: 1440}}, wantErr: ErrInvalidInput},
+		{name: "live photo motion matches still", input: SendMessageInput{ClientMessageID: "client-live-0004", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", LivePhoto: true, LivePhotoMotionMediaID: "00000000-0000-0000-0000-000000000123", Width: 1080, Height: 1440}}, wantErr: ErrInvalidInput},
 		{name: "image missing media id", input: SendMessageInput{ClientMessageID: "client-0005", Type: "IMAGE", Content: &TextContent{Width: 1080, Height: 1440}}, wantErr: ErrInvalidInput},
 		{name: "image invalid dimensions", input: SendMessageInput{ClientMessageID: "client-0006", Type: "IMAGE", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000123", Width: 0, Height: 1440}}, wantErr: ErrInvalidInput},
 		{name: "valid gif", input: SendMessageInput{ClientMessageID: "client-0007", Type: "GIF", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000124", Width: 480, Height: 320}}},
@@ -30,6 +34,7 @@ func TestNormalizeSendInput(t *testing.T) {
 		{name: "valid video", input: SendMessageInput{ClientMessageID: "client-0014", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", PosterMediaID: "00000000-0000-0000-0000-000000000129", Width: 1920, Height: 1080, DurationMS: 42000}}},
 		{name: "video missing poster", input: SendMessageInput{ClientMessageID: "client-0015", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", Width: 1920, Height: 1080, DurationMS: 42000}}, wantErr: ErrInvalidInput},
 		{name: "video poster matches primary", input: SendMessageInput{ClientMessageID: "client-0016", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", PosterMediaID: "00000000-0000-0000-0000-000000000128", Width: 1920, Height: 1080, DurationMS: 42000}}, wantErr: ErrInvalidInput},
+		{name: "video rejects live photo fields", input: SendMessageInput{ClientMessageID: "client-live-0005", Type: "VIDEO", Content: &TextContent{MediaID: "00000000-0000-0000-0000-000000000128", PosterMediaID: "00000000-0000-0000-0000-000000000129", LivePhoto: true, LivePhotoMotionMediaID: "00000000-0000-0000-0000-000000000130", Width: 1920, Height: 1080, DurationMS: 42000}}, wantErr: ErrInvalidInput},
 		{name: "unsupported type", input: SendMessageInput{ClientMessageID: "client-0012", Type: "POLL", Content: &TextContent{Text: "x"}}, wantErr: ErrUnsupportedType},
 		{name: "bad reply uuid", input: SendMessageInput{ClientMessageID: "client-0013", Type: "TEXT", Content: &TextContent{Text: "x"}, ReplyToMessageID: stringPointer("not-a-uuid")}, wantErr: ErrInvalidInput},
 	}
@@ -104,6 +109,30 @@ func TestGroupPreviewJSONAlwaysCarriesAvatarMembers(t *testing.T) {
 	members, ok := decoded["avatarMembers"].([]any)
 	if !ok || len(members) != 2 {
 		t.Fatalf("avatarMembers=%#v", decoded["avatarMembers"])
+	}
+}
+
+func TestConversationJSONCarriesDurableMentionTarget(t *testing.T) {
+	messageID := "00000000-0000-0000-0000-000000000777"
+	sequence := int64(42)
+	payload, err := json.Marshal(Conversation{
+		ID:                             "group-1",
+		Type:                           "GROUP",
+		LatestUnreadMentionMessageID:   &messageID,
+		LatestUnreadMentionSequence:    &sequence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["latestUnreadMentionMessageId"] != messageID {
+		t.Fatalf("latestUnreadMentionMessageId=%#v", decoded["latestUnreadMentionMessageId"])
+	}
+	if decoded["latestUnreadMentionSequence"] != float64(sequence) {
+		t.Fatalf("latestUnreadMentionSequence=%#v", decoded["latestUnreadMentionSequence"])
 	}
 }
 
