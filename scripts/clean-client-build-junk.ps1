@@ -1,21 +1,23 @@
 param(
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\')
 $AppRoot = Join-Path $Root 'clients\app'
 
-if (-not (Test-Path -LiteralPath $AppRoot)) {
+if (-not [System.IO.Directory]::Exists($AppRoot)) {
     throw "Client app directory not found: $AppRoot"
 }
 
 function Get-DirectoryBytes {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path)) { return [int64]0 }
+    if (-not [System.IO.Directory]::Exists($Path)) { return [int64]0 }
+
     $sum = Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction SilentlyContinue |
         Measure-Object -Property Length -Sum
     if ($null -eq $sum.Sum) { return [int64]0 }
@@ -29,6 +31,118 @@ function Format-Bytes {
     if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
     if ($Bytes -ge 1KB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
     return "$Bytes B"
+}
+
+function Convert-ToExtendedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\')) { return $full }
+    if ($full.StartsWith('\\')) {
+        return '\\?\UNC\' + $full.TrimStart('\')
+    }
+    return '\\?\' + $full
+}
+
+function Assert-SafeDeletePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $rootPrefix = $Root + '\'
+
+    if (-not $full.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to delete path outside repository: $full"
+    }
+    if ($full.Equals($Root, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $full.Equals($AppRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to delete protected project path: $full"
+    }
+}
+
+function Invoke-NativeRemoveDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    Assert-SafeDeletePath -Path $Path
+    if (-not [System.IO.Directory]::Exists($Path)) { return }
+
+    $extendedPath = Convert-ToExtendedPath -Path $Path
+    $rdCommand = 'rd /s /q "{0}"' -f $extendedPath.Replace('"', '""')
+
+    & $env:ComSpec /d /c $rdCommand 2>$null
+    $rdExitCode = $LASTEXITCODE
+
+    if (-not [System.IO.Directory]::Exists($Path)) { return }
+
+    # Fallback for pathological Gradle/Java trees: mirror an empty directory
+    # into the target with robocopy, then remove the now-empty target natively.
+    $emptyDir = Join-Path ([System.IO.Path]::GetTempPath()) ('dd-clean-empty-' + [System.Guid]::NewGuid().ToString('N'))
+    [void][System.IO.Directory]::CreateDirectory($emptyDir)
+    $robocopyExitCode = -1
+
+    try {
+        & robocopy.exe $emptyDir $Path /MIR /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP 2>$null | Out-Null
+        $robocopyExitCode = $LASTEXITCODE
+        & $env:ComSpec /d /c $rdCommand 2>$null
+        $rdRetryExitCode = $LASTEXITCODE
+    }
+    finally {
+        Remove-Item -LiteralPath $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ([System.IO.Directory]::Exists($Path)) {
+        throw "Target still exists after native long-path cleanup (rd=$rdExitCode, robocopy=$robocopyExitCode, rd-retry=$rdRetryExitCode): $Path"
+    }
+}
+
+function Stop-GradleDaemons {
+    $gradleWrapper = Join-Path $AppRoot 'android\gradlew.bat'
+    if (-not [System.IO.File]::Exists($gradleWrapper)) { return }
+
+    Write-Host 'Stopping Gradle daemons ...'
+    try {
+        Push-Location (Split-Path -Parent $gradleWrapper)
+        try {
+            & $gradleWrapper --stop *> $null
+        }
+        finally {
+            Pop-Location
+        }
+    }
+    catch {
+        Write-Host ("Gradle daemon stop was skipped: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
+function Stop-ProcessesInsideTargets {
+    param([Parameter(Mandatory = $true)][object[]]$Items)
+
+    try {
+        $processes = Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $null -ne $_.ExecutablePath -and $_.ProcessId -ne $PID }
+    }
+    catch {
+        Write-Host ("Could not inspect running process paths: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        return
+    }
+
+    foreach ($process in $processes) {
+        $exePath = [string]$process.ExecutablePath
+        foreach ($item in $Items) {
+            $target = ([System.IO.Path]::GetFullPath([string]$item.FullPath)).TrimEnd('\')
+            $targetPrefix = $target + '\'
+            if ($exePath.Equals($target, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $exePath.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                try {
+                    Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+                    Write-Host ("Stopped build-output process: {0} (PID {1})" -f $process.Name, $process.ProcessId) -ForegroundColor Yellow
+                }
+                catch {
+                    Write-Host ("Could not stop {0} (PID {1}): {2}" -f $process.Name, $process.ProcessId, $_.Exception.Message) -ForegroundColor Yellow
+                }
+                break
+            }
+        }
+    }
 }
 
 $targets = New-Object System.Collections.Generic.List[string]
@@ -56,7 +170,7 @@ foreach ($relative in @(
 }
 
 $uniqueTargets = $targets |
-    Where-Object { Test-Path -LiteralPath $_ } |
+    Where-Object { [System.IO.Directory]::Exists($_) } |
     Sort-Object -Unique
 
 Write-Host ''
@@ -71,29 +185,39 @@ if (-not $uniqueTargets) {
 }
 
 $totalBefore = [int64]0
-$items = foreach ($target in $uniqueTargets) {
-    $bytes = Get-DirectoryBytes -Path $target
-    $totalBefore += $bytes
-    [PSCustomObject]@{
-        Size = Format-Bytes -Bytes $bytes
-        Path = $target.Substring($Root.Length).TrimStart('\')
-        FullPath = $target
-        Bytes = $bytes
+$items = @(
+    foreach ($target in $uniqueTargets) {
+        $bytes = Get-DirectoryBytes -Path $target
+        $totalBefore += $bytes
+        [PSCustomObject]@{
+            Size = Format-Bytes -Bytes $bytes
+            Path = $target.Substring($Root.Length).TrimStart('\')
+            FullPath = $target
+            Bytes = $bytes
+        }
     }
-}
+)
 
 $items | Sort-Object Bytes -Descending | Format-Table Size, Path -AutoSize
 Write-Host ''
 Write-Host ("Total removable: {0}" -f (Format-Bytes -Bytes $totalBefore)) -ForegroundColor Yellow
 Write-Host 'Only generated build/cache directories listed above will be removed.'
-Write-Host 'Source code, Git files, config, signing material and dependencies are preserved.'
+Write-Host 'Source code, Git files, config, signing material and dependency definitions are preserved.'
 Write-Host ''
+
+if ($DryRun) {
+    Write-Host 'Dry run only; nothing was removed.' -ForegroundColor Yellow
+    exit 0
+}
+
+Stop-GradleDaemons
+Stop-ProcessesInsideTargets -Items $items
 
 $failed = New-Object System.Collections.Generic.List[string]
 foreach ($item in $items) {
     Write-Host ("Removing {0} ..." -f $item.Path)
     try {
-        Remove-Item -LiteralPath $item.FullPath -Recurse -Force -ErrorAction Stop
+        Invoke-NativeRemoveDirectory -Path $item.FullPath
     }
     catch {
         $failed.Add("$($item.Path): $($_.Exception.Message)")
@@ -102,7 +226,7 @@ foreach ($item in $items) {
 
 $remaining = [int64]0
 foreach ($item in $items) {
-    if (Test-Path -LiteralPath $item.FullPath) {
+    if ([System.IO.Directory]::Exists($item.FullPath)) {
         $remaining += Get-DirectoryBytes -Path $item.FullPath
     }
 }
@@ -116,9 +240,9 @@ if ($remaining -gt 0) {
 }
 if ($failed.Count -gt 0) {
     Write-Host ''
-    Write-Host 'Some paths could not be fully removed (usually because a client/build process is still running):' -ForegroundColor Red
+    Write-Host 'Some generated paths could not be fully removed:' -ForegroundColor Red
     $failed | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-    Write-Host 'Close DD/Flutter build processes and run this cleaner again.' -ForegroundColor Yellow
+    Write-Host 'If a path remains, a process outside the build output may still have a file open.' -ForegroundColor Yellow
     exit 1
 }
 
